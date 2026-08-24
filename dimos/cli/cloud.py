@@ -88,7 +88,14 @@ def _login_card(uri: str, code: str, spin: str = "", clock: str = "") -> list[st
 
 
 def _signed_in_card(email: str, key_id: str, where: str) -> list[str]:
-    """One card, not two: who you are, then what DimOS is."""
+    """One card, not two: who you are, then what DimOS is.
+
+    The prose ladders down with the width. Wrapped into a narrow terminal the
+    About paragraph becomes a wall taller than the window meant to hold it, and
+    it pushes the two lines that matter — who you are, and that it worked — off
+    the top of the scrollback. So the blurbs go first, then the paragraph, and
+    the identity block is what always survives.
+    """
     cols = min(theme.term_width(), 110)
     width = max(24, cols - 2 - (22 + 3) - 4)
     body = [
@@ -97,16 +104,22 @@ def _signed_in_card(email: str, key_id: str, where: str) -> list[str]:
         "",
         theme.paint(f"key      {key_id}… · {where}", theme.MUTED),
         theme.paint(f"version  DimOS v{_version()}", theme.MUTED),
-        "",
-        theme.paint("About DimOS", theme.rgb("white")),
     ]
+    if cols >= 48:
+        body += [
+            "",
+            theme.paint("Join our community: ", theme.MUTED)
+            + theme.paint(COMMUNITY, theme.rgb("cyan")),
+        ]
+    if cols < 72:
+        # Names only, on one line — enough to hint at the surface area.
+        if cols >= 48:
+            body += ["", theme.paint(" · ".join(n for n, _ in CAPABILITIES), theme.MUTED)]
+        return theme.card(body, "ok", cols, cap=110)
+
+    body += ["", theme.paint("About DimOS", theme.rgb("white"))]
     body += [theme.paint(ln, theme.MUTED) for ln in textwrap.wrap(ABOUT, width)]
-    body += [
-        "",
-        theme.paint("Join our community: ", theme.MUTED)
-        + theme.paint(COMMUNITY, theme.rgb("cyan")),
-        "",
-    ]
+    body.append("")
     for name, blurb in CAPABILITIES:
         body.append(theme.paint("▸ ", theme.SALMON) + theme.paint(name, theme.rgb("white")))
         body += [theme.paint("   " + ln, theme.MUTED) for ln in textwrap.wrap(blurb, width - 3)]

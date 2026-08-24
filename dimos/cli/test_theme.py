@@ -187,3 +187,28 @@ def test_reveal_only_animates_when_the_wordmark_fits(
         assert out == "", f"animated at {cols} cols but needs {needed}"
     else:
         assert out, f"should have animated at {cols} cols"
+
+
+@pytest.mark.parametrize("cols", WIDTHS)
+def test_identity_survives_every_width(
+    cols: int, tty: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever else the card drops, it still says who signed in."""
+    monkeypatch.setattr(theme, "term_width", lambda: cols)
+    text = " ".join(plain(cloud._signed_in_card("you@dimensionalos.com", "ab12cd34", "keyring")))
+    assert "Signed in" in text, f"lost the confirmation at {cols} columns"
+    assert "you@dimensionalos.com" in text, f"lost the account at {cols} columns"
+
+
+def test_narrow_cards_fit_a_normal_terminal(tty: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Below the full-prose threshold the card fits a 24-row window.
+
+    Wrapping the About paragraph into a thin column used to invert height
+    against width — 56 columns gave 35 rows against 100 columns' 26 — so the
+    identity block scrolled away on the terminals least able to spare the room.
+    Above 72 columns the prose returns and the card is deliberately longer.
+    """
+    for cols in [w for w in WIDTHS if w < 72]:
+        monkeypatch.setattr(theme, "term_width", lambda c=cols: c)
+        rows = cloud._signed_in_card("you@dimensionalos.com", "ab12cd34", "keyring")
+        assert len(rows) <= 24, f"{len(rows)} rows at {cols} columns"
