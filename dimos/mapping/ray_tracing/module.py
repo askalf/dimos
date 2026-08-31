@@ -35,15 +35,13 @@ class RayTracingVoxelMapConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     # The crate is a workspace member, so cargo builds into the repo-root target dir.
     executable: str = str(DIMOS_PROJECT_ROOT / "target" / "release" / "voxel_ray_tracing")
-    build_command: str | None = "cargo build --release"
+    build_command: str | None = "nix develop path:../../../../nix/rust -c cargo build --release"
     stdin_config: bool = True
 
-    voxel_size: float = 0.08
-    # Fine cells per voxel edge: fine cell size is voxel_size / fine_divisor.
-    # Zero disables the fine layer. The fine layer sharpens raycast clearing.
-    fine_divisor: int = 3
-    # Publish local_map_fine on the local map cadence. Requires fine_divisor.
-    emit_fine: bool = False
+    voxel_size: float = 0.1
+    # Fine cells per voxel edge for the local_map_fine output: fine cell size is
+    # voxel_size / fine_divisor. Zero disables the fine layer.
+    fine_divisor: int = 0
     # Maximum range for ray tracing
     max_range: float = 30.0
     # Proportion of points that are ray traced
