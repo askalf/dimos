@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 
 import pytest
 
@@ -38,7 +38,9 @@ def test_multiple_robots_and_rgb_cameras_have_separate_typed_ports():
     assert blueprint.remapping_map[("right_front", "color_image")] == "right/front/color_image"
     assert blueprint.remapping_map[("left_connection", "joint_command")] == "left/joint_command"
     assert blueprint.remapping_map[("right_connection", "joint_command")] == "right/joint_command"
-    assert parsed.module_kwargs("left_front")["sensor"] == asdict(rgb.sensors[0])
+    sensor = parsed.module_kwargs("left_front")["sensor"]
+    assert isinstance(sensor, Camera)
+    assert sensor == rgb.sensors[0]
 
 
 def test_second_camera_does_not_require_shared_module_changes():

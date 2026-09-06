@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -508,6 +509,49 @@ def test_blueprint_pinned_arbitrary_value_survives_filtering() -> None:
     parsed = BlueprintConfigParser(ArbitraryModule.blueprint(scaling=Anchor())).parse(environ={})
 
     assert isinstance(parsed.module_kwargs("arbitrarymodule")["scaling"], Anchor)
+
+
+@dataclass
+class PrefixTransform:
+    prefix: str
+
+    def __call__(self, value: Any) -> str:
+        return f"{self.prefix}{value}"
+
+
+@pytest.mark.parametrize("field", ["transform", "handlers"])
+def test_callable_dataclass_survives_validation_and_worker_config(field: str) -> None:
+    transform = PrefixTransform("robot:")
+    value = transform if field == "transform" else {"world/g1/joints": transform}
+    parsed = BlueprintConfigParser(ArbitraryModule.blueprint(**{field: value})).parse(environ={})
+
+    config = ArbitraryConfig.model_validate(parsed.module_kwargs("arbitrarymodule"))
+    callback = config.transform if field == "transform" else config.handlers["world/g1/joints"]
+    assert isinstance(callback, PrefixTransform)
+    assert callback("state") == "robot:state"
+    callback.prefix = "changed:"
+    assert transform.prefix == "robot:"
+    fresh = ArbitraryConfig.model_validate(parsed.module_kwargs("arbitrarymodule"))
+    detached = fresh.transform if field == "transform" else fresh.handlers["world/g1/joints"]
+    assert detached is not None and detached("state") == "robot:state"
+
+
+def test_nested_model_pin_preserves_callable_dataclasses() -> None:
+    class Hooks(BaseModel):
+        transform: Callable[[Any], str]
+
+    class NestedHooksConfig(ModuleConfig):
+        hooks: Hooks
+
+    class NestedHooksModule(Module):
+        config: NestedHooksConfig
+
+    hooks = Hooks(transform=PrefixTransform("robot:"))
+    parsed = BlueprintConfigParser(NestedHooksModule.blueprint(hooks=hooks)).parse(environ={})
+    config = NestedHooksConfig.model_validate(parsed.module_kwargs("nestedhooksmodule"))
+
+    assert isinstance(config.hooks.transform, PrefixTransform)
+    assert config.hooks.transform("state") == "robot:state"
 
 
 def test_format_help_uses_nested_parent_default_instance() -> None:

@@ -41,17 +41,26 @@ def plain_mapping(values: Mapping[str, Any]) -> dict[str, Any]:
     return {key: plain(value) for key, value in values.items()}
 
 
-def plain(value: Any) -> Any:
+def plain(value: Any, *, exclude_unset: bool = False) -> Any:
     if isinstance(value, BaseModel):
-        return {key: plain(item) for key, item in value.model_dump(mode="python").items()}
+        # These values construct worker configs; serialization would erase runtime
+        # objects such as callable dataclasses that must survive validation.
+        return {
+            key: plain(item, exclude_unset=exclude_unset)
+            for key, item in value
+            if not exclude_unset or key in value.model_fields_set
+        }
     if isinstance(value, Mapping):
-        return {_copy_opaque(key): plain(item) for key, item in value.items()}
+        return {
+            _copy_opaque(key): plain(item, exclude_unset=exclude_unset)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [plain(item) for item in value]
+        return [plain(item, exclude_unset=exclude_unset) for item in value]
     if isinstance(value, tuple):
-        return tuple(plain(item) for item in value)
+        return tuple(plain(item, exclude_unset=exclude_unset) for item in value)
     if isinstance(value, set):
-        return {plain(item) for item in value}
+        return {plain(item, exclude_unset=exclude_unset) for item in value}
     return _copy_opaque(value)
 
 
@@ -98,7 +107,7 @@ def read_only_view(value: Any) -> Any:
     if isinstance(value, (set, frozenset)):
         return frozenset(read_only_view(item) for item in value)
     if isinstance(value, BaseModel):
-        return read_only_view(value.model_dump(mode="python"))
+        return read_only_view(plain(value))
     return _copy_opaque(value)
 
 

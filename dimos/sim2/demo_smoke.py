@@ -20,6 +20,7 @@ import json
 import socket
 import time
 
+from dimos.core.coordination.blueprint_config.parser import BlueprintConfigParser
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.global_config import global_config
 from dimos.core.transport_factory import make_transport
@@ -35,13 +36,16 @@ def main() -> None:
     parser.add_argument("robot", choices=["g1", "xarm"])
     parser.add_argument("--seconds", type=float, default=10)
     parser.add_argument("--viewer", action="store_true")
+    parser.add_argument("--rerun", action="store_true", help="Include the Rerun bridge and viewer")
     parser.add_argument("--transport", choices=["lcm", "zenoh"], default="zenoh")
     parser.add_argument("--local-router", action="store_true")
     parser.add_argument(
         "--move", action="store_true", help="Check motion through ordinary command streams"
     )
     args = parser.parse_args()
-    global_config.update(simulation="mujoco", viewer="none", transport=args.transport)
+    global_config.update(
+        simulation="mujoco", viewer="rerun" if args.rerun else "none", transport=args.transport
+    )
     router = None
     if args.local_router:
         with socket.socket() as reservation:
@@ -61,7 +65,10 @@ def main() -> None:
     blueprint = replace(blueprint, blueprints=atoms)
     before = time.monotonic()
     try:
-        coordinator = ModuleCoordinator.build(blueprint)
+        parsed = BlueprintConfigParser(blueprint).parse(
+            global_overrides=global_config.model_dump(mode="python")
+        )
+        coordinator = ModuleCoordinator.build(blueprint, parsed_config=parsed)
     except BaseException:
         if router is not None:
             router.stop()

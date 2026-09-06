@@ -13,7 +13,7 @@ uv run dimos --simulation mujoco run xarm7-planner-coordinator
 ```
 
 Both open the native MuJoCo viewer. Disable it with the module override
-`--simulation-module.viewer=false`. To load another native robot-free scene,
+`--simulationmodule.viewer=false`. To load another native robot-free scene,
 pass `--scene-package /absolute/path/to/scene.xml` before `run`. A directory
 containing `scene.xml` also works. Old PimSim catalog aliases are not resolved.
 The defaults are small logistics/workbench scenes in `data/sim2/scenes`.
@@ -33,9 +33,10 @@ uv run python -m dimos.sim2.demo_smoke g1 --local-router --viewer --seconds 15 -
 uv run python -m dimos.sim2.demo_smoke xarm --local-router --viewer --seconds 15 --move
 ```
 
-The check uses the native viewer and suppresses Rerun. Omit `--move` to leave
-the robot holding its starting pose. The router is test setup, not a second
-control path: joint commands still cross the same SHM device interface.
+Add `--rerun` to include the Rerun bridge and viewer. These checks use the same
+configuration parser as the CLI before deploying workers. Omit `--move` to
+leave the robot holding its starting pose. The router is test setup, not a
+second control path: joint commands still cross the same SHM device interface.
 
 ## Configure A Robot
 
