@@ -22,7 +22,7 @@ from dimos.control.tasks.g1_groot_wbc_task.g1_groot_wbc_task import (
     G1_GROOT_KP,
     g1_joints,
 )
-from dimos.sim2.sensors.lidar.models.spherical import Spherical
+from dimos.sim2.sensors.lidar.models.fibonacci import Fibonacci
 from dimos.sim2.sensors.spec import Camera, Imu, Lidar
 from dimos.sim2.spec import ControlInterface, Joint, Mount, RobotConfig
 from dimos.utils.data import LfsPath
@@ -52,7 +52,17 @@ G1_GROOT = RobotConfig(
     ),
     sensors=(
         Imu("imu", Mount("pelvis")),
-        Lidar("lidar", Mount("torso_link", xyz=(0.07, 0.0, 0.42)), Spherical(), rate_hz=5.0),
+        Lidar(
+            "lidar",
+            Mount(
+                "torso_link",
+                xyz=(0.0002835, 0.00003, 0.41618),
+                rpy=(3.141592653589793, 0.04014257279586953, 0.0),
+            ),
+            Fibonacci(),
+            rate_hz=10.0,
+            maximum_world_elevation=0.0,
+        ),
         Camera(
             "camera",
             Mount("torso_link", xyz=(0.07, 0.0, 0.42), rpy=(1.57079632679, 0, -1.57079632679)),

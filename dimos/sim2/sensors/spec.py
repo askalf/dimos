@@ -57,6 +57,8 @@ class Lidar:
     mount: Mount
     model: RayPattern
     rate_hz: float = 10.0
+    # Optional world-frame cutoff in degrees for ideal mapping scans.
+    maximum_world_elevation: float | None = None
 
 
 @dataclass(frozen=True)

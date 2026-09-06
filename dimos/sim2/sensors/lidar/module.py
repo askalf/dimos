@@ -46,6 +46,9 @@ class LidarModule(SensorModule):
         data = self.reader.data
         origin = data.site_xpos[self._site]
         rays = self._rays @ data.site_xmat[self._site].reshape(3, 3).T
+        elevation_limit = self.config.sensor.maximum_world_elevation
+        if elevation_limit is not None:
+            rays = rays[rays[:, 2] <= np.sin(np.deg2rad(elevation_limit)) + 1e-12]
         points = self._raycaster.cast(
             data,
             origin,

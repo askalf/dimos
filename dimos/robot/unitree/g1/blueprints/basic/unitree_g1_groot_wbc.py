@@ -153,7 +153,6 @@ if global_config.simulation == "mujoco":
                 can_pass_under=G1.height_clearance + _G1_NAV_OVERHEAD_SAFETY_MARGIN,
                 can_climb=_G1_NAV_MAX_STEP_HEIGHT,
             ),
-            initial_safe_radius_meters=G1.width_clearance + _G1_NAV_SAFE_RADIUS_MARGIN,
         ),
         ReplanningAStarPlanner.blueprint(
             robot_width=G1.width_clearance,
