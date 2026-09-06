@@ -1,0 +1,61 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""G1 GR00T device configuration. Policies remain in ControlCoordinator."""
+
+from pathlib import Path
+
+from dimos.control.tasks.g1_groot_wbc_task.g1_groot_wbc_task import (
+    G1_GROOT_HOME,
+    G1_GROOT_KD,
+    G1_GROOT_KP,
+    g1_joints,
+)
+from dimos.sim2.sensors.lidar.models.spherical import Spherical
+from dimos.sim2.sensors.spec import Camera, Imu, Lidar
+from dimos.sim2.spec import ControlInterface, Joint, Mount, RobotConfig
+from dimos.utils.data import LfsPath
+
+G1_GROOT = RobotConfig(
+    model=Path(__file__).parent / "assets" / "g1_29dof.xml",
+    meshdir=LfsPath("g1_urdf/meshes"),
+    root_body="pelvis",
+    floating=True,
+    control=ControlInterface.WHOLE_BODY,
+    joints=tuple(
+        Joint(
+            name=name,
+            model_name=name.split("/", 1)[1] + "_joint",
+            actuator=name.split("/", 1)[1] + "_joint",
+            home=home,
+            kp=kp,
+            kd=kd,
+        )
+        for name, home, kp, kd in zip(
+            g1_joints,
+            G1_GROOT_HOME,
+            G1_GROOT_KP,
+            G1_GROOT_KD,
+            strict=True,
+        )
+    ),
+    sensors=(
+        Imu("imu", Mount("pelvis")),
+        Lidar("lidar", Mount("torso_link", xyz=(0.07, 0.0, 0.42)), Spherical(), rate_hz=5.0),
+        Camera(
+            "camera",
+            Mount("torso_link", xyz=(0.07, 0.0, 0.42), rpy=(1.57079632679, 0, -1.57079632679)),
+        ),
+    ),
+)

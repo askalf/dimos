@@ -127,7 +127,7 @@ G1_GROOT_KD: list[float] = [
 
 # Default joint angles for all 29 G1 joints. The policy treats these as
 # its zero-offset pose.
-_DEFAULT_POSITIONS_29 = [
+G1_GROOT_HOME = [
     -0.1,
     0.0,
     0.0,
@@ -230,7 +230,7 @@ class G1GrootWBCTaskConfig:
     walk_onnx: str | Path
     joint_names: list[str]
     all_joint_names: list[str]
-    default_positions_29: list[float] = field(default_factory=lambda: list(_DEFAULT_POSITIONS_29))
+    default_positions_29: list[float] = field(default_factory=lambda: list(G1_GROOT_HOME))
     priority: int = 50
     decimation: int = 10
     action_scale: float = 0.25

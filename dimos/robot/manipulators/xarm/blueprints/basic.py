@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.global_config import global_config
 from dimos.robot.manipulators.common.blueprints import coordinator, planner, trajectory_task
 from dimos.robot.manipulators.common.sim import mujoco_if_sim
 from dimos.robot.manipulators.xarm.config import (
@@ -49,7 +50,28 @@ dual_xarm6_planner_coordinator = autoconnect(
     ),
 )
 
-_xarm7_hw = xarm7_hardware("arm", gripper=True, mock_without_address=True)
+_xarm7_devices = []
+if global_config.simulation:
+    from dimos.robot.manipulators.xarm.config import make_xarm7_sim_robot_config
+    from dimos.robot.manipulators.xarm.sim2 import XARM7
+    from dimos.sim2.blueprint import simulated_hardware, simulation_blueprint
+    from dimos.sim2.scene import scene_path
+    from dimos.sim2.spec import RobotInstance
+
+    if global_config.simulation != "mujoco":
+        raise ValueError("xarm7-planner-coordinator supports --simulation mujoco")
+    _xarm7_hw = simulated_hardware(XARM7, sim_id="xarm7", robot_id="arm")
+    _xarm7_model = make_xarm7_sim_robot_config()
+    _xarm7_devices = [
+        simulation_blueprint(
+            scene=scene_path(global_config.scene_package, "workbench.xml"),
+            robots={"arm": RobotInstance(XARM7, xyz=(0.0, 0.0, 0.12))},
+            sim_id="xarm7",
+        )
+    ]
+else:
+    _xarm7_hw = xarm7_hardware("arm", gripper=True, mock_without_address=True)
+    _xarm7_model = make_xarm7_model_config(add_gripper=True, gripper_hardware_id="arm")
 
 
 def _gripper_task() -> TaskConfig:
@@ -62,12 +84,8 @@ def _gripper_task() -> TaskConfig:
 
 
 xarm7_planner_coordinator = autoconnect(
-    planner(
-        model=make_xarm7_model_config(
-            add_gripper=True,
-            gripper_hardware_id="arm",
-        )
-    ),
+    *_xarm7_devices,
+    planner(model=_xarm7_model),
     coordinator(
         hardware=[_xarm7_hw],
         tasks=[trajectory_task(_xarm7_hw), _gripper_task()],
