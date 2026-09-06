@@ -20,12 +20,14 @@ from dataclasses import dataclass
 import threading
 import time
 from typing import Any
+from uuid import uuid4
 
 import mujoco
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
+from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.sim2.control.interface import descriptor
 from dimos.sim2.ipc.abi import (
     ABI_VERSION,
@@ -34,7 +36,8 @@ from dimos.sim2.ipc.abi import (
     FrameLayout,
 )
 from dimos.sim2.ipc.channel import FrameMetadata, RobotChannel
-from dimos.sim2.scene import load_scene, quaternion
+from dimos.sim2.scene import describe_scene, load_scene
+from dimos.sim2.scene_types import EntityState, RegionState, SceneState, SceneUpdate
 from dimos.sim2.sensors.spec import Imu
 from dimos.sim2.spec import ControlInterface, RobotConfig, WorldConfig
 
@@ -58,12 +61,40 @@ class RobotBinding:
 class SimulationRuntime:
     def __init__(self, config: WorldConfig, sim_id: str) -> None:
         self.config = config
-        self.model = load_scene(config)
+        self.world_id = uuid4().hex
+        self.description = describe_scene(config.scene)
+        self.model = load_scene(config, self.description)
         self.data = mujoco.MjData(self.model)
         self.lock = threading.RLock()
         self.episode = 0
         self.tick = 0
         self._closed = False
+        self.paused = False
+        self._bodies = {
+            key: self.model.body(e.body).id for key, e in self.description.entities.items()
+        }
+        self._joints = {
+            key: self.model.joint(j.joint).id for key, j in self.description.joints.items()
+        }
+        self._region_bodies = {
+            key: self.model.body(r.body).id for key, r in self.description.regions.items()
+        }
+        if set(self._bodies) & set(config.robots):
+            raise ValueError("scene entity IDs and robot IDs must be disjoint")
+        # Bind ownership once; the physics loop does no semantic/name traversal.
+        owners = {body: key for key, body in self._bodies.items()}
+        self._geom_owners: list[str] = []
+        for body in self.model.geom_bodyid:
+            ancestor = int(body)
+            while ancestor and ancestor not in owners:
+                ancestor = int(self.model.body_parentid[ancestor])
+            self._geom_owners.append(owners.get(ancestor, self.model.body(int(body)).name))
+        self._entity_geoms = {
+            key: np.array(
+                [i for i, owner in enumerate(self._geom_owners) if owner == key], dtype=int
+            )
+            for key in self._bodies
+        }
         self.robots: dict[str, RobotBinding] = {}
         nstate = mujoco.mj_stateSize(self.model, STATE)
         self.state = np.empty(nstate)
@@ -119,56 +150,176 @@ class SimulationRuntime:
                     np.array([j.offset for j in definition.joints]),
                     imu,
                 )
-            self.reset()
-        except BaseException:
-            self.close()
-            raise
-
-    def reset(self) -> None:
-        with self.lock:
-            self.episode += 1
             mujoco.mj_resetData(self.model, self.data)
             for binding in self.robots.values():
-                home = np.array([j.home for j in binding.config.joints])
-                self.data.qpos[binding.qpos] = home * binding.scale + binding.offset
+                self.data.qpos[binding.qpos] = (
+                    np.array([j.home for j in binding.config.joints]) * binding.scale
+                    + binding.offset
+                )
                 for joint, aid in zip(binding.config.joints, binding.actuators, strict=True):
                     self.data.ctrl[aid] = (
                         joint.home * joint.ctrl_scale + joint.ctrl_offset
                         if joint.mode == "position"
                         else 0.0
                     )
-                binding.channel.set_episode(self.episode)
-                binding.enabled = True
-            mujoco.mj_forward(self.model, self.data)
-            self._publish(force_snapshot=True)
-            for binding in self.robots.values():
-                binding.channel.set_lifecycle("ready")
-            self.snapshots.set_lifecycle("ready")
+            self._apply_update(self.description.initial)
+            self._baseline = np.empty(nstate)
+            mujoco.mj_getState(self.model, self.data, self._baseline, STATE)
+            self.reset()
+        except BaseException:
+            self.close()
+            raise
+
+    def reset(self, initial: SceneUpdate | None = None) -> SceneState:
+        with self.lock:
+            update = initial if initial is not None else SceneUpdate()
+            self._validate_update(update)
+            mujoco.mj_setState(self.model, self.data, self._baseline, STATE)
+            self._apply_update(update)
+            return self._finish_change()
+
+    def _finish_change(self) -> SceneState:
+        self.episode += 1
+        mujoco.mj_forward(self.model, self.data)
+        for binding in self.robots.values():
+            binding.channel.set_episode(self.episode)
+            binding.enabled = True
+        self._publish(force_snapshot=True)
+        for binding in self.robots.values():
+            binding.channel.set_lifecycle("ready")
+        self.snapshots.set_lifecycle("ready")
+        return self.scene_state()
+
+    def _validate_update(self, update: SceneUpdate) -> None:
+        for key in update.poses:
+            if key in self.robots:
+                body = self.robots[key].root
+            else:
+                entity = self.description.entities[key]
+                if not entity.movable:
+                    raise ValueError(f"{key!r} is fixed geometry; edit the scene file instead")
+                body = self._bodies[key]
+            joint = int(self.model.body_jntadr[body])
+            if self.model.body_mocapid[body] < 0 and (
+                joint < 0 or self.model.jnt_type[joint] != mujoco.mjtJoint.mjJNT_FREE
+            ):
+                raise ValueError(f"{key!r} has no movable root")
+        for key, value in update.joints.items():
+            joint = self._joints[key]
+            if self.model.jnt_type[joint] not in (
+                mujoco.mjtJoint.mjJNT_HINGE,
+                mujoco.mjtJoint.mjJNT_SLIDE,
+            ):
+                raise ValueError(f"{key!r} is not a scalar fixture joint")
+            if self.model.jnt_limited[joint] and not (
+                self.model.jnt_range[joint, 0] <= value <= self.model.jnt_range[joint, 1]
+            ):
+                raise ValueError(
+                    f"{key!r}: {value} is outside joint limits {self.model.jnt_range[joint]}"
+                )
+
+    def _apply_update(self, update: SceneUpdate) -> None:
+        self._validate_update(update)
+        for key, pose in update.poses.items():
+            body = self.robots[key].root if key in self.robots else self._bodies[key]
+            xyz = pose.position.to_tuple()
+            x, y, z, w = pose.orientation.to_tuple()
+            mid = int(self.model.body_mocapid[body])
+            if mid >= 0:
+                self.data.mocap_pos[mid] = xyz
+                self.data.mocap_quat[mid] = (w, x, y, z)
+            else:
+                jid = int(self.model.body_jntadr[body])
+                q, v = int(self.model.jnt_qposadr[jid]), int(self.model.jnt_dofadr[jid])
+                self.data.qpos[q : q + 7] = (*xyz, w, x, y, z)
+                self.data.qvel[v : v + 6] = 0
+        for key, value in update.joints.items():
+            jid = self._joints[key]
+            self.data.qpos[self.model.jnt_qposadr[jid]] = value
+            self.data.qvel[self.model.jnt_dofadr[jid]] = 0
+
+    def set_scene_state(self, update: SceneUpdate) -> SceneState:
+        with self.lock:
+            self._apply_update(update)
+            return self._finish_change()
+
+    def set_paused(self, paused: bool) -> None:
+        with self.lock:
+            self.paused = paused
+
+    def _body_pose(self, body: int) -> Pose:
+        w, x, y, z = self.data.xquat[body]
+        return Pose(self.data.xpos[body], (x, y, z, w))
+
+    def scene_state(self) -> SceneState:
+        with self.lock:
+            entities: dict[str, EntityState] = {}
+            for key, body in self._bodies.items():
+                geoms = self._entity_geoms[key]
+                if len(geoms):
+                    rotation = self.data.geom_xmat[geoms].reshape(-1, 3, 3)
+                    local = self.model.geom_aabb[geoms]
+                    centers = self.data.geom_xpos[geoms] + np.einsum(
+                        "nij,nj->ni", rotation, local[:, :3]
+                    )
+                    half = np.einsum("nij,nj->ni", np.abs(rotation), local[:, 3:])
+                    lo, hi = np.min(centers - half, axis=0), np.max(centers + half, axis=0)
+                else:
+                    lo = hi = self.data.xpos[body]
+                velocity = np.empty(6)
+                mujoco.mj_objectVelocity(
+                    self.model, self.data, mujoco.mjtObj.mjOBJ_BODY, body, velocity, 0
+                )
+                entities[key] = EntityState(
+                    pose=self._body_pose(body),
+                    velocity=velocity[3:].tolist(),
+                    angular_velocity=velocity[:3].tolist(),
+                    bounds_min=lo.tolist(),
+                    bounds_max=hi.tolist(),
+                )
+            regions: dict[str, RegionState] = {}
+            for key, region in self.description.regions.items():
+                body = self._region_bodies[key]
+                rotation = Rotation.from_matrix(self.data.xmat[body].reshape(3, 3))
+                xyz = self.data.xpos[body] + rotation.apply(region.pose.position.to_tuple())
+                quat = rotation * Rotation.from_quat(region.pose.orientation.to_tuple())
+                regions[key] = RegionState(pose=Pose(xyz, quat.as_quat()), size=region.size)
+            contacts = {
+                tuple(sorted((self._geom_owners[c.geom1], self._geom_owners[c.geom2])))
+                for c in self.data.contact
+                if c.geom1 >= 0
+                and c.geom2 >= 0
+                and c.dist <= 0.001
+                and self._geom_owners[c.geom1] != self._geom_owners[c.geom2]
+            }
+            return SceneState(
+                world_id=self.world_id,
+                scene_id=self.description.id,
+                generation=self.episode,
+                tick=self.tick,
+                sim_time=float(self.data.time),
+                ts=time.time(),
+                entities=entities,
+                robots={k: self._body_pose(b.root) for k, b in self.robots.items()},
+                joints={
+                    k: float(self.data.qpos[self.model.jnt_qposadr[j]])
+                    for k, j in self._joints.items()
+                },
+                regions=regions,
+                contacts=tuple(sorted(contacts)),
+            )
 
     def set_spawn(
         self, robot_id: str, xyz: tuple[float, float, float], rpy: tuple[float, float, float]
     ) -> None:
-        with self.lock:
-            binding = self.robots[robot_id]
-            if binding.config.floating:
-                jid = self.model.body_jntadr[binding.root]
-                q = self.model.jnt_qposadr[jid]
-                v = self.model.jnt_dofadr[jid]
-                self.data.qpos[q : q + 3] = xyz
-                self.data.qpos[q + 3 : q + 7] = quaternion(rpy)
-                self.data.qvel[v : v + 6] = 0
-            else:
-                mid = self.model.body_mocapid[binding.root]
-                self.data.mocap_pos[mid] = xyz
-                self.data.mocap_quat[mid] = quaternion(rpy)
-            mujoco.mj_forward(self.model, self.data)
-            self.episode += 1
-            for robot in self.robots.values():
-                robot.channel.set_episode(self.episode)
-            self._publish(force_snapshot=True)
+        self.set_scene_state(
+            SceneUpdate(poses={robot_id: Pose(xyz, Rotation.from_euler("xyz", rpy).as_quat())})
+        )
 
     def step(self) -> None:
         with self.lock:
+            if self.paused:
+                return
             for binding in self.robots.values():
                 self._apply(binding)
             mujoco.mj_step(self.model, self.data)

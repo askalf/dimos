@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from dimos.e2e_tests.dim_sim_client import DimSimClient
     from dimos.memory.store.base import Store
     from dimos.memory.stream import Stream
+    from dimos.porcelain.dimos import Dimos
 
 T = TypeVar("T")
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
@@ -94,6 +95,7 @@ class EvalRig(Protocol):
     def setup_env(self, case: InteractiveEval) -> None: ...
     def check_env(self, case: InteractiveEval) -> None: ...
     def instruct(self, text: str) -> None: ...
+    def perform_action(self, action: Callable[[Dimos], None]) -> None: ...
     def sample(
         self, score: Callable[[Store], float], interval_s: float, timeout_s: float
     ) -> list[tuple[float, float]]: ...
@@ -182,12 +184,21 @@ class InteractiveEval(EvalCase):
     timeout_s: float = 300.0
     blueprint: str = "unitree-go2-agentic"
     simulator: str = "dimsim"  # "" = attach to a running dimos / real robot
-    scene: str = "apartment"  # --dimsim-scene name (ScenePackage name later)
-    setup: Callable[[DimSimClient], None] = _no_setup
+    scene: str = "apartment"  # --dimsim-scene or sim2 --scene-package
+    setup: Callable[[DimSimClient], None] | Callable[[Dimos], None] = _no_setup
+    action: Callable[[Dimos], None] | None = None
+
+    def __post_init__(self) -> None:
+        if self.action is not None and self.skill:
+            raise ValueError("choose an action callback or a skill, not both")
+        if self.timeout_s <= 0 or self.interval_s <= 0:
+            raise ValueError("interactive timeout and sample interval must be positive")
 
     def evaluate(self, rig: EvalRig) -> EvalResult:
         rig.setup_env(self)
-        if self.skill:
+        if self.action is not None:
+            rig.perform_action(self.action)
+        elif self.skill:
             rig.call_skill(self.skill, self.skill_args)
         else:
             rig.instruct(self.inputs)

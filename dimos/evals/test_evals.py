@@ -43,6 +43,7 @@ from dimos.evals.types import EvalCase, InteractiveEval, PassiveEval
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import make_vector3
+from dimos.porcelain.dimos import Dimos
 
 
 def _pose(x: float, y: float) -> PoseStamped:
@@ -120,6 +121,9 @@ class FakeRig:
 
     def instruct(self, text: str) -> None:
         self.calls.append(f"instruct:{text}")
+
+    def perform_action(self, action: Callable[[Dimos], None]) -> None:
+        self.calls.append("perform_action")
 
     def sample(
         self, score: Callable[[Any], float], interval_s: float, timeout_s: float

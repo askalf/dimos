@@ -39,6 +39,7 @@ class MjData:
 
 class MjSpec:
     meshdir: str
+    texturedir: str
     worldbody: Any
     # The MjSpec editing API is large (add_mesh, add_body, attach, …); rare
     # accesses are Any, same approach as MjModel.
@@ -70,6 +71,14 @@ class Renderer:
 # --- top-level functions ----------------------------------------------
 
 def mj_forward(model: MjModel, data: MjData) -> None: ...
+def mj_objectVelocity(
+    model: MjModel,
+    data: MjData,
+    objtype: int,
+    objid: int,
+    result: NDArray[np.float64],
+    flg_local: int,
+) -> None: ...
 def mj_step(model: MjModel, data: MjData, nstep: int = ...) -> None: ...
 def mj_resetData(model: MjModel, data: MjData) -> None: ...
 def mj_stateSize(model: MjModel, spec: int) -> int: ...
@@ -118,6 +127,7 @@ class mjtGeom:
     mjGEOM_MESH: int
 
 class mjtJoint:
+    mjJNT_FREE: int
     mjJNT_HINGE: int
     mjJNT_SLIDE: int
 

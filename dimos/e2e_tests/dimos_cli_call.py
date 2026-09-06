@@ -95,13 +95,12 @@ class DimosCliCall:
             return
 
         try:
-            # Send SIGTERM to the entire process group so child processes
-            # (e.g. the mujoco viewer subprocess) are also terminated.
+            # Let the coordinator stop its workers and unlink owned resources.
+            # Signalling the whole group here kills workers during that cleanup.
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                process.send_signal(signal.SIGTERM)
             except ProcessLookupError:
-                # The group is already gone: the process exited on its own
-                # and an earlier poll()/wait() reaped it.
+                # The owned process already exited and was reaped.
                 return
 
             # Record the time when we sent the kill signal

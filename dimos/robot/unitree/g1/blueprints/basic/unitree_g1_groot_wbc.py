@@ -120,12 +120,12 @@ if global_config.simulation == "mujoco":
     from dimos.mapping.voxels.module import VoxelGridMapper
     from dimos.robot.unitree.g1.sim2 import G1_GROOT
     from dimos.sim2.blueprint import simulated_hardware, simulation_blueprint
-    from dimos.sim2.scene import scene_path
-    from dimos.sim2.spec import RobotInstance
+    from dimos.sim2.scene import scene_path, scene_robot
 
+    _scene = scene_path(global_config.scene_package, "logistics.xml")
     _backend = simulation_blueprint(
-        scene=scene_path(global_config.scene_package, "logistics.xml"),
-        robots={"g1": RobotInstance(G1_GROOT, xyz=(0.0, 0.0, 0.793))},
+        scene=_scene,
+        robots={"g1": scene_robot(_scene, G1_GROOT, "g1", default=(0.0, 0.0, 0.793))},
         sim_id="g1-groot",
     )
     _sim_hardware = simulated_hardware(G1_GROOT, sim_id="g1-groot", robot_id="g1")

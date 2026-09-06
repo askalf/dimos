@@ -30,7 +30,9 @@ from pydantic import InstanceOf
 
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
+from dimos.core.stream import Out
 from dimos.sim2.runtime import SimulationRuntime
+from dimos.sim2.scene_types import SceneDescription, SceneState, SceneUpdate
 from dimos.sim2.spec import WorldConfig
 from dimos.spec.utils import Spec
 from dimos.utils.logging_config import setup_logger
@@ -51,6 +53,7 @@ class SimulationModuleConfig(ModuleConfig):
 class SimulationModule(Module):
     config: SimulationModuleConfig
     dedicated_worker = True
+    sim_truth: Out[SceneState]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -61,6 +64,8 @@ class SimulationModule(Module):
         self._viewer: subprocess.Popen[bytes] | None = None
         self._lifecycle_lock = threading.RLock()
         self._failure: str | None = None
+        self._truth_enabled = False
+        self._truth_thread: threading.Thread | None = None
 
     @rpc
     def build(self) -> None:
@@ -132,6 +137,57 @@ class SimulationModule(Module):
             for binding in runtime.robots.values():
                 binding.channel.set_lifecycle("faulted")
 
+    def _publish_truth(self) -> None:
+        while not self._stop.wait(0.1):
+            if self._truth_enabled:
+                try:
+                    self.sim_truth.publish(self.scene_state())
+                except Exception:
+                    logger.exception("sim2 evaluation truth publication failed")
+                    self._truth_enabled = False
+                    return
+
+    @rpc
+    def set_truth_enabled(self, enabled: bool) -> None:
+        """Enable the privileged 10 Hz sim_truth stream for explicit evaluation recording."""
+        with self._lifecycle_lock:
+            self._require_runtime()
+            if enabled and (self._truth_thread is None or not self._truth_thread.is_alive()):
+                self._truth_thread = threading.Thread(target=self._publish_truth, daemon=True)
+                self._truth_thread.start()
+            self._truth_enabled = enabled
+
+    def _require_runtime(self) -> SimulationRuntime:
+        if self._runtime is None:
+            raise RuntimeError("simulation is not running")
+        if self._failure is not None:
+            raise RuntimeError(f"simulation physics failed: {self._failure}")
+        return self._runtime
+
+    @rpc
+    def describe_scene(self) -> SceneDescription:
+        """List named entities, fixture joints, regions and authored defaults."""
+        with self._lifecycle_lock:
+            return self._require_runtime().description
+
+    @rpc
+    def scene_state(self) -> SceneState:
+        """Inspect one coherent privileged physical snapshot, including contact pairs."""
+        with self._lifecycle_lock:
+            return self._require_runtime().scene_state()
+
+    @rpc
+    def set_scene_state(self, update: SceneUpdate) -> SceneState:
+        """Edit existing named bodies/joints atomically; does not reset controllers."""
+        with self._lifecycle_lock:
+            return self._require_runtime().set_scene_state(SceneUpdate.model_validate(update))
+
+    @rpc
+    def set_paused(self, paused: bool) -> None:
+        """Pause only physics, keeping module RPCs and state inspection available."""
+        with self._lifecycle_lock:
+            self._require_runtime().set_paused(paused)
+
     @rpc
     def status(self) -> dict[str, Any]:
         with self._lifecycle_lock:
@@ -140,10 +196,15 @@ class SimulationModule(Module):
                 return {"running": False, "error": self._failure}
             with runtime.lock:
                 return {
-                    "running": self._failure is None and not self._stop.is_set(),
+                    "running": self._failure is None
+                    and not self._stop.is_set()
+                    and self._thread is not None
+                    and self._thread.is_alive(),
                     "sim_time": float(runtime.data.time),
                     "steps": runtime.tick,
                     "episode": runtime.episode,
+                    "paused": runtime.paused,
+                    "truth_enabled": self._truth_enabled,
                     "error": self._failure,
                     "robots": {
                         name: runtime.data.xpos[b.root].tolist()
@@ -152,11 +213,12 @@ class SimulationModule(Module):
                 }
 
     @rpc
-    def reset(self) -> None:
+    def reset(self, initial: SceneUpdate | None = None) -> SceneState:
+        """Restore authored physical state, then overrides; controller reset is application-owned."""
         with self._lifecycle_lock:
-            if self._runtime is None:
-                raise RuntimeError("simulation is not running")
-            self._runtime.reset()
+            return self._require_runtime().reset(
+                SceneUpdate.model_validate(initial) if initial is not None else None
+            )
 
     @rpc
     def set_spawn(
@@ -173,6 +235,10 @@ class SimulationModule(Module):
     @rpc
     def stop(self) -> None:
         self._stop.set()
+        if self._truth_thread is not None:
+            self._truth_thread.join(timeout=5)
+            if self._truth_thread.is_alive():
+                raise RuntimeError("evaluation truth publisher did not stop")
         if self._thread is not None:
             self._thread.join(timeout=5)
             if self._thread.is_alive():

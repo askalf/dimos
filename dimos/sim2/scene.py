@@ -23,8 +23,10 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
+from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.sim2.scene_types import SceneDescription
 from dimos.sim2.sensors.spec import Camera, Imu
-from dimos.sim2.spec import WorldConfig
+from dimos.sim2.spec import RobotConfig, RobotInstance, WorldConfig
 from dimos.utils.data import LfsPath
 
 
@@ -32,8 +34,12 @@ def quaternion(rpy: tuple[float, float, float]) -> NDArray[np.float64]:
     return np.asarray(Rotation.from_euler("xyz", rpy).as_quat(scalar_first=True), dtype=np.float64)
 
 
-def load_scene(config: WorldConfig) -> mujoco.MjModel:
+def load_scene(config: WorldConfig, description: SceneDescription | None = None) -> mujoco.MjModel:
     world = mujoco.MjSpec.from_file(str(config.scene))
+    description = description if description is not None else describe_scene(config.scene)
+    for geom in world.geoms:
+        if geom.group in description.hidden_geom_groups:
+            geom.rgba[3] = 0
     world.option.timestep = config.timestep
     world.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     for robot_id, instance in config.robots.items():
@@ -114,8 +120,44 @@ def scene_path(value: str | None, default: str) -> Path:
     if value is None or value == "none":
         return LfsPath("sim2/scenes") / default
     path = Path(value).expanduser()
+    if not path.exists() and len(path.parts) == 1:
+        path = LfsPath("sim2/scenes") / path
     if path.is_dir():
         path = path / "scene.xml"
     if not path.is_file():
-        raise FileNotFoundError(f"sim2 scene must be an MJCF file or scene directory: {path}")
-    return path
+        names = ", ".join(list_scenes())
+        raise FileNotFoundError(f"sim2 scene {value!r} is not installed; available: {names}")
+    return path.resolve()
+
+
+def list_scenes() -> list[str]:
+    """List installed native scene names without loading or compiling them."""
+    root = Path(str(LfsPath("sim2/scenes")))
+    return sorted(
+        [p.name for p in root.iterdir() if p.is_dir() and (p / "scene.xml").is_file()]
+        + [p.name for p in root.glob("*.xml")]
+    )
+
+
+def describe_scene(path: Path) -> SceneDescription:
+    """Read the optional semantic sidecar; raw MJCF remains runnable without it."""
+    metadata = path.with_suffix(".json")
+    if not metadata.is_file():
+        return SceneDescription(id=path.parent.name if path.name == "scene.xml" else path.stem)
+    return SceneDescription.model_validate_json(metadata.read_text())
+
+
+def scene_robot(
+    path: Path, config: RobotConfig, spawn: str, *, default: tuple[float, float, float]
+) -> RobotInstance:
+    """Apply a scene's named robot placement, or the caller's explicit default."""
+    description = describe_scene(path)
+    if description.spawns and spawn not in description.spawns:
+        raise ValueError(
+            f"scene {description.id!r} has no authored {spawn!r} placement; "
+            f"available: {', '.join(description.spawns)}"
+        )
+    pose = description.spawns.get(spawn, Pose(*default))
+    return RobotInstance(
+        config, xyz=pose.position.to_tuple(), rpy=pose.orientation.to_euler().to_tuple()
+    )

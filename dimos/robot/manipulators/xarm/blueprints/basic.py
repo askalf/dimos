@@ -19,6 +19,9 @@ from __future__ import annotations
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.robot.manipulators.common.blueprints import coordinator, planner, trajectory_task
 from dimos.robot.manipulators.common.sim import mujoco_if_sim
 from dimos.robot.manipulators.xarm.config import (
@@ -55,17 +58,26 @@ if global_config.simulation:
     from dimos.robot.manipulators.xarm.config import make_xarm7_sim_robot_config
     from dimos.robot.manipulators.xarm.sim2 import XARM7
     from dimos.sim2.blueprint import simulated_hardware, simulation_blueprint
-    from dimos.sim2.scene import scene_path
-    from dimos.sim2.spec import RobotInstance
+    from dimos.sim2.scene import scene_path, scene_robot
 
     if global_config.simulation != "mujoco":
         raise ValueError("xarm7-planner-coordinator supports --simulation mujoco")
     _xarm7_hw = simulated_hardware(XARM7, sim_id="xarm7", robot_id="arm")
-    _xarm7_model = make_xarm7_sim_robot_config()
+    _scene = scene_path(global_config.scene_package, "workbench.xml")
+    _arm = scene_robot(_scene, XARM7, "xarm7", default=(0.0, 0.0, 0.12))
+    _xarm7_model = make_xarm7_sim_robot_config().model_copy(
+        update={
+            "base_pose": PoseStamped(
+                position=Vector3(*_arm.xyz),
+                orientation=Quaternion.from_euler(Vector3(*_arm.rpy)),
+                frame_id="world",
+            ),
+        }
+    )
     _xarm7_devices = [
         simulation_blueprint(
-            scene=scene_path(global_config.scene_package, "workbench.xml"),
-            robots={"arm": RobotInstance(XARM7, xyz=(0.0, 0.0, 0.12))},
+            scene=_scene,
+            robots={"arm": _arm},
             sim_id="xarm7",
         )
     ]

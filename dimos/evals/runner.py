@@ -28,12 +28,15 @@ import json
 from pathlib import Path
 import subprocess
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from dimos.constants import STATE_DIR
 from dimos.core.resource import CompositeResource
+from dimos.evals.sim2 import SceneRecorder, fresh_states
 from dimos.evals.types import EvalCase, EvalResult, InteractiveEval, ResponseT, Suite
+from dimos.porcelain.dimos import Dimos
 from dimos.protocol.service.spec import BaseConfig, Configurable
+from dimos.sim2.scene_types import SceneControlSpec
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
@@ -43,6 +46,7 @@ if TYPE_CHECKING:
     from dimos.e2e_tests.dimos_cli_call import DimosCliCall
     from dimos.memory.store.base import Store
     from dimos.memory.stream import Stream
+    from dimos.sim2.scene_types import SceneState
 
 logger = setup_logger()
 
@@ -103,6 +107,9 @@ class EvalRunner(Configurable, CompositeResource):
         self._model: BaseChatModel | None = None
         self._proc: DimosCliCall | None = None
         self._sim: DimSimClient | None = None
+        self._app: Dimos | None = None
+        self._initial_state: SceneState | None = None
+        self._live_db = self.config.live_db
         self._run_dir: Path | None = None
 
     # -- run lifecycle -----------------------------------------------------------
@@ -147,19 +154,28 @@ class EvalRunner(Configurable, CompositeResource):
 
     def _guarded(self, case: EvalCase) -> EvalResult:
         t0 = time.monotonic()
+        result = EvalResult(case_id=case.id, error="interrupted")
         try:
             result = case.evaluate(self)
             transcript = self.run_dir / f"{case.id}.jsonl"
-            return replace(
+            result = replace(
                 result,
                 duration_s=time.monotonic() - t0,
                 passed=result.score >= self.config.threshold and not result.error,
                 transcript=str(transcript) if transcript.exists() else result.transcript,
             )
         except Exception as e:
-            return EvalResult(case_id=case.id, error=repr(e), duration_s=time.monotonic() - t0)
+            result = EvalResult(case_id=case.id, error=repr(e), duration_s=time.monotonic() - t0)
         finally:
-            self.teardown_env()
+            try:
+                self.teardown_env()
+            except Exception as error:
+                result = replace(
+                    result,
+                    passed=False,
+                    error=f"{result.error}; cleanup: {error!r}".lstrip("; "),
+                )
+        return result
 
     @property
     def run_dir(self) -> Path:
@@ -204,7 +220,7 @@ class EvalRunner(Configurable, CompositeResource):
     def live_store(self) -> Store:
         from dimos.memory.store.sqlite import SqliteStore
 
-        return SqliteStore(path=self.config.live_db, must_exist=True)
+        return SqliteStore(path=self._live_db, must_exist=True)
 
     def encode(self, stream: Stream[Any, Any]) -> list[dict[str, Any]]:
         """mem2 Stream -> model-legible content blocks (the surface under test).
@@ -345,32 +361,115 @@ class EvalRunner(Configurable, CompositeResource):
 
             proc = DimosCliCall()
             proc.simulator = case.simulator
-            proc.global_args = ["--dimsim-scene", case.scene]
+            proc.global_args = [
+                "--scene-package" if case.simulator == "mujoco" else "--dimsim-scene",
+                case.scene,
+            ]
             proc.demo_args = ["run", *case.blueprint.split()]
+            if case.simulator == "mujoco":
+                self._live_db = str((self.run_dir / f"{case.id}.db").resolve())
+                proc.demo_args.append("sim2-eval-recording")
+                proc.extra_env["SCENERECORDER__DB_PATH"] = self._live_db
             proc.start()
             self._proc = proc
-        if not self._wait_mcp(self.config.launch_timeout_s):
+        if case.action is None and not self._wait_mcp(self.config.launch_timeout_s):
             raise RuntimeError(f"MCP at {self.mcp_url} not ready — is dimos up?")
-        if case.setup is not _no_setup:
+        if case.simulator == "mujoco" or case.action is not None:
+            self._connect_app()
+        if case.simulator == "mujoco":
+            assert self._app is not None
+            self._wait_sim2_ready()
+            sim_module = cast("SceneControlSpec", self._app.get_module("SimulationModule"))
+            if case.setup is not _no_setup:
+                cast("Callable[[Dimos], None]", case.setup)(self._app)
+            self._initial_state = sim_module.scene_state()
+            (self.run_dir / f"{case.id}.setup.json").write_text(
+                self._initial_state.model_dump_json(indent=2)
+            )
+            sim_module.set_truth_enabled(True)
+        elif case.action is not None and case.simulator != "dimsim":
+            assert self._app is not None
+            if case.setup is not _no_setup:
+                cast("Callable[[Dimos], None]", case.setup)(self._app)
+        elif case.setup is not _no_setup:
             from dimos.e2e_tests.dim_sim_client import DimSimClient
 
             sim = DimSimClient()
             sim.start()
             self._sim = sim
-            case.setup(sim)
+            cast("Callable[[DimSimClient], None]", case.setup)(sim)
+
+    def perform_action(self, action: Callable[[Dimos], None]) -> None:
+        if self._app is None:
+            raise RuntimeError("action requires a connected DimOS application")
+        action(self._app)
+
+    def _connect_app(self) -> None:
+        deadline = time.monotonic() + self.config.launch_timeout_s
+        while time.monotonic() < deadline:
+            if self._proc is not None and self._proc.process is not None:
+                code = self._proc.process.poll()
+                if code is not None:
+                    raise RuntimeError(
+                        f"blueprint exited during startup (exit {code}); see its log"
+                    )
+            try:
+                self._app = Dimos.connect(timeout=min(2.0, max(0.1, deadline - time.monotonic())))
+                return
+            except RuntimeError:
+                time.sleep(0.1)
+        raise TimeoutError("DimOS coordinator did not become available")
+
+    def _wait_sim2_ready(self) -> None:
+        assert self._app is not None
+        deadline = time.monotonic() + self.config.launch_timeout_s
+        while time.monotonic() < deadline:
+            if self._proc is not None and self._proc.process is not None:
+                if self._proc.process.poll() is not None:
+                    raise RuntimeError(
+                        "blueprint exited before simulator/recording startup completed"
+                    )
+            try:
+                sim = cast("SceneControlSpec", self._app.get_module("SimulationModule"))
+                recorder = cast("SceneRecorder", self._app.get_module("SceneRecorder"))
+            except KeyError:
+                time.sleep(0.1)
+                continue
+            status = sim.status()
+            if status["error"]:
+                raise RuntimeError(f"simulator startup failed: {status['error']}")
+            if status["running"] and recorder.recording_ready():
+                return
+            time.sleep(0.1)
+        raise TimeoutError("simulator or SceneRecorder did not finish starting")
 
     def teardown_env(self) -> None:
         """Per-case cleanup — the runner owns env lifecycle, cases just declare it."""
-        if self._sim is not None:
-            self._sim.stop()
-            self._sim = None
-        if self._proc is not None:
-            self._proc.stop()
-            self._proc = None
+        failures: list[Exception] = []
+        if self._app is not None:
+            try:
+                if self._initial_state is not None:
+                    cast(
+                        "SceneControlSpec", self._app.get_module("SimulationModule")
+                    ).set_truth_enabled(False)
+            except Exception as error:
+                failures.append(error)
+        resources = (self._app, self._sim, self._proc)
+        self._app, self._sim, self._proc = None, None, None
+        self._initial_state = None
+        for resource in resources:
+            if resource is not None:
+                try:
+                    resource.stop()
+                except Exception as error:
+                    failures.append(error)
+        self._live_db = self.config.live_db
+        if failures:
+            raise ExceptionGroup("eval cleanup failed", failures)
 
     def check_env(self, case: InteractiveEval) -> None:
         if self.config.attach or not case.simulator:
-            if not self.mcp_ready():
+            if case.action is None and not self.mcp_ready():
                 raise RuntimeError(
                     f"{case.id}: attach mode needs a running dimos at {self.mcp_url}"
                 )
@@ -407,6 +506,8 @@ class EvalRunner(Configurable, CompositeResource):
         try:
             while time.monotonic() < deadline:
                 try:
+                    if self._initial_state is not None:
+                        fresh_states(store, self._initial_state, dwell_s=0)
                     value = score(store)
                 except LookupError:
                     value = None  # stream not written yet — keep waiting
@@ -420,7 +521,7 @@ class EvalRunner(Configurable, CompositeResource):
         return series
 
     def _wait_live_store(self, deadline: float) -> Store:
-        path = Path(self.config.live_db)
+        path = Path(self._live_db)
         while not path.exists() and time.monotonic() < deadline:
             time.sleep(1.0)
         return self.live_store()

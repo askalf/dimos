@@ -1,0 +1,138 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from uuid import uuid4
+
+import numpy as np
+import pytest
+
+from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.sim2.runtime import SimulationRuntime
+from dimos.sim2.scene import describe_scene, scene_robot
+from dimos.sim2.scene_types import (
+    SceneDescription,
+    SceneEntity,
+    SceneJoint,
+    SceneRegion,
+    SceneUpdate,
+)
+from dimos.sim2.spec import ControlInterface, Joint, RobotConfig, RobotInstance, WorldConfig
+
+pytestmark = pytest.mark.mujoco
+
+
+@pytest.fixture
+def world(tmp_path):
+    scene = tmp_path / "scene.xml"
+    scene.write_text("""<mujoco><worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="box" pos=".3 0 .5"><freejoint/>
+        <geom type="box" size=".05 .05 .05" mass=".1"/></body>
+      <body name="cabinet" pos="1 0 0"><geom type="box" size=".1 .1 .1"/>
+        <body name="door"><joint name="hinge" range="0 90"/>
+          <geom type="box" size=".01 .1 .1" pos="0 .1 0"/></body></body>
+    </worldbody></mujoco>""")
+    robot = tmp_path / "robot.xml"
+    robot.write_text("""<mujoco><worldbody><body name="base">
+      <body name="tip"><joint name="j"/><geom type="sphere" size=".02" mass="1"/>
+      </body></body></worldbody><actuator><position name="a" joint="j"/></actuator></mujoco>""")
+    metadata = SceneDescription(
+        id="test",
+        entities={
+            "box": SceneEntity(body="box", label="Box", kind="box", movable=True),
+            "cabinet": SceneEntity(body="cabinet", label="Cabinet", kind="cabinet"),
+        },
+        joints={"door": SceneJoint(joint="hinge", entity="cabinet", closed=0, opened=1.5)},
+        regions={
+            "interior": SceneRegion(
+                body="door", kind="containment", pose=Pose(0, 0.1, 0), size=(0.1, 0.1, 0.1)
+            )
+        },
+        initial=SceneUpdate(poses={"box": Pose(0.4, 0, 0.3)}, joints={"door": 0.2}),
+        spawns={"arm": Pose(0, 0, 0.2)},
+    )
+    scene.with_suffix(".json").write_text(metadata.model_dump_json())
+    config = RobotConfig(
+        robot, "base", ControlInterface.MANIPULATOR, (Joint("j", "j", "a", mode="position"),)
+    )
+    runtime = SimulationRuntime(
+        WorldConfig(scene, {"arm": RobotInstance(config, xyz=(0, 0, 0.2))}), uuid4().hex
+    )
+    try:
+        yield runtime
+    finally:
+        runtime.close()
+
+
+def test_scene_edit_and_reset_keep_model_and_restore_authored_baseline(world):
+    model = world.model
+    initial = world.scene_state()
+    changed = world.set_scene_state(
+        SceneUpdate(poses={"box": Pose(0.8, 0.1, 0.6)}, joints={"door": 1.0})
+    )
+    assert changed.entities["box"].pose.position.to_tuple() == pytest.approx((0.8, 0.1, 0.6))
+    assert changed.joints["door"] == 1
+    assert changed.generation == initial.generation + 1
+    for _ in range(32):
+        world.step()
+        reset = world.reset()
+    assert world.model is model
+    assert reset.entities["box"].pose.position.to_tuple() == pytest.approx((0.4, 0, 0.3))
+    assert reset.joints == {"door": 0.2}
+    assert np.all(world.data.qvel == 0)
+    assert reset.sim_time == 0
+    assert world.snapshots.read_observation().metadata.episode_id == reset.generation
+
+
+def test_invalid_edit_is_atomic(world):
+    before = world.scene_state()
+    with pytest.raises(ValueError, match="outside joint limits"):
+        world.set_scene_state(SceneUpdate(poses={"box": Pose(2, 3, 4)}, joints={"door": 99}))
+    assert world.scene_state().entities == before.entities
+    assert world.episode == before.generation
+    with pytest.raises(ValueError, match="fixed geometry"):
+        world.set_scene_state(SceneUpdate(poses={"cabinet": Pose(0, 0, 1)}))
+
+
+def test_reset_overrides_do_not_replace_baseline(world):
+    override = world.reset(SceneUpdate(poses={"box": Pose(0.7, 0, 0.5)}))
+    assert override.entities["box"].pose.position.x == 0.7
+    assert world.reset().entities["box"].pose.position.x == 0.4
+
+
+def test_region_tracks_joint_and_bounds_are_world_space(world):
+    before = world.scene_state()
+    after = world.set_scene_state(SceneUpdate(joints={"door": 1}))
+    assert after.regions["interior"].pose.position != before.regions["interior"].pose.position
+    assert before.entities["box"].bounds_min == pytest.approx((0.35, -0.05, 0.25))
+    assert before.entities["box"].bounds_max == pytest.approx((0.45, 0.05, 0.35))
+
+
+def test_pause_and_pose_wire_round_trip(world):
+    world.set_paused(True)
+    world.step()
+    assert world.tick == 0
+    encoded = SceneUpdate(poses={"arm": Pose(1, 2, 3)}).model_dump_json()
+    world.set_scene_state(SceneUpdate.model_validate_json(encoded))
+    assert world.scene_state().robots["arm"].position.to_tuple() == (1, 2, 3)
+    world.set_paused(False)
+    world.step()
+    assert world.tick == 1
+
+
+def test_authored_missing_robot_spawn_is_not_a_floor_default(world):
+    config = world.config.robots["arm"].config
+    with pytest.raises(ValueError, match="no authored 'other' placement"):
+        scene_robot(world.config.scene, config, "other", default=(0, 0, 0))
+    assert describe_scene(world.config.scene).id == "test"
