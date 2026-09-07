@@ -14,7 +14,10 @@
 
 """Robot-local M20 integration for the current DimOS 3D navigation stack."""
 
-from typing import Any
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
@@ -38,6 +41,17 @@ from dimos.robot.deeprobotics.m20.constants import (
     ROTATION_DIAMETER_M,
 )
 from dimos.visualization.vis_module import vis_module
+
+if TYPE_CHECKING:
+    from dimos.core.coordination.blueprints import TransportSpec
+    from dimos.core.stream import Transport
+
+if global_config.simulation == "mujoco":
+    from dimos.control.coordinator import ControlCoordinator, TaskConfig
+    from dimos.hardware.whole_body.spec import WholeBodyConfig
+    from dimos.robot.deeprobotics.m20.sim2 import ASSETS, M20, POLICY_PATH
+    from dimos.sim2.blueprint import simulated_hardware, simulation_blueprint
+    from dimos.sim2.scene import scene_path, scene_robot
 
 VOXEL_SIZE_M = 0.1
 PLANNER_VIZ_HZ = 0.0
@@ -111,6 +125,28 @@ def _m20_rerun_blueprint() -> Any:
     )
 
 
+def _m20_sim_rerun_blueprint() -> Any:
+    import rerun.blueprint as rrb
+
+    return rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Vertical(
+                rrb.Spatial2DView(origin="world/color_image", name="RGB"),
+                rrb.Spatial2DView(origin="world/depth_image", name="Depth"),
+            ),
+            rrb.Spatial3DView(origin="world", name="M20 KronkNav"),
+            column_shares=[1, 2],
+        ),
+        rrb.TimePanel(state="hidden"),
+    )
+
+
+def _static_sim_robot_body(rr: Any) -> list[Any]:
+    body = _static_robot_body(rr)
+    body[1] = rr.Transform3D(parent_frame="tf#/m20/base_link")
+    return body
+
+
 _rerun_config = {
     "blueprint": _m20_rerun_blueprint,
     "tf_axes": 0.35,
@@ -134,12 +170,73 @@ _rerun_config = {
     },
 }
 
+_camera_transports: dict[tuple[str, type], TransportSpec | Transport[Any]]
+
+if global_config.simulation and global_config.simulation != "mujoco":
+    raise ValueError("deeprobotics-m20-kronknav-control only supports --simulation mujoco")
+
+if global_config.simulation == "mujoco":
+    _scene = (
+        scene_path(global_config.scene_package, "logistics.xml")
+        if global_config.scene_package
+        else ASSETS / "stairs.xml"
+    )
+    _sim = simulation_blueprint(
+        scene=_scene,
+        robots={"m20": scene_robot(_scene, M20, "m20", default=(0, 0, 0.6))},
+        sim_id="m20",
+        timestep=0.001,
+    )
+    _hardware = replace(
+        simulated_hardware(M20, sim_id="m20", robot_id="m20"),
+        wb_config=WholeBodyConfig(
+            kp=tuple(j.kp for j in M20.joints), kd=tuple(j.kd for j in M20.joints)
+        ),
+    )
+    _backend = autoconnect(
+        _sim,
+        ControlCoordinator.blueprint(
+            tick_rate=50,
+            hardware=[_hardware],
+            tasks=[
+                TaskConfig(
+                    name="m20_locomotion",
+                    type="m20_locomotion",
+                    auto_start=True,
+                    priority=50,
+                    joint_names=[j.name for j in M20.joints],
+                    params={"model_path": POLICY_PATH, "hardware_id": "m20"},
+                )
+            ],
+        ).remappings([(ControlCoordinator, "twist_command", "cmd_vel")]),
+    )
+    _world_frame, _base_frame, _lidar_topic = "world", "m20/base_link", "pointcloud"
+    _rerun_config = {
+        "blueprint": _m20_sim_rerun_blueprint,
+        "static": {"world/robot_body": _static_sim_robot_body},
+        "visual_override": {"world/planner_path": _render_path, "world/path": None},
+    }
+    _camera_transports = {}
+else:
+    _backend = autoconnect(
+        M20CameraRelay.blueprint(instance_name="M20CameraRelay"),
+        M20Connection.blueprint().remappings([(M20Connection, "odometry", "slam_odom")]),
+    )
+    _world_frame, _base_frame, _lidar_topic = "map", "base_link", "slam_body_points"
+    _camera_transports = {
+        ("front_camera", CompressedVideo): ZenohTransport.spec(
+            ZenohTopic("dimos/front_camera", CompressedVideo, qos=QOS_LATEST_WINS)
+        ),
+        ("rear_camera", CompressedVideo): ZenohTransport.spec(
+            ZenohTopic("dimos/rear_camera", CompressedVideo, qos=QOS_LATEST_WINS)
+        ),
+    }
+
 
 deeprobotics_m20_kronknav_control = (
     autoconnect(
         vis_module(viewer_backend=global_config.viewer, rerun_config=_rerun_config),
-        M20CameraRelay.blueprint(instance_name="M20CameraRelay"),
-        M20Connection.blueprint().remappings([(M20Connection, "odometry", "slam_odom")]),
+        _backend,
         RayTracingVoxelMap.blueprint(
             voxel_size=VOXEL_SIZE_M,
             max_range=25.0,
@@ -147,12 +244,12 @@ deeprobotics_m20_kronknav_control = (
             emit_every=1,
             global_emit_every=50,
             support_min=4,
-            world_frame="map",
+            world_frame=_world_frame,
             worker_threads=3,
-        ).remappings([(RayTracingVoxelMap, "lidar", "slam_body_points")]),
+        ).remappings([(RayTracingVoxelMap, "lidar", _lidar_topic)]),
         MLSPlannerNative.blueprint(
-            world_frame="map",
-            base_frame="base_link",
+            world_frame=_world_frame,
+            base_frame=_base_frame,
             voxel_size=VOXEL_SIZE_M,
             robot_height=PLANNING_HEIGHT_M,
             start_z_offset_m=BASE_LINK_HEIGHT_M,
@@ -187,14 +284,5 @@ deeprobotics_m20_kronknav_control = (
         robot_rotation_diameter=ROTATION_DIAMETER_M,
         transport="zenoh",
     )
-    .transports(
-        {
-            ("front_camera", CompressedVideo): ZenohTransport.spec(
-                ZenohTopic("dimos/front_camera", CompressedVideo, qos=QOS_LATEST_WINS)
-            ),
-            ("rear_camera", CompressedVideo): ZenohTransport.spec(
-                ZenohTopic("dimos/rear_camera", CompressedVideo, qos=QOS_LATEST_WINS)
-            ),
-        }
-    )
+    .transports(_camera_transports)
 )

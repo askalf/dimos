@@ -18,6 +18,7 @@ from uuid import uuid4
 import mujoco
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 from dimos.robot.unitree.g1.sim2 import G1_GROOT
 from dimos.sim2.sensors.lidar.module import LidarModule
@@ -77,3 +78,34 @@ def test_g1_scan_excludes_ceiling_after_mount_rotation(pitch, module, mocker):
     module.capture()
     unfiltered = publish.call_args.args[0].points().numpy()
     assert np.count_nonzero(unfiltered[:, 2] > 2.8) > 100
+
+
+def test_sensor_frame_preserves_ray_origin_and_cloud_timestamp(module, mocker):
+    module.config.sensor = replace(module.config.sensor, output_frame="sensor")
+    model = mujoco.MjModel.from_xml_string("""
+        <mujoco><compiler angle="radian"/><worldbody>
+          <geom type="plane" size="10 10 0.1"/>
+          <body name="g1/pelvis" pos="2 3 1" euler="0 0.3 0.6">
+            <geom type="sphere" size="0.1"/>
+            <site name="g1/sensor/lidar" pos="0.2 0 0.1" euler="3.14159265359 0 0"/>
+          </body>
+        </worldbody></mujoco>
+    """)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    module.reader = mocker.Mock(spec=WorldReader, model=model, data=data, timestamp=456.0)
+    publish = mocker.patch.object(module.pointcloud, "publish")
+    publish_tf = mocker.patch.object(module.tf, "publish")
+    module.open()
+    module.capture()
+    cloud = publish.call_args.args[0]
+    transform = publish_tf.call_args.args[0].transforms[0]
+    assert transform.frame_id == "world"
+    assert cloud.frame_id == transform.child_frame_id == "g1/lidar"
+    assert cloud.ts == transform.ts == 456.0
+    origin = np.array(transform.translation.to_tuple())
+    assert origin == pytest.approx(data.site_xpos[0])
+    rotation = Rotation.from_quat(transform.rotation.to_tuple())
+    world_points = rotation.apply(cloud.points().numpy()) + origin
+    assert len(world_points) > 1000
+    assert world_points[:, 2] == pytest.approx(np.zeros(len(world_points)), abs=1e-5)

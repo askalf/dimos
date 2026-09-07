@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -59,6 +59,8 @@ class Lidar:
     rate_hz: float = 10.0
     # Optional world-frame cutoff in degrees for ideal mapping scans.
     maximum_world_elevation: float | None = None
+    # Sensor-frame clouds retain the ray origin for ray-tracing mappers.
+    output_frame: Literal["world", "sensor"] = "world"
 
 
 @dataclass(frozen=True)
