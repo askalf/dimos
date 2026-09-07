@@ -148,16 +148,20 @@ def describe_scene(path: Path) -> SceneDescription:
 
 
 def scene_robot(
-    path: Path, config: RobotConfig, spawn: str, *, default: tuple[float, float, float]
+    path: Path, config: RobotConfig, spawn: str = "default", *, default: tuple[float, float, float]
 ) -> RobotInstance:
-    """Apply a scene's named robot placement, or the caller's explicit default."""
+    """Place a robot above a named support, or an explicit support default.
+
+    The scene supplies location/orientation; the robot supplies root height.
+    Direct RobotInstance placement and live pose edits remain absolute.
+    """
     description = describe_scene(path)
     if description.spawns and spawn not in description.spawns:
         raise ValueError(
-            f"scene {description.id!r} has no authored {spawn!r} placement; "
+            f"scene {description.id!r} has no authored {spawn!r} support; "
             f"available: {', '.join(description.spawns)}"
         )
-    pose = description.spawns.get(spawn, Pose(*default))
+    pose = description.spawns.get(spawn, Pose(*default)) + Pose(0, 0, config.spawn_height)
     return RobotInstance(
         config, xyz=pose.position.to_tuple(), rpy=pose.orientation.to_euler().to_tuple()
     )

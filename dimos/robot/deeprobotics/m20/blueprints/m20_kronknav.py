@@ -183,7 +183,7 @@ if global_config.simulation == "mujoco":
     )
     _sim = simulation_blueprint(
         scene=_scene,
-        robots={"m20": scene_robot(_scene, M20, "m20", default=(0, 0, 0.6))},
+        robots={"m20": scene_robot(_scene, M20, default=(0, 0, 0))},
         sim_id="m20",
         timestep=0.001,
     )

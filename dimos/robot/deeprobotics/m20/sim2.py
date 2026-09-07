@@ -30,6 +30,7 @@ M20 = RobotConfig(
     meshdir=LfsPath("m20_sdk/meshes"),
     root_body="base_link",
     floating=True,
+    spawn_height=0.6,
     control=ControlInterface.WHOLE_BODY,
     joints=tuple(
         Joint(

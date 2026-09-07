@@ -32,7 +32,8 @@ uv run dimos --simulation mujoco --transport zenoh --viewer rerun \
 The existing blueprint switches its hardware connection to sim2 plus the
 ControlCoordinator actor. Its real-hardware branch remains unchanged.
 The default world contains the SDK-sized stairs; `--scene-package` selects
-another native world. Scenes with explicit spawn metadata need an `m20` spawn.
+another native world. G1 and M20 share the scene's `default` support pose;
+M20 adds its configured 0.6 m root height. No M20-specific scene entry is needed.
 The published actor is automatically active in simulation. Ordinary
 `cmd_vel: Twist` controls forward/lateral velocity and yaw rate; the limits are
 0.7 m/s, 0.5 m/s and 0.7 rad/s. Commands expire after 0.5 s without updates.

@@ -45,16 +45,16 @@ data package. Shared mesh/texture files live once in `scenes/_assets`; no
 PimSim install, bundle-path environment variable, or cooking step is needed
 to run them. The existing DimOS LFS mechanism obtains/extracts the archive.
 
-| Scene name | Named entities | Movable bodies | Fixture joints | Authored robot spawns |
+| Scene name | Named entities | Movable bodies | Fixture joints | Named spawn supports |
 |---|---:|---:|---:|---|
-| `kitchen` | 22 | 5 | 1 | G1, xArm7 |
-| `libero-kitchen-1` | 14 | 2 | 3 | G1 |
-| `libero-kitchen-9` | 15 | 3 | 1 | G1, xArm7 |
-| `robocasa-kitchen-1` | 47 | 3 | 45 | G1 |
-| `robocasa-kitchen-7` | 124 | 3 | 100 | G1 |
-| `ithor-kitchen` | 84 | 28 | 25 | G1 |
-| `procthor-house` | 90 | 51 | 15 | G1 |
-| `hssd-home` | 232 | 0 | 0 | G1 |
+| `kitchen` | 22 | 5 | 1 | `default`, `workbench` |
+| `libero-kitchen-1` | 14 | 2 | 3 | `default` |
+| `libero-kitchen-9` | 15 | 3 | 1 | `default`, `workbench` |
+| `robocasa-kitchen-1` | 47 | 3 | 45 | `default` |
+| `robocasa-kitchen-7` | 124 | 3 | 100 | `default` |
+| `ithor-kitchen` | 84 | 28 | 25 | `default` |
+| `procthor-house` | 90 | 51 | 15 | `default` |
+| `hssd-home` | 232 | 0 | 0 | `default` |
 
 HSSD is a furnished rigid navigation scene. Its furniture is not graspable.
 The RoboCasa entries include three added movable mesh objects on an authored
@@ -62,8 +62,16 @@ counter. ProcTHOR is a multi-room house. These are scene imports, not claims
 of passing the upstream benchmarks. Imported region labels are retained;
 the three starter evals use explicitly authored regions in `kitchen`.
 
-An unsupported robot spawn fails clearly; an arm is never silently placed
-on the floor. Old `office` is not an alias for one of these scenes: its
+Scene spawns are support poses, independent of robot identity.
+G1 and M20 select `default` and add their robot definition's `spawn_height`
+(0.793 m and 0.6 m respectively). An arm selects `workbench` with zero offset.
+For example, a floor at Z=-1.5 places G1's root at -0.707 and M20's at -0.9.
+Missing named supports fail clearly; an arm is never silently placed on a
+floor. Raw scenes without spawn metadata use the blueprint's explicit support
+default. Direct `RobotInstance` and live pose edits still use absolute root
+poses. Scene metadata and the exporter use this single convention.
+
+Old `office` is not an alias for one of these scenes: its
 legacy collision wrapper still needs a separate visual/entity conversion.
 
 ```python

@@ -64,7 +64,7 @@ if global_config.simulation:
         raise ValueError("xarm7-planner-coordinator supports --simulation mujoco")
     _xarm7_hw = simulated_hardware(XARM7, sim_id="xarm7", robot_id="arm")
     _scene = scene_path(global_config.scene_package, "workbench.xml")
-    _arm = scene_robot(_scene, XARM7, "xarm7", default=(0.0, 0.0, 0.12))
+    _arm = scene_robot(_scene, XARM7, "workbench", default=(0.0, 0.0, 0.12))
     _xarm7_model = make_xarm7_sim_robot_config().model_copy(
         update={
             "base_pose": PoseStamped(

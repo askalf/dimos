@@ -125,7 +125,7 @@ if global_config.simulation == "mujoco":
     _scene = scene_path(global_config.scene_package, "logistics.xml")
     _backend = simulation_blueprint(
         scene=_scene,
-        robots={"g1": scene_robot(_scene, G1_GROOT, "g1", default=(0.0, 0.0, 0.793))},
+        robots={"g1": scene_robot(_scene, G1_GROOT, default=(0.0, 0.0, 0.0))},
         sim_id="g1-groot",
     )
     _sim_hardware = simulated_hardware(G1_GROOT, sim_id="g1-groot", robot_id="g1")

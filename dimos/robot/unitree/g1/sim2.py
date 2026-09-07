@@ -32,6 +32,7 @@ G1_GROOT = RobotConfig(
     meshdir=LfsPath("g1_urdf/meshes"),
     root_body="pelvis",
     floating=True,
+    spawn_height=0.793,
     control=ControlInterface.WHOLE_BODY,
     joints=tuple(
         Joint(

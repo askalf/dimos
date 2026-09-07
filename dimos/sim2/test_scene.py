@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
 from uuid import uuid4
 
 import numpy as np
@@ -60,7 +61,7 @@ def world(tmp_path):
             )
         },
         initial=SceneUpdate(poses={"box": Pose(0.4, 0, 0.3)}, joints={"door": 0.2}),
-        spawns={"arm": Pose(0, 0, 0.2)},
+        spawns={"workbench": Pose(0, 0, 0.2)},
     )
     scene.with_suffix(".json").write_text(metadata.model_dump_json())
     config = RobotConfig(
@@ -131,8 +132,39 @@ def test_pause_and_pose_wire_round_trip(world):
     assert world.tick == 1
 
 
-def test_authored_missing_robot_spawn_is_not_a_floor_default(world):
+def test_missing_named_support_is_not_a_floor_default(world):
     config = world.config.robots["arm"].config
-    with pytest.raises(ValueError, match="no authored 'other' placement"):
+    with pytest.raises(ValueError, match="no authored 'other' support"):
         scene_robot(world.config.scene, config, "other", default=(0, 0, 0))
     assert describe_scene(world.config.scene).id == "test"
+
+
+@pytest.mark.parametrize("height", [0.0, 0.6, 0.793])
+def test_named_support_is_reusable_across_robot_heights(world, height):
+    config = replace(world.config.robots["arm"].config, spawn_height=height)
+    support = Pose(1, 2, -1.4, 0, 0, np.sin(0.4), np.cos(0.4))
+    metadata = SceneDescription(id="test", spawns={"default": support})
+    world.config.scene.with_suffix(".json").write_text(metadata.model_dump_json())
+
+    robot = scene_robot(world.config.scene, config, default=(0, 0, 0))
+
+    assert robot.xyz == pytest.approx((1, 2, -1.4 + height))
+    assert robot.rpy == pytest.approx((0, 0, 0.8))
+    assert describe_scene(world.config.scene).spawns["default"] == support
+
+
+def test_robot_height_is_applied_to_explicit_support_default(world):
+    config = replace(world.config.robots["arm"].config, spawn_height=0.6)
+    world.config.scene.with_suffix(".json").unlink()
+
+    robot = scene_robot(world.config.scene, config, default=(1, 2, -1.4))
+
+    assert robot.xyz == pytest.approx((1, 2, -0.8))
+
+
+def test_mounted_arm_root_remains_at_workbench(world):
+    config = world.config.robots["arm"].config
+
+    robot = scene_robot(world.config.scene, config, "workbench", default=(0, 0, 0))
+
+    assert robot.xyz == pytest.approx((0, 0, 0.2))

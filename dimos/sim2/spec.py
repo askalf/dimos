@@ -79,8 +79,12 @@ class RobotConfig:
     sensors: tuple[Sensor, ...] = ()
     meshdir: Path | None = None
     floating: bool = False
+    # Root height above a scene's support pose; explicit instances stay absolute.
+    spawn_height: float = 0.0
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.spawn_height) or self.spawn_height < 0:
+            raise ValueError("robot spawn height must be finite and nonnegative")
         if not self.joints:
             raise ValueError("robot must declare its controlled joints")
         for label, names in (

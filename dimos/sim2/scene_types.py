@@ -94,6 +94,7 @@ class SceneDescription(SceneRecord):
     joints: dict[str, SceneJoint] = Field(default_factory=dict)
     regions: dict[str, SceneRegion] = Field(default_factory=dict)
     initial: SceneUpdate = Field(default_factory=SceneUpdate)
+    # Named support poses, independent of robot root height and identity.
     spawns: dict[str, PoseValue] = Field(default_factory=dict)
     hidden_geom_groups: tuple[int, ...] = ()
     provenance: dict[str, Any] = Field(default_factory=dict)
