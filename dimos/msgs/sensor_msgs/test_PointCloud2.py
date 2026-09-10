@@ -299,7 +299,16 @@ LEGEND_KEYS = {
     "bounds.rows",
     "bounds.omitted_points",
     "bounds.group_m",
+    "bounds.origin_m",
+    "bounds.step_m",
 }
+
+
+def _decoded_bounds(encoded):
+    bounds = encoded["bounds"]
+    origin = np.repeat(bounds["origin_m"], 2)
+    steps = np.repeat(bounds["step_m"], 2)
+    return [[*(origin + np.array(row[:6]) * steps).tolist(), row[6]] for row in bounds["rows"]]
 
 
 def test_agent_encode_scalars_are_exact() -> None:
@@ -516,7 +525,7 @@ def test_agent_encode_bounds_preserve_scaled_translated_returns(scale, offset) -
     assert len(bounds["rows"]) == len(points)
     assert bounds["omitted_points"] == 0
     represented = np.zeros(len(points), dtype=int)
-    for row in bounds["rows"]:
+    for row in _decoded_bounds(encoded):
         lo, hi = np.array(row[:6:2]), np.array(row[1:6:2])
         contained = ((points >= lo) & (points <= hi)).all(axis=1)
         assert contained.sum() == row[6] == 1
@@ -531,12 +540,13 @@ def test_agent_encode_bounds_conserve_half_open_boundary_returns() -> None:
         np.column_stack([np.zeros(len(z)), np.zeros(len(z)), z])
     )
 
-    bounds = cloud.agent_encode()["bounds"]
+    encoded = cloud.agent_encode()
+    bounds = encoded["bounds"]
 
     assert [row[6] for row in bounds["rows"]] == [2, 2, 1, 2]
     assert sum(row[6] for row in bounds["rows"]) == len(z)
     assert bounds["omitted_points"] == 0
-    for row, selected in zip(bounds["rows"], [z[:2], z[2:4], z[4:5], z[5:]], strict=True):
+    for row, selected in zip(_decoded_bounds(encoded), [z[:2], z[2:4], z[4:5], z[5:]], strict=True):
         assert row[4] <= selected.min() <= selected.max() <= row[5]
 
 
@@ -545,10 +555,11 @@ def test_agent_encode_close_z_values_do_not_duplicate_returns() -> None:
     cloud = PointCloud2()
     cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
 
-    bounds = cloud.agent_encode()["bounds"]
+    encoded = cloud.agent_encode()
+    bounds = encoded["bounds"]
 
     assert [row[6] for row in bounds["rows"]] == [1, 1]
-    assert [row[4:6] for row in bounds["rows"]] == [
+    assert [row[4:6] for row in _decoded_bounds(encoded)] == [
         [points[0, 2], points[0, 2]],
         [points[1, 2], points[1, 2]],
     ]
@@ -561,8 +572,9 @@ def test_agent_encode_numeric_bounds_preserve_gaps_and_containment(scale) -> Non
     cloud = PointCloud2.from_numpy(points)
     stored = cloud.points_f32().astype(np.float64)
 
-    bounds = cloud.agent_encode()["bounds"]
-    records = bounds["rows"]
+    encoded = cloud.agent_encode()
+    bounds = encoded["bounds"]
+    records = _decoded_bounds(encoded)
 
     assert bounds["group_m"][1] == 0
     assert [row[6] for row in records] == [2, 2, 1]
@@ -582,13 +594,15 @@ def test_agent_encode_each_bound_has_its_own_z_range() -> None:
     stored = cloud.points_f32().astype(np.float64)
 
     encoded = cloud.agent_encode()
-    rows = encoded["bounds"]["rows"]
+    rows = _decoded_bounds(encoded)
 
     assert [row[6] for row in rows] == [2, 2, 1]
     assert rows[0][5] < rows[1][4] < rows[1][5] < rows[2][4]
     for row, selected in zip(rows, [stored[:2], stored[2:4], stored[4:]], strict=True):
         assert row[4] <= selected[:, 2].min() <= selected[:, 2].max() <= row[5]
-        assert row[5] - row[4] <= np.ptp(selected[:, 2]) + 2 * encoded["scalar_rounding_m"][2]
+        assert row[5] - row[4] <= np.ptp(selected[:, 2]) + 2 * (
+            encoded["scalar_rounding_m"][2] + encoded["bounds"]["step_m"][2]
+        )
 
 
 def test_agent_encode_bound_budget_spreads_evidence_and_reports_omissions() -> None:
@@ -612,7 +626,7 @@ def test_agent_encode_bound_budget_spreads_evidence_and_reports_omissions() -> N
         == encoded["num_points"]
     )
     for z, repeats in zip([0, 1, 2, 3], [20, 1, 1, 1], strict=True):
-        rows = [row for row in table["rows"] if row[4] == row[5] == z]
+        rows = [row for row in _decoded_bounds(encoded) if row[4] == row[5] == z]
         assert rows[0][:4] == [0.0, 0.0, 19.0, 19.0]
         assert rows[-1][:4] == [19.0, 19.0, 0.0, 0.0]
         assert any(6 <= row[2] <= 13 for row in rows)
@@ -620,8 +634,45 @@ def test_agent_encode_bound_budget_spreads_evidence_and_reports_omissions() -> N
         assert all(row[6] == repeats for row in rows)
 
 
+@pytest.mark.parametrize("offset,decimals", [(0, 2), (1e6, 6), (1e16, 2)])
+def test_relative_bounds_decode_outward_within_declared_step(offset, decimals) -> None:
+    lo = np.array([offset + 0.13, -2.27, 0.001])
+    hi = np.array([offset + 2.73, 1.09, 0.004])
+    row = [*np.column_stack([lo, hi]).ravel().tolist(), 5]
+
+    origin, steps, groups = PointCloud2._relative_bounds([[row]], lo, hi, [decimals, 2, 8])
+    encoded = {"bounds": {"origin_m": origin, "step_m": steps, "rows": groups[0]}}
+    (decoded,) = _decoded_bounds(encoded)
+
+    assert all(isinstance(value, int) for value in groups[0][0])
+    assert decoded[6] == 5
+    assert (np.array(decoded[:6:2]) <= lo).all()
+    assert (np.array(decoded[1:6:2]) >= hi).all()
+    assert (np.abs(np.array(decoded[:6]) - row[:6]) <= np.repeat(steps, 2)).all()
+
+
+def test_agent_encode_relative_bounds_preserve_small_coordinates_between_large_extrema() -> None:
+    cloud = PointCloud2()
+    points = np.array([[-8e12, 0, 0], [-0.93, 0, 0], [8e12, 0, 0]])
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
+
+    encoded = cloud.agent_encode()
+    decoded = _decoded_bounds(encoded)
+    middle = next(row for row in decoded if -1 < row[0] < 0)
+
+    assert len(decoded) == 3
+    assert middle[0] <= points[1, 0] <= middle[1]
+    assert np.abs(np.array(middle[:2]) - points[1, 0]).max() <= encoded["bounds"]["step_m"][0]
+    assert middle[6] == 1
+
+
 @pytest.mark.parametrize(
-    "points", [np.array([[-1e308, 0, 0], [1e308, 0, 0]]), np.array([[0, 0, 0], [0, 0, 5e-324]])]
+    "points",
+    [
+        np.array([[-1e308, 0, 0], [1e308, 0, 0]]),
+        np.array([[0, 0, 0], [0, 0, 5e-324]]),
+        np.array([[0, 0, 0], [1e307, 0, 0]]),
+    ],
 )
 def test_agent_encode_rejects_unrepresentable_numeric_ranges(points) -> None:
     cloud = PointCloud2()
