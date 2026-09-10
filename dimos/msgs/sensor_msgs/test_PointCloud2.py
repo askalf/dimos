@@ -286,7 +286,7 @@ LEGEND_KEYS = {
     "window_m.y",
     "window_m.z",
     "centroid_xy_m",
-    "floor_footprint_m2",
+    "xy_footprint_m2",
     "raster",
     "raster.cell_m",
     "raster.origin_xy_m",
@@ -295,14 +295,14 @@ LEGEND_KEYS = {
     "raster.z_error_m",
     "raster.rows",
     "boxes",
-    "boxes.z_m",
-    "boxes.omitted_count",
-    "boxes.xmin:xmax@ymin:ymax",
+    "boxes.slice_edges_m",
+    "boxes.xy_group_m",
+    "boxes.slices",
 }
 
 
 def test_agent_encode_scalars_are_exact() -> None:
-    """Full-cloud bounds include returns outside the explicitly encoded z interval."""
+    """Full-cloud scalars describe all returns across the native-z slices."""
     wall = np.stack(
         [
             np.full(200, 2.0),
@@ -319,9 +319,9 @@ def test_agent_encode_scalars_are_exact() -> None:
     assert encoded["window_m"] == {"x": [-3.0, 3.0], "y": [-3.0, 3.0], "z": [0.0, 0.9]}
     boxes = encoded["boxes"]
     assert isinstance(boxes, dict)
-    assert boxes["z_m"] == [0.15, 1.0]
-    # body-height boxes see the wall only: x pinned at 2.0, floor (z=0) excluded
-    assert all(b.startswith("2.0@") for b in str(boxes["xmin:xmax@ymin:ymax"]).split(","))
+    assert sum(part["count"] for part in boxes["slices"]) == 300
+    assert boxes["slice_edges_m"][0] == 0.0
+    assert boxes["slice_edges_m"][-1] == pytest.approx(0.9)
     assert encoded["centroid_xy_m"] == [1.33, 0.0]  # 200 wall pts at x=2, 100 floor at mean 0
 
 
@@ -492,7 +492,7 @@ def test_agent_encode_excludes_and_counts_nonfinite_rows() -> None:
     assert encoded["num_points"] == 3
     assert encoded["nonfinite_points"] == 2
     assert encoded["window_m"] == {"x": [1, 1], "y": [2, 2], "z": [3, 3]}
-    assert encoded["floor_footprint_m2"] == 0.04
+    assert encoded["xy_footprint_m2"] == 0.04
     json.dumps(encoded, allow_nan=False)
 
 
@@ -504,21 +504,118 @@ def test_agent_encode_all_nonfinite_has_empty_geometry() -> None:
     assert encoded["raster"]["rows"] == []
 
 
-def test_agent_encode_reports_omitted_complete_boxes(monkeypatch) -> None:
-    xy = np.stack(np.meshgrid(np.arange(20), np.arange(20)), axis=-1).reshape(-1, 2)
-    cloud = PointCloud2.from_numpy(np.column_stack([xy, np.full(len(xy), 0.5)]))
-    monkeypatch.setattr(PointCloud2, "ENCODE_SOFT_CAP", 20000)
-    complete = cloud.agent_encode()
-    complete_boxes = complete["boxes"]["xmin:xmax@ymin:ymax"].split(",")
-    monkeypatch.setattr(PointCloud2, "ENCODE_SOFT_CAP", 1000)
+@pytest.mark.parametrize("scale,offset", [(2**-30, 0), (1, 1e6), (2**20, -1e8)])
+def test_agent_encode_native_z_partition_preserves_counts(scale, offset) -> None:
+    points = np.column_stack([np.arange(9), np.zeros(9), np.arange(-4, 5)]) * scale + offset
+    cloud = PointCloud2()
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
 
     encoded = cloud.agent_encode()
-    packed_boxes = encoded["boxes"]["xmin:xmax@ymin:ymax"].split(",")
+    boxes = encoded["boxes"]
+    edges = np.array(boxes["slice_edges_m"])
+    slices = boxes["slices"]
 
-    assert encoded["boxes"]["omitted_count"] > 0
-    assert len(packed_boxes) + encoded["boxes"]["omitted_count"] == len(complete_boxes)
-    assert packed_boxes == complete_boxes[: len(packed_boxes)]
-    assert len(json.dumps(encoded)) <= 1000
+    assert np.diff(edges) == pytest.approx(np.full(4, 2 * scale))
+    assert [part["count"] for part in slices] == [2, 2, 2, 3]
+    assert sum(part["count"] for part in slices) == len(points)
+    assert boxes["xy_group_m"] == pytest.approx(8 * scale / 28)
+    for part in slices:
+        selected = points[np.searchsorted(edges[1:-1], points[:, 2], side="right") == part["index"]]
+        assert part["z_m"] == [selected[:, 2].min(), selected[:, 2].max()]
+        assert part["count"] == sum(row[4] for row in part["bounds"]) + part["omitted_points"]
+
+
+def test_agent_encode_native_z_partition_uses_half_open_edges() -> None:
+    z = np.array([-4, np.nextafter(-2.0, -np.inf), -2, np.nextafter(-2.0, np.inf), 0, 2, 4])
+    cloud = PointCloud2()
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(
+        np.column_stack([np.zeros(len(z)), np.zeros(len(z)), z])
+    )
+
+    slices = cloud.agent_encode()["boxes"]["slices"]
+
+    assert [part["count"] for part in slices] == [2, 2, 1, 2]
+    assert [part["z_m"] for part in slices] == [
+        [-4, np.nextafter(-2.0, -np.inf)],
+        [-2, np.nextafter(-2.0, np.inf)],
+        [0, 0],
+        [2, 4],
+    ]
+
+
+def test_agent_encode_coincident_slice_edges_do_not_duplicate_returns() -> None:
+    points = np.array([[0, 0, 1e16], [0, 0, np.nextafter(1e16, np.inf)]])
+    cloud = PointCloud2()
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
+
+    boxes = cloud.agent_encode()["boxes"]
+    edges = boxes["slice_edges_m"]
+    slices = boxes["slices"]
+
+    assert len(set(edges)) < len(edges)
+    assert [part["count"] for part in slices] == [1, 1]
+    assert [part["z_m"] for part in slices] == [
+        [points[0, 2], points[0, 2]],
+        [points[1, 2], points[1, 2]],
+    ]
+    assert sum(row[4] for part in slices for row in part["bounds"]) == 2
+    assert sum(part["omitted_points"] for part in slices) == 0
+
+
+@pytest.mark.parametrize("scale", [1e-9, 1.0, 10000.0])
+def test_agent_encode_numeric_bounds_preserve_gaps_and_containment(scale) -> None:
+    # Nearby returns form a run, while the two larger gaps remain explicit.
+    points = np.array([[0, 0, 7], [0.1, 0, 7], [1, 0, 7], [1.1, 0, 7], [4, 0, 7]]) * scale
+    cloud = PointCloud2.from_numpy(points)
+    stored = cloud.points_f32().astype(np.float64)
+
+    encoded = cloud.agent_encode()
+    boxes = encoded["boxes"]
+    (part,) = boxes["slices"]
+    records = part["bounds"]
+
+    assert len(boxes["slice_edges_m"]) == 2
+    assert part["index"] == 0
+    assert [row[4] for row in records] == [2, 2, 1]
+    assert part["omitted_points"] == 0
+    assert records[0][1] < records[1][0] < records[1][1] < records[2][0]
+    assert records[2][0] <= stored[4, 0] <= records[2][1]
+    for record, selected in zip(records, [stored[:2], stored[2:4], stored[4:]], strict=True):
+        xmin, xmax, ymin, ymax, count = record
+        assert len(record) == 5
+        assert xmin <= selected[:, 0].min() <= selected[:, 0].max() <= xmax
+        assert ymin <= selected[:, 1].min() <= selected[:, 1].max() <= ymax
+        assert count == len(selected)
+
+
+def test_agent_encode_slice_budget_spreads_evidence_and_reports_omissions() -> None:
+    xy = np.stack(np.meshgrid(np.arange(20), np.arange(20)), axis=-1).reshape(-1, 2)
+    # The first slice is much denser, but each populated z slice retains bounds.
+    points = np.vstack(
+        [
+            np.column_stack([np.tile(xy, (repeats, 1)), np.full(len(xy) * repeats, z)])
+            for z, repeats in zip([0, 1, 2, 3], [20, 1, 1, 1], strict=True)
+        ]
+    )
+    cloud = PointCloud2.from_numpy(points)
+
+    encoded = cloud.agent_encode()
+    slices = encoded["boxes"]["slices"]
+
+    assert encoded == cloud.agent_encode()
+    assert len(json.dumps(encoded)) <= PointCloud2.ENCODE_SOFT_CAP
+    assert [part["count"] for part in slices] == [8000, 400, 400, 400]
+    assert sum(part["count"] for part in slices) == len(points)
+    for part in slices:
+        bounds = part["bounds"]
+        assert bounds[0][:4] == [0.0, 0.0, 19.0, 19.0]
+        assert bounds[-1][:4] == [19.0, 19.0, 0.0, 0.0]
+        assert any(6 <= row[2] <= 13 for row in bounds)
+        assert bounds == sorted(bounds, key=lambda row: (-row[2], row[0]))
+        assert part["omitted_boxes"] > 0
+        assert part["omitted_points"] > 0
+        assert len(part["bounds"]) + part["omitted_boxes"] == len(xy)
+        assert sum(row[4] for row in part["bounds"]) + part["omitted_points"] == part["count"]
 
 
 @pytest.mark.parametrize(

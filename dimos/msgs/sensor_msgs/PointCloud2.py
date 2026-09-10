@@ -345,48 +345,30 @@ class PointCloud2(Timestamped):
     readout of a tool that caps its output here."""
 
     AGENT_ENCODE_LEGEND = (
-        "Coordinates are meters in frame_id; ts is the cloud timestamp and num_points "
-        "counts stored rows. nonfinite_points counts rows excluded from all geometry. "
-        "source_dtype describes stored coordinate precision; float64 arithmetic cannot "
-        "recover detail lost before encoding. scalar_rounding_m gives x,y,z rounding "
-        "increments for window_m, centroid_xy_m and box endpoints (error at most half "
-        "an increment). window_m gives finite-return min/max on x,y,z; spans are "
-        "max-minus-min. The x-y extent is max(xmax-xmin,ymax-ymin). Axes, gravity, "
-        "floor reference and compass directions require external frame context. "
-        "centroid_xy_m is the mean of finite stored returns. A centroid difference "
-        "describes a change in the return distribution, not robot motion or newly "
-        "observed space. floor_footprint_m2 is a legacy name for projected x-y return "
-        "coverage: count of origin-aligned 0.2 m cells with any finite return times "
-        "0.04 m2. It is neither floor area nor observed free space; this fixed grid "
-        "does not resolve small objects. Compare individual frame values without "
-        "accumulating them or substituting bounding-box area. "
-        "boxes describe rounded x-y envelopes of grouped returns within the "
-        "explicit numeric z_m interval, not a robot body or floor-relative band. "
-        "xmin:xmax@ymin:ymax is comma-separated; split each box at @, then each "
-        "axis at :. A lone value means min=max, e.g. 2@3:4 means x=[2,2], y=[3,4]. "
-        "For a containing envelope, first expand each reported axis interval by half "
-        "its scalar_rounding_m increment on both ends. Distance from qx,qy to that "
-        "envelope is hypot(max(0,xmin-qx,qx-xmax), "
-        "max(0,ymin-qy,qy-ymax)); with all boxes present its minimum is a lower "
-        "bound on distance to band returns, not measured clearance or nearest-point "
-        "distance. omitted_count counts envelopes removed to fit the payload. "
-        "raster is an x-y projection retaining lowest/highest z per cell. rows run "
-        "from larger to smaller y. Parse each row with split(maxsplit=1): the first "
-        "token is the cell's lower y edge; the second contains TWO characters per "
-        "x cell, increasing x from origin_xy_m[0]. Cell i has lower x edge "
-        "origin_xy_m[0]+i*cell_m; characters [2*i:2*i+2] encode its min/max z. "
-        "Decode each character in alphabet 0-9A-U as z_min_m+index*z_step_m. "
-        "z_min_m and z_step_m adapt to all finite z returns; z_error_m is the "
-        "maximum quantization error (half a step, zero for constant z), apart from "
-        "floating-point arithmetic. No fixed elevation band is clipped; endpoint "
-        "roundoff is clamped. .. means no stored return; absence proves neither "
-        "visibility nor free space."
+        "All coordinates are meters in frame_id. ts is the cloud timestamp. "
+        "Axis orientation and gravity require external "
+        "context. window_m gives finite-return [min,max] for x,y,z. centroid_xy_m is their mean x,y, "
+        "not robot position. num_points counts input rows; nonfinite_points counts ignored rows. "
+        "source_dtype is the stored numeric type. scalar_rounding_m gives x,y,z rounding steps. "
+        "Scalars round to nearest; box endpoints round outward. xy_footprint_m2 counts occupied 0.2 "
+        "m x-y grid cells aligned to (0,0), times 0.04 m2. This is projected returns, not floor area. "
+        "\nRaster: split "
+        "each row once at whitespace into y and data. y is the lower cell edge; rows decrease in y. "
+        "Each two characters give minimum and maximum z for one cell, increasing x from origin_xy_m. "
+        "cell_m is the cell size. Decode characters with alphabet 0123456789ABCDEFGHIJKLMNOPQRSTU: "
+        "z=z_min_m+index*z_step_m. z_error_m bounds quantization error. .. means no return. \nBoxes: "
+        "slice_edges_m partitions z into [lower,upper) intervals; the last includes its upper edge. "
+        "slices contains populated intervals, identified by index. z_m is each slice's actual "
+        "[min,max]; count includes omitted points. bounds records are [xmin,xmax,ymin,ymax,count]. "
+        "They group x gaps <=xy_group_m within y bands of that width. Records describe groups of "
+        "returns, not separate objects. omitted_boxes and omitted_points report missing records and "
+        "points. Bounds may enclose empty space; they do not give exact nearest-point distances. "
+        "Missing returns do not prove free space."
     )
     """The complete coordinate and information-loss contract for agent_encode()."""
 
     _RASTER_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTU"
     _RASTER_MAX_CELLS = 48
-    _BOX_Z = (0.15, 1.0)
 
     @staticmethod
     def _coordinate_decimals(lo: np.ndarray, hi: np.ndarray) -> list[int]:
@@ -397,8 +379,8 @@ class PointCloud2(Timestamped):
     def agent_encode(self) -> dict[str, Any]:
         """Finite stored-return geometry in the cloud's own coordinate frame.
 
-        Scalar precision and raster resolution adapt to the cloud. The separately
-        labeled box channel retains a fixed numeric z interval for compatibility.
+        Scalar precision, raster resolution and native-z slice bounds adapt to
+        the cloud without assuming a robot body, floor reference or world axes.
         """
         stored = self.points().numpy()
         finite = np.isfinite(stored).all(axis=1)
@@ -412,7 +394,7 @@ class PointCloud2(Timestamped):
             "scalar_rounding_m": [],
             "window_m": {"x": [], "y": [], "z": []},
             "centroid_xy_m": [],
-            "floor_footprint_m2": 0.0,
+            "xy_footprint_m2": 0.0,
             "raster": {
                 "cell_m": 0.0,
                 "origin_xy_m": [],
@@ -421,12 +403,11 @@ class PointCloud2(Timestamped):
                 "z_error_m": 0.0,
                 "rows": [],
             },
-            "boxes": {"z_m": list(self._BOX_Z), "xmin:xmax@ymin:ymax": "", "omitted_count": 0},
+            "boxes": {"slice_edges_m": [], "xy_group_m": 0.0, "slices": []},
         }
         if len(pts) == 0:
             return out
         xy = pts[:, :2]
-        z = pts[:, 2]
         mins = pts.min(axis=0)
         maxs = pts.max(axis=0)
         with np.errstate(over="ignore"):
@@ -446,18 +427,40 @@ class PointCloud2(Timestamped):
             round(float(c), d) for c, d in zip(center, decimals[:2], strict=True)
         ]
         floor_cells = np.unique(np.floor(xy / 0.2), axis=0)
-        out["floor_footprint_m2"] = round(float(floor_cells.shape[0]) * 0.04, 2)
-        raster_budget = self.ENCODE_SOFT_CAP - len(json.dumps(out)) - 64
-        out["raster"] = self._height_raster(pts, max_bytes=raster_budget)
-        band = xy[(z >= self._BOX_Z[0]) & (z <= self._BOX_Z[1])]
-        boxes = self._body_height_boxes(band, decimals=decimals[:2])
-        parts = boxes.split(",") if boxes else []
-        out["boxes"]["xmin:xmax@ymin:ymax"] = boxes
-        # Preserve complete envelopes and explicitly report every omitted one.
-        while len(json.dumps(out)) > self.ENCODE_SOFT_CAP and parts:
-            parts.pop()
-            out["boxes"]["omitted_count"] += 1
-            out["boxes"]["xmin:xmax@ymin:ymax"] = ",".join(parts)
+        out["xy_footprint_m2"] = round(float(floor_cells.shape[0]) * 0.04, 2)
+        out["boxes"] = self._native_z_boxes(pts, decimals)
+        slices = out["boxes"]["slices"]
+        records = [part["bounds"] for part in slices]
+        for part, bounds in zip(slices, records, strict=True):
+            part["bounds"] = []
+            part["omitted_boxes"] = len(bounds)
+            part["omitted_points"] = part["count"]
+        # Preserve raster evidence and reserve comparable space for every z slice.
+        available = self.ENCODE_SOFT_CAP - len(json.dumps(out)) - 128
+        out["raster"] = self._height_raster(pts, max_bytes=max(256, int(available * 0.55)))
+        quota = max(0, (self.ENCODE_SOFT_CAP - len(json.dumps(out))) // len(slices))
+        for part, bounds in zip(slices, records, strict=True):
+            sizes = np.array([len(json.dumps(record)) + 2 for record in bounds])
+            count = min(len(bounds), (quota + 2) // int(sizes.min()))
+            indices = np.empty(0, dtype=int)
+            # Evenly spaced selections are not nested, so their costs need not be
+            # monotonic. Try counts in descending order rather than binary search.
+            while count >= 2:
+                candidate = np.linspace(0, len(bounds) - 1, count, dtype=int)
+                if int(sizes[candidate].sum()) - 2 <= quota:
+                    indices = candidate
+                    break
+                count -= 1
+            if count == 1:
+                fitting = np.flatnonzero(sizes - 2 <= quota)
+                indices = fitting[
+                    np.argsort(np.abs(fitting - (len(bounds) - 1) / 2), kind="stable")[:1]
+                ]
+            for index in indices:
+                record = bounds[index]
+                part["bounds"].append(record)
+                part["omitted_boxes"] -= 1
+                part["omitted_points"] -= record[4]
         return out
 
     @classmethod
@@ -513,45 +516,62 @@ class PointCloud2(Timestamped):
                 return raster
             cell *= 2.0
 
-    @staticmethod
-    def _body_height_boxes(
-        xy: np.ndarray, max_cells: int = 28, decimals: list[int] | None = None
-    ) -> str:
-        """Containing x-y envelopes of grouped points in the supplied numeric band.
-
-        Listed in decreasing y, comma separated, with singleton axis endpoints
-        represented by one value. Endpoints use the scalar reporting precision.
-        """
-        if xy.shape[0] == 0:
-            return ""
-        if decimals is None:
-            decimals = [2, 2]
-        lo = xy.min(axis=0)
-        hi = xy.max(axis=0)
-        span = float(max(hi[0] - lo[0], hi[1] - lo[1]))
-        cell = next((c for c in (0.25, 0.4, 0.8, 1.6, 3.2) if span / c < max_cells), 6.4)
-        while span / cell >= max_cells:
-            cell *= 2.0
-        iy = np.floor((xy[:, 1] - lo[1]) / cell).astype(int)
-        parts = []
-        for r in range(int(iy.max()), -1, -1):
-            sel = xy[iy == r]
-            if sel.shape[0] == 0:
+    @classmethod
+    def _native_z_boxes(cls, pts: np.ndarray, decimals: list[int]) -> dict[str, Any]:
+        """Partition all finite returns into native-z slices and containing x-y runs."""
+        z = pts[:, 2]
+        z_lo, z_hi = float(z.min()), float(z.max())
+        edges = np.linspace(z_lo, z_hi, 5) if z_hi > z_lo else np.array([z_lo, z_hi])
+        assigned = np.searchsorted(edges[1:-1], z, side="right")
+        span = float(np.ptp(pts[:, :2], axis=0).max())
+        group = span / 28
+        slices = []
+        for index in range(len(edges) - 1):
+            selected = pts[assigned == index]
+            if len(selected) == 0:
                 continue
-            sel = sel[np.argsort(sel[:, 0])]
-            rx = sel[:, 0]
-            breaks = np.flatnonzero(np.diff(rx) > cell)
-            starts = np.concatenate(([0], breaks + 1))
-            ends = np.concatenate((breaks, [rx.size - 1]))
-            for s, e in zip(starts, ends, strict=False):
-                a, b = str(round(float(rx[s]), decimals[0])), str(round(float(rx[e]), decimals[0]))
-                run = a if a == b else f"{a}:{b}"
-                ry = sel[s : e + 1, 1]
-                ya = str(round(float(ry.min()), decimals[1]))
-                yb = str(round(float(ry.max()), decimals[1]))
-                run += f"@{ya}" if ya == yb else f"@{ya}:{yb}"
-                parts.append(run)
-        return ",".join(parts)
+            xy = selected[:, :2]
+            bands = (
+                np.floor((xy[:, 1] - xy[:, 1].min()) / group).astype(int)
+                if group
+                else np.zeros(len(xy), dtype=int)
+            )
+            records = []
+            for band in np.unique(bands)[::-1]:
+                run_points = xy[bands == band]
+                run_points = run_points[np.argsort(run_points[:, 0], kind="stable")]
+                cuts = np.flatnonzero(np.diff(run_points[:, 0]) > group) + 1
+                for run in np.split(run_points, cuts):
+                    lo, hi = run.min(axis=0), run.max(axis=0)
+                    records.append(
+                        [
+                            cls._outward_endpoint(float(lo[0]), decimals[0], upper=False),
+                            cls._outward_endpoint(float(hi[0]), decimals[0], upper=True),
+                            cls._outward_endpoint(float(lo[1]), decimals[1], upper=False),
+                            cls._outward_endpoint(float(hi[1]), decimals[1], upper=True),
+                            len(run),
+                        ]
+                    )
+            slices.append(
+                {
+                    "index": index,
+                    "z_m": [float(selected[:, 2].min()), float(selected[:, 2].max())],
+                    "count": len(selected),
+                    "bounds": records,
+                    "omitted_boxes": 0,
+                    "omitted_points": 0,
+                }
+            )
+        return {"slice_edges_m": edges.tolist(), "xy_group_m": group, "slices": slices}
+
+    @staticmethod
+    def _outward_endpoint(value: float, decimals: int, *, upper: bool) -> float:
+        """Round an endpoint without shrinking its containing interval."""
+        rounded = round(value, decimals)
+        quantum = 10.0**-decimals
+        if upper:
+            return max(value, round(rounded + quantum, decimals)) if rounded < value else rounded
+        return min(value, round(rounded - quantum, decimals)) if rounded > value else rounded
 
     @functools.cached_property
     def center(self) -> Vector3:
