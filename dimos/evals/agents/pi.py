@@ -25,6 +25,8 @@ from pathlib import Path
 import selectors
 import shutil
 import subprocess
+import sys
+from tempfile import TemporaryDirectory
 import time
 from typing import IO, TYPE_CHECKING, Any
 
@@ -185,15 +187,34 @@ class PiAdapter(Agent):
                     f"Pi temporary-file isolation needs PRoot: {self.config.tmp_isolation_proot!r}"
                 )
             try:
-                subprocess.run(
-                    [executable, "-w", "/", "/bin/true"],
-                    check=True,
-                    capture_output=True,
-                    timeout=10,
-                )
+                with TemporaryDirectory(prefix="dimos-pi-isolation-") as temporary:
+                    probe = Path(temporary)
+                    token = probe.name
+                    command = self._isolate_tmp(
+                        [
+                            sys.executable,
+                            "-c",
+                            "from pathlib import Path\nimport sys\ntoken = sys.argv[1]\n"
+                            "if (Path('/tmp', token).read_text() != 'pi-tmp' or "
+                            "Path('/var/tmp', token).read_text() != 'pi-var-tmp'):\n"
+                            "    raise SystemExit('temporary files are not isolated')\n"
+                            "print(token)\n",
+                            token,
+                        ],
+                        probe,
+                    )
+                    for directory in ("pi-tmp", "pi-var-tmp"):
+                        (probe / directory / token).write_text(directory)
+                    result = subprocess.run(
+                        command, check=True, capture_output=True, text=True, timeout=10
+                    )
+                    if result.stdout.strip() != token:
+                        raise RuntimeError(
+                            "Pi temporary-file isolation did not verify both bindings"
+                        )
             except (OSError, subprocess.SubprocessError) as error:
                 raise RuntimeError(
-                    f"Pi temporary-file isolation cannot start PRoot: {error}"
+                    f"Pi temporary-file isolation cannot verify PRoot bindings: {error}"
                 ) from error
 
     def run(

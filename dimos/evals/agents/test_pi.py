@@ -15,6 +15,7 @@
 """Exercise Pi's configuration, event handling and shutdown without an external agent."""
 
 from contextlib import ExitStack, nullcontext
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ import shutil
 import socket
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import threading
 
 import psutil
@@ -260,10 +262,10 @@ def test_missing_tmp_isolation_executable_fails_before_running(mocker, monkeypat
 
 def test_unusable_tmp_isolation_fails_without_fallback(mocker, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    mocker.patch.object(pi.shutil, "which", side_effect=["/bin/pi", "/bin/proot"])
+    mocker.patch.object(pi.shutil, "which", side_effect=["/bin/pi", "/bin/proot", "/bin/proot"])
     mocker.patch.object(pi.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "proot"))
 
-    with pytest.raises(RuntimeError, match="temporary-file isolation cannot start PRoot"):
+    with pytest.raises(RuntimeError, match="temporary-file isolation cannot verify PRoot bindings"):
         PiAdapter(tmp_isolation_proot="proot").preflight(mocker.Mock(has_robot=False))
 
 
@@ -273,6 +275,49 @@ def proot_cli():
     if executable is None:
         pytest.skip("PRoot integration requires proot or DIMOS_TEST_PROOT")
     return executable
+
+
+@pytest.mark.parametrize("wrapper", ["no-op", "ignores-binds"])
+def test_tmp_preflight_rejects_successful_wrappers_without_bindings(
+    tmp_path, mocker, monkeypatch, wrapper
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("PYTHONOPTIMIZE", "1")
+    probe_root = tmp_path / "probes"
+    probe_root.mkdir()
+    monkeypatch.setattr(pi, "TemporaryDirectory", partial(TemporaryDirectory, dir=probe_root))
+    executable = "/bin/true"
+    if wrapper == "ignores-binds":
+        script = tmp_path / "ignore-binds"
+        script.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "args = sys.argv[1:]\n"
+            "while args[0] in ('-b', '-w'):\n"
+            "    args = args[2:]\n"
+            "os.execv(args[0], args)\n"
+        )
+        script.chmod(0o755)
+        executable = str(script)
+    agent = PiAdapter(cli=sys.executable, tmp_isolation_proot=executable)
+
+    with pytest.raises(RuntimeError, match="Pi temporary-file isolation .* bindings"):
+        agent.preflight(mocker.Mock(has_robot=False))
+
+    assert list(probe_root.iterdir()) == []
+
+
+def test_tmp_preflight_verifies_real_bindings_and_cleans_probe(
+    tmp_path, proot_cli, mocker, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(pi, "TemporaryDirectory", partial(TemporaryDirectory, dir=tmp_path))
+
+    PiAdapter(cli=sys.executable, tmp_isolation_proot=proot_cli).preflight(
+        mocker.Mock(has_robot=False)
+    )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_private_tmp_keeps_concurrent_tools_inputs_and_localhost_separate(tmp_path, proot_cli):
