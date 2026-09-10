@@ -350,9 +350,7 @@ class PointCloud2(Timestamped):
         "scalar_rounding_m: xyz steps, nearest scalars, outward bounds. window_m: "
         "axis extrema; centroid_xy_m: return mean. xy_footprint_m2: occupied "
         "origin-aligned 0.2m XY cells times 0.04. "
-        "bounds: six endpoint indices, then point count; origin_m/step_m use XYZ order. "
-        "coordinate=origin_m[axis]+index*step_m[axis]; "
-        "additional outward rounding<=step_m. group_m=[XY grouping width,Z stratum width]; "
+        "bounds: columns label rows; group_m=[XY grouping width,Z stratum width]; "
         "omitted_points counts unrepresented returns. "
         "raster: rows increase y; pairs increase x from origin_xy_m at cell_m spacing. "
         "Each pair encodes minimum/maximum z with alphabet 0123456789ABCDEFGHIJKLMNOPQRSTU; "
@@ -403,8 +401,6 @@ class PointCloud2(Timestamped):
                 "rows": [],
                 "omitted_points": 0,
                 "group_m": [0.0, 0.0],
-                "origin_m": [],
-                "step_m": [],
             },
         }
         if len(pts) == 0:
@@ -431,21 +427,13 @@ class PointCloud2(Timestamped):
         floor_cells = np.unique(np.floor(xy / 0.2), axis=0)
         out["xy_footprint_m2"] = round(float(floor_cells.shape[0]) * 0.04, 2)
         group_m, records = self._bounds_groups(pts, decimals)
-        origin, steps, integer_records = self._relative_bounds(records, mins, maxs, decimals)
         out["bounds"]["group_m"] = group_m
-        out["bounds"]["origin_m"] = origin
-        out["bounds"]["step_m"] = steps
         out["bounds"]["omitted_points"] = len(pts)
         # Preserve raster evidence and reserve comparable space for every z slice.
-        # Raster allocation excludes bounds coordinate metadata.
-        raster_base = {
-            **out,
-            "bounds": {k: v for k, v in out["bounds"].items() if k not in ("origin_m", "step_m")},
-        }
-        available = self.ENCODE_SOFT_CAP - len(json.dumps(raster_base)) - 128
+        available = self.ENCODE_SOFT_CAP - len(json.dumps(out)) - 128
         out["raster"] = self._height_raster(pts, max_bytes=max(256, int(available * 0.55)))
         quota = max(0, (self.ENCODE_SOFT_CAP - len(json.dumps(out))) // len(records))
-        for bounds in integer_records:
+        for bounds in records:
             sizes = np.array([len(json.dumps(record)) + 2 for record in bounds])
             count = min(len(bounds), quota // int(sizes.min()))
             indices = np.empty(0, dtype=int)
@@ -467,50 +455,6 @@ class PointCloud2(Timestamped):
                 out["bounds"]["rows"].append(record)
                 out["bounds"]["omitted_points"] -= record[6]
         return out
-
-    @staticmethod
-    def _relative_bounds(
-        records: list[list[list[float]]],
-        mins: np.ndarray,
-        maxs: np.ndarray,
-        decimals: list[int],
-    ) -> tuple[list[float], list[float], list[list[list[int]]]]:
-        """Encode grouped bounds on an outward binary grid within scalar precision.
-
-        Power-of-two steps make integer decoding exact for representable grid
-        coordinates. An origin of zero avoids cancellation across very wide axes.
-        """
-        steps = [float(2.0 ** np.floor(np.log2(10.0**-d))) for d in decimals]
-        origin = [
-            float(np.floor(mins[i] / step) * step)
-            if max(abs(mins[i]), abs(maxs[i])) <= step * 2**50
-            else float(mins[i])
-            if mins[i] == maxs[i]
-            else 0.0
-            for i, step in enumerate(steps)
-        ]
-        max_index = int(np.finfo(float).max)
-        converted = []
-        for group in records:
-            converted_group = []
-            for row in group:
-                endpoints = []
-                for i, value in enumerate(row[:6]):
-                    axis = i // 2
-                    value_n, value_d = value.as_integer_ratio()
-                    origin_n, origin_d = origin[axis].as_integer_ratio()
-                    step_n, step_d = steps[axis].as_integer_ratio()
-                    numerator = (value_n * origin_d - origin_n * value_d) * step_d
-                    denominator = value_d * origin_d * step_n
-                    index = -(-numerator // denominator) if i % 2 else numerator // denominator
-                    if abs(index) > max_index:
-                        raise ValueError(
-                            "Point cloud bound indices exceed the encoder's numeric range"
-                        )
-                    endpoints.append(index)
-                converted_group.append([*endpoints, int(row[6])])
-            converted.append(converted_group)
-        return origin, steps, converted
 
     @classmethod
     def _height_raster(cls, pts: np.ndarray, max_bytes: int = 5200) -> dict[str, Any]:
