@@ -27,11 +27,13 @@ from dimos.evals.environments.sim import Sim
 from dimos.evals.scorers import exact, first_number
 from dimos.evals.types import EvalCase, Outcome, Suite, recording
 
+# Published world x/y are Three.js z/x (misc/DimSim/cli/bridge/physics.ts).
+# Default visit disks stay inside the wall-defined room footprints.
 ROOMS: dict[str, tuple[float, float]] = {
     "living_dining": (2.0, 2.5),  # sectional, TV, dining table
-    "kitchen": (-4.0, 2.5),  # fridge, gas range, sink
+    "kitchen": (2.5, -4.0),  # fridge, gas range, sink
     "bedroom": (-3.0, -2.5),  # queen bed, desk
-    "bathroom": (3.0, -2.5),  # bathtub, toilet, vanity
+    "bathroom": (-2.5, 3.0),  # bathtub, toilet, vanity
 }
 N_ROOMS = len(ROOMS)
 
@@ -49,8 +51,8 @@ INSTRUCTION = (
 def grade_rooms(visit_radius_m: float = 1.5) -> Callable[[Outcome], float]:
     """0.5 for the exact room count in the reply, plus 0.5 times the fraction
     of rooms whose representative point the recorded odometry came within
-    *visit_radius_m* of. Every representative point sits ~2 m past its room's
-    doorway, so the default radius requires actually entering the room.
+    *visit_radius_m* of. Each default visit disk lies inside its physical
+    room's footprint, so the default radius requires entering the room.
     Passing at the default threshold of 1.0 means the count was right and
     every room was physically entered."""
 
