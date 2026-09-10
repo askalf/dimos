@@ -340,7 +340,7 @@ class PointCloud2(Timestamped):
     def __str__(self) -> str:
         return f"PointCloud2(frame_id='{self.frame_id}', num_points={len(self)})"
 
-    ENCODE_SOFT_CAP = 6000
+    ENCODE_SOFT_CAP = 24000
     """Ceiling on one frame's encoding, JSON bytes: a full frame fits in one
     readout of a tool that caps its output here."""
 
