@@ -407,11 +407,23 @@ class PointCloud2(Timestamped):
             for i, axis in enumerate("xyz")
         }
         # Sorted reductions keep scalar output independent of input point order.
-        center = mins[:2] + np.sort(xy - mins[:2], axis=0).mean(axis=0, dtype=np.float64)
+        centered = np.sort(xy - mins[:2], axis=0)
+        if np.any(spans[:2] > np.finfo(float).max / len(pts)):
+            # Division before summing avoids overflow for finite, very large clouds.
+            mean = (centered / len(pts)).sum(axis=0, dtype=np.float64)
+        else:
+            mean = centered.mean(axis=0, dtype=np.float64)
+        center = mins[:2] + mean
+        if not np.isfinite(center).all():
+            raise ValueError("Point cloud centroid exceeds the encoder's numeric range")
         out["centroid_xy_m"] = [
             round(float(c), d) for c, d in zip(center, decimals[:2], strict=True)
         ]
-        floor_cells = np.unique(np.floor(xy / 0.2), axis=0)
+        with np.errstate(over="ignore"):
+            cells = np.floor(xy / 0.2)
+        if not np.isfinite(cells).all():
+            raise ValueError("Point cloud XY footprint exceeds the encoder's numeric range")
+        floor_cells = np.unique(cells, axis=0)
         out["xy_footprint_m2"] = round(float(floor_cells.shape[0]) * 0.04, 2)
         # Reserve the full precision of the extent metadata before partitioning.
         out["bounds"]["max_extent_m"] = [float(v) for v in spans]

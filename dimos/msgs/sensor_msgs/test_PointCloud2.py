@@ -577,3 +577,41 @@ def test_agent_encode_preserves_stored_float64_coordinates() -> None:
     assert encoded["window_m"]["x"] == points[:, 0].tolist()
     assert encoded["window_m"]["x"][1] > encoded["window_m"]["x"][0]
     _assert_complete_bounds(points, encoded)
+
+
+def test_agent_encode_large_finite_centroid_serializes_without_overflow() -> None:
+    points = np.tile(np.array([[0.0, 0.0, 0.0], [1e307, 1e307, 0.0]]), (100, 1))
+    cloud = PointCloud2()
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
+
+    encoded = cloud.agent_encode()
+
+    assert encoded["centroid_xy_m"] == pytest.approx([5e306, 5e306], rel=1e-14)
+    _assert_complete_bounds(points, encoded)
+    assert len(json.dumps(encoded, allow_nan=False)) <= PointCloud2.ENCODE_SOFT_CAP
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+@pytest.mark.parametrize("coordinate", [-1e308, 1e308])
+def test_agent_encode_rejects_overflowing_footprint_coordinates(axis, coordinate) -> None:
+    points = np.zeros((2, 3))
+    points[1, axis] = coordinate
+    cloud = PointCloud2()
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
+
+    with pytest.raises(ValueError, match="numeric range"):
+        cloud.agent_encode()
+
+
+def test_agent_encode_centroid_rounding_is_independent_of_return_order() -> None:
+    x = np.r_[np.zeros(18999), np.full(1000, 0.01), 90.0]
+    points = np.column_stack([x, np.zeros((len(x), 2))])
+    cloud = PointCloud2()
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
+    descending = PointCloud2()
+    descending.pointcloud_tensor.point["positions"] = o3c.Tensor(points[::-1].copy())
+
+    encoded = cloud.agent_encode()
+
+    assert encoded == descending.agent_encode()
+    assert encoded["centroid_xy_m"][0] == pytest.approx(0.005, abs=0.005)
