@@ -82,6 +82,7 @@ count_rooms = EvalCase(
         disable=("wavefront-frontier-explorer", "patrolling-module"),
         simulator="dimsim",
         scene="apartment",
+        required_recording_streams=("lidar", "odom"),
     ),
     grade=grade_rooms(),
     timeout_s=1200.0,  # room for several blocking move_to calls (each up to ~100 s)
