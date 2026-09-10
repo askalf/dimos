@@ -87,8 +87,7 @@ class G1SonicTeleopTask(G1SonicWBCTask):
         adapter: WholeBodyAdapter,
     ) -> None:
         super().__init__(name, config, adapter)
-        # ZMQ command handling runs inside compute() and can synchronously
-        # invoke disarm(), so lifecycle cleanup must be re-entrant here.
+        # Lifecycle entry points can call one another while holding this lock.
         self._teleop_lock = threading.RLock()
         self._pose_stream = WebXRSonicPoseStream(config.sonic_pipeline)
         self._latest_complete: BodyTrackingSnapshot | None = None

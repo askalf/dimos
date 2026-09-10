@@ -54,9 +54,7 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-# ---------------------------------------------------------------------------
 # Motor constants (policy_parameters.hpp)
-# ---------------------------------------------------------------------------
 
 ARMATURE_5020 = 0.003609725
 ARMATURE_7520_14 = 0.010177520
@@ -137,11 +135,9 @@ SONIC_KD: list[float] = [
     *_KD_ARM,
 ]
 
-# ---------------------------------------------------------------------------
 # Joint orderings. "DDS order" here equals the MuJoCo order used across
 # DimOS G1 code (legs L/R, waist, arms L/R). "ONNX order" is SONIC's
 # interleaved left/right BFS training order.
-# ---------------------------------------------------------------------------
 
 NUM_JOINTS = 29
 HISTORY_LEN = 10
@@ -360,7 +356,6 @@ UPPER_BODY_ONNX_INDICES = np.array(
     dtype=np.intp,
 )
 
-# ---------------------------------------------------------------------------
 # Encoder observation layout - SONIC v1.1 (sonic_v1_1/observation_config.yaml;
 # offsets verified against the C++ observation registry). 1751 = 4 (mode) +
 # 290 (joint pos) + 290 (joint vel) + 60 (anchor hist) + 6 (anchor single) +
@@ -368,7 +363,6 @@ UPPER_BODY_ONNX_INDICES = np.array(
 # 720 (smpl joints) + 60 (smpl anchor) + 60 (wrists). Anchor orientations
 # are heading-normalized (C++ orientation_mode 1 - left quat is the robot's
 # heading, not the full base quat).
-# ---------------------------------------------------------------------------
 
 ENCODER_TOKEN_DIM = 64
 DECODER_OBS_DIM = 994
@@ -385,6 +379,7 @@ DEFAULT_HEIGHT = 0.788740
 POLICY_DT = 0.02
 REPLAN_INTERVAL_DEFAULT = 1.0
 REPLAN_INTERVAL_RUNNING = 0.1
+REPLAN_INTERVAL_CRAWLING = 0.2  # C++ replan_interval_crawling_
 BLEND_FRAMES = 8
 LOOK_AHEAD_FRAMES = 2
 
@@ -484,9 +479,7 @@ def _transition_stages(current: int | None, target: int | None) -> list[int | No
     return stages if stages else [target]
 
 
-# ---------------------------------------------------------------------------
 # Quaternion helpers ([w, x, y, z] convention throughout)
-# ---------------------------------------------------------------------------
 
 
 def _quat_conjugate(q: NDArray[Any]) -> NDArray[Any]:
@@ -661,7 +654,7 @@ class SonicPipeline:
         self._last_reference_token: NDArray[Any] | None = None
         self._last_token_was_stream = False
 
-        # Streamed reference motion (ZMQ pose topic)
+        # Streamed reference motion (pose messages via apply_pose_message)
         self._merger = StreamedMotionMerger()
         self._streamed: StreamedMotion | None = None
         self._streamed_frame = 0
@@ -671,7 +664,7 @@ class SonicPipeline:
         self._reference_transition_steps = 0
         self._planner_transition_preparing = False
         self._planner_transition_ready = False
-        # Direct planner command (ZMQ planner topic); None -> twist-derived
+        # Direct planner command (set_planner_command); None -> twist-derived
         self._planner_cmd: dict[str, Any] | None = None
         self._upper_vel_dds: NDArray[Any] | None = None
         # Wire-order (17: waist + arms) upper-body buffers; take precedence
@@ -740,7 +733,7 @@ class SonicPipeline:
     def set_upper_body_wire17(
         self, positions_17: NDArray[Any] | None, velocities_17: NDArray[Any] | None
     ) -> None:
-        """Upper-body targets in ZMQ wire order (17: waist + arms). None clears."""
+        """Upper-body targets in SONIC wire order (17: waist + arms). None clears."""
         self._ub17_pos = (
             None if positions_17 is None else np.asarray(positions_17, dtype=np.float32).reshape(17)
         )
@@ -947,7 +940,7 @@ class SonicPipeline:
         speed: float = -1.0,
         height: float = -1.0,
     ) -> None:
-        """Direct planner command (ZMQ planner topic); overrides twist mapping."""
+        """Direct planner command (C++ planner-topic semantics); overrides twist mapping."""
         self._planner_cmd = {
             "mode": int(mode),
             "movement": np.asarray(movement, dtype=np.float32).reshape(3),
@@ -1187,7 +1180,7 @@ class SonicPipeline:
 
     def _build_planner_inputs(self) -> dict[str, NDArray[Any]]:
         if self._planner_cmd is not None:
-            # ZMQ planner topic: mode/movement/facing given directly
+            # Direct planner command: mode/movement/facing given directly
             c = self._planner_cmd
             return self._planner_inputs_dict(
                 c["mode"], c["movement"], c["facing"], c["speed"], c["height"]
@@ -1420,7 +1413,12 @@ class SonicPipeline:
         speed = math.hypot(self._vx, self._vy)
         mode = self._mode_override if self._mode_override is not None else self._auto_mode(speed)
         moving = speed > 0.05 or (self._mode_override is not None and mode not in STATIC_MODES)
-        interval = REPLAN_INTERVAL_RUNNING if speed >= 1.2 else REPLAN_INTERVAL_DEFAULT
+        if speed >= 1.2 or mode == 3:
+            interval = REPLAN_INTERVAL_RUNNING
+        elif mode == 8:  # CRAWLING replans faster (C++ 0.2 s)
+            interval = REPLAN_INTERVAL_CRAWLING
+        else:
+            interval = REPLAN_INTERVAL_DEFAULT
         traj_low = (
             self._trajectory is not None
             and self._traj_frame > self._trajectory.num_frames - 20

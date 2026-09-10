@@ -138,6 +138,34 @@ physical stop for emergencies and `dimos stop` for routine shutdown.
 SONIC uses the same `dimos hardware g1` lifecycle commands, discovered from
 the running controller's task card.
 
+#### Workstation simulation
+
+Use an NVIDIA GPU with a working CUDA execution provider, a PICO 4 Ultra,
+and paired, calibrated PICO Motion Trackers. On the development workstation,
+install the desktop dependencies and download both official policy bundles:
+
+```bash
+uv sync --extra all
+uv run python bin/hardware/g1/setup-sonic-models --profile all
+uv run python bin/hardware/g1/setup-sonic-models --check --profile all
+uv run dimos --transport zenoh --simulation mujoco --viewer none \
+  run unitree-g1-sonic-webxr-teleop
+```
+
+The model setup script materializes the shared planner and motion archive
+from LFS, then downloads pinned encoder/decoder bundles from Hugging Face and
+checks their hashes. `--viewer none` keeps the native MuJoCo window and skips
+Rerun. The simulation auto-arms into planner balancing.
+
+Open `https://<workstation-ip>:8443/teleop` in the PICO browser, accept the
+certificate, and connect. Wait for complete body tracking and a ready pose
+buffer, then press A+X to enter POSE. Release and press A+X again to return to
+PLANNER; releasing the buttons alone does not disengage. See the profile and
+handoff settings below to compare the default model with `sonic-low-latency`.
+
+The JetPack setup below is for the G1's onboard computer. Desktop simulation
+uses the workstation environment above.
+
 #### Experimental JetPack 5 / CUDA 11.8 runtime
 
 NVIDIA's supported onboard SONIC deployment uses JetPack 6 and TensorRT 10.7.
@@ -189,7 +217,7 @@ environment with CPython 3.10 so the Open3D ARM wheel remains compatible with
 JetPack 5's Ubuntu 20.04 userspace.
 
 The setup script installs
-[`onnxruntime-gpu-extended-auto==1.23.3`](https://github.com/jeff-hykin/onnxruntime-gpu-extended-auto)
+[onnxruntime-gpu-extended-auto 1.23.3](https://github.com/jeff-hykin/onnxruntime-gpu-extended-auto)
 with target-side package detection. CUDA 11 and cuDNN 8 resolve to the pinned
 `onnxruntime-gpu-extended==1.18.1.11.8` JetPack 5 wheel. The script bypasses
 the pip cache and verifies the dispatcher, distribution, runtime, and CUDA
@@ -280,7 +308,7 @@ Select the NVIDIA policy bundle when launching the blueprint. Encoder,
 decoder, observation layout, and pose window always switch together:
 [NVIDIA's model card](https://github.com/NVlabs/GR00T-WholeBodyControl/blob/main/docs/source/model_card.md)
 documents both contracts, and the setup script downloads their pinned files
-from [`nvidia/GEAR-SONIC`](https://huggingface.co/nvidia/GEAR-SONIC/tree/main).
+from [nvidia/GEAR-SONIC](https://huggingface.co/nvidia/GEAR-SONIC/tree/main).
 
 | `--sonic-pipeline` | Pose window | Use when |
 |---|---:|---|

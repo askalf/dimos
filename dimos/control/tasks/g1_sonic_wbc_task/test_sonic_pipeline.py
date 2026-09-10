@@ -193,6 +193,46 @@ def test_planner_cold_start_is_warmed_before_runtime_timing(pipeline: SonicPipel
     assert snapshot["planner_timing_ms"]["samples"] == 0
 
 
+@pytest.mark.parametrize(
+    ("mode", "elapsed", "planner_requests"),
+    [(8, 0.15, 0), (8, 0.20, 1), (3, 0.05, 0), (3, 0.10, 1), (1, 0.80, 0), (1, 1.0, 1)],
+)
+def test_forced_locomotion_replans_at_its_mode_interval(
+    pipeline: SonicPipeline, mocker: Any, mode: int, elapsed: float, planner_requests: int
+) -> None:
+    pipeline.set_mode("IDEL_KNEEL_TWO_LEGS")
+    pipeline.set_mode(mode)
+    pipeline._needs_replan = False
+    pipeline._replan_timer = elapsed
+    pipeline._decoder.run.return_value = [np.zeros((1, NUM_JOINTS), dtype=np.float32)]
+    submit = mocker.patch.object(pipeline._planner_executor, "submit")
+
+    _policy_step(pipeline)
+
+    assert submit.call_count == planner_requests
+
+
+def test_pose_protocol_can_change_only_after_stream_reset(pipeline: SonicPipeline) -> None:
+    smpl_fields = _smpl_pose_fields()
+    joint_fields = {
+        key: smpl_fields[key] for key in ("frame_index", "joint_pos", "joint_vel", "body_quat_w")
+    }
+    assert pipeline.apply_pose_message(joint_fields) == {
+        "frames": 10,
+        "encode_mode": 0,
+        "catchup": True,
+    }
+
+    assert pipeline.apply_pose_message(smpl_fields) == {"error": "protocol version changed 1 -> 3"}
+    pipeline.stop_clip()
+
+    assert pipeline.apply_pose_message(smpl_fields) == {
+        "frames": 10,
+        "encode_mode": 2,
+        "catchup": True,
+    }
+
+
 def test_smpl_pose_chunk_populates_all_ten_encoder_frames(pipeline: SonicPipeline) -> None:
     smpl_joints = np.zeros((10, 24, 3), dtype=np.float32)
     smpl_joints[:, :, 0] = np.arange(10, dtype=np.float32)[:, np.newaxis]

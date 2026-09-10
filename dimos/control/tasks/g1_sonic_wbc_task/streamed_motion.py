@@ -16,7 +16,7 @@
 
 Faithful port of StreamedMotionMerger (gear_sonic_deploy
 .../input_interface/streamed_motion_merger.hpp) and the protocol-version
-handling of ZMQEndpointInterface: incoming pose-topic chunks (protocol v1
+handling of the C++ endpoint: incoming pose-message chunks (protocol v1
 joint-based, v2 SMPL, v3 both) merge into a sliding-window motion the
 policy encoder consumes. Semantics preserved exactly:
 
@@ -77,7 +77,7 @@ class MergeResult:
 
 
 def infer_protocol_version(fields: dict[str, NDArray[Any]]) -> int:
-    """v3: SMPL + joints; v2: SMPL only; v1: joints only (zmq.md rules)."""
+    """v3: SMPL + joints; v2: SMPL only; v1: joints only (upstream protocol rules)."""
     has_smpl = "smpl_joints" in fields and "smpl_pose" in fields
     has_joints = "joint_pos" in fields and "joint_vel" in fields
     if has_smpl and has_joints:
@@ -103,16 +103,22 @@ class StreamedMotionMerger:
         decoded arrays keyed by wire name."""
         result = MergeResult()
 
-        protocol = infer_protocol_version(fields)
-        if protocol == 0:
+        # The protocol version is a property of the sender (which field set it
+        # streams: v1 joints, v2 SMPL, v3 both), so it is established once from
+        # the first chunk and held until reset(). It only ever "changes" when a
+        # different source starts streaming without a reset in between - the
+        # C++ endpoint treats that as an unrecoverable error, and so do we.
+        incoming = infer_protocol_version(fields)
+        if incoming == 0:
             result.error = "pose message has neither joint nor SMPL data"
             return result
         if self._active_protocol is None:
-            self._active_protocol = protocol
-        elif self._active_protocol != protocol:
-            result.error = f"protocol version changed {self._active_protocol} -> {protocol}"
-            result.protocol_version = protocol
+            self._active_protocol = incoming
+        elif self._active_protocol != incoming:
+            result.error = f"protocol version changed {self._active_protocol} -> {incoming}"
+            result.protocol_version = incoming
             return result
+        protocol = self._active_protocol
 
         frame_indices = fields.get("frame_index")
         # The pico teleop server names this field body_quat_w; the reference

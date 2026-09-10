@@ -43,20 +43,23 @@ the certificate, then tap Connect.
 Calibrate the PICO Motion Trackers, then test the complete workflow in MuJoCo:
 
 ```bash
-dimos --simulation mujoco run unitree-g1-sonic-webxr-teleop
+dimos --transport zenoh --simulation mujoco run unitree-g1-sonic-webxr-teleop
 ```
 
 Use `--viewer none` to skip Rerun and inspect the live simulation in the
 native MuJoCo window.
 
-Open `https://<host-ip>:8443/teleop` on the PICO and tap Connect. Hold X and A
-together to guide the G1 with your body. Release either button to return SONIC
-to planner control. While engaged, body motion supplies the whole-body
-reference; the thumbsticks cannot command translation, but the right stick can
-adjust heading.
+Open `https://<host-ip>:8443/teleop` on the PICO and tap Connect. Once the pose
+buffer is ready, press X and A together to guide the G1 with your body. Release
+the buttons, then press X+A again to return SONIC to planner control. Releasing
+the buttons alone keeps body tracking engaged. While engaged, body motion
+supplies the whole-body reference; the thumbsticks cannot command translation,
+but the right stick can adjust heading.
 
-Tracking loss ends engagement. After tracking returns, release and hold X+A
-again. Partial body frames keep the last complete pose for at most 150 ms.
+Missing or partial body frames hold the last complete pose for up to one
+second while the stream recovers. Explicitly unavailable or invalid tracking
+starts the return to planner control immediately. After a fallback, wait for
+the pose buffer to refill and press X+A again.
 
 The same blueprint controls a 29-DoF G1 EDU on hardware. The first hardware
 session requires the official overhead gantry, with the robot loosely
@@ -70,7 +73,7 @@ Only DimOS may own the G1 low-level command channel. Stop the native
 computer, select the network interface connected to the G1:
 
 ```bash
-uv run dimos --viewer none run unitree-g1-sonic-webxr-teleop \
+uv run dimos --transport zenoh --viewer none run unitree-g1-sonic-webxr-teleop \
   --network-interface <robot-nic>
 ```
 
@@ -93,9 +96,9 @@ verify body alignment, foot contact, gantry support, and immediate access to
 the physical stop.
 
 Open `https://<g1-computer-ip>:8443/teleop` on the PICO, connect, and only then
-hold X+A. Releasing either button returns SONIC to planner control; it is a
-teleoperation deadman, not an emergency stop. The Unitree physical stop remains
-the authoritative emergency control.
+press X+A. Press X+A again to return SONIC to planner control. This toggle is
+not an emergency stop. The Unitree physical stop remains the authoritative
+emergency control.
 
 Shut down in this order:
 
