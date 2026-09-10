@@ -345,27 +345,20 @@ class PointCloud2(Timestamped):
     readout of a tool that caps its output here."""
 
     AGENT_ENCODE_LEGEND = (
-        "All coordinates are meters in frame_id. ts is the cloud timestamp. "
-        "Axis orientation and gravity require external "
-        "context. window_m gives finite-return [min,max] for x,y,z. centroid_xy_m is their mean x,y, "
-        "not robot position. num_points counts input rows; nonfinite_points counts ignored rows. "
-        "source_dtype is the stored numeric type. scalar_rounding_m gives x,y,z rounding steps. "
-        "Scalars round to nearest; box endpoints round outward. xy_footprint_m2 counts occupied 0.2 "
-        "m x-y grid cells aligned to (0,0), times 0.04 m2. This is projected returns, not floor area. "
-        "\nRaster: split "
-        "each row once at whitespace into y and data. y is the lower cell edge; rows decrease in y. "
-        "Each two characters give minimum and maximum z for one cell, increasing x from origin_xy_m. "
-        "cell_m is the cell size. Decode characters with alphabet 0123456789ABCDEFGHIJKLMNOPQRSTU: "
-        "z=z_min_m+index*z_step_m. z_error_m bounds quantization error. .. means no return. \nBoxes: "
-        "slice_edges_m partitions z into [lower,upper) intervals; the last includes its upper edge. "
-        "slices contains populated intervals, identified by index. z_m is each slice's actual "
-        "[min,max]; count includes omitted points. bounds records are [xmin,xmax,ymin,ymax,count]. "
-        "They group x gaps <=xy_group_m within y bands of that width. Records describe groups of "
-        "returns, not separate objects. omitted_boxes and omitted_points report missing records and "
-        "points. Bounds may enclose empty space; they do not give exact nearest-point distances. "
-        "Missing returns do not prove free space."
+        "Coordinates: meters in frame_id; ts: timestamp. num_points includes "
+        "nonfinite_points, excluded from geometry. source_dtype: stored precision; "
+        "scalar_rounding_m: xyz steps, nearest scalars, outward bounds. window_m: "
+        "axis extrema; centroid_xy_m: return mean. xy_footprint_m2: occupied "
+        "origin-aligned 0.2m XY cells times 0.04. "
+        "bounds: columns label rows; group_m=[XY grouping width,Z stratum width]; "
+        "omitted_points counts unrepresented returns. "
+        "raster: rows increase y; pairs increase x from origin_xy_m at cell_m spacing. "
+        "Each pair encodes minimum/maximum z with alphabet 0123456789ABCDEFGHIJKLMNOPQRSTU; "
+        "z=z_min_m+index*z_step_m; z_error_m bounds quantization error. '..': no return. "
+        "Bounds may contain gaps. Axes require external context; absence does not "
+        "establish free space."
     )
-    """The complete coordinate and information-loss contract for agent_encode()."""
+    """Compact field reference for the numeric tables and raster."""
 
     _RASTER_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTU"
     _RASTER_MAX_CELLS = 48
@@ -403,7 +396,12 @@ class PointCloud2(Timestamped):
                 "z_error_m": 0.0,
                 "rows": [],
             },
-            "boxes": {"slice_edges_m": [], "xy_group_m": 0.0, "slices": []},
+            "bounds": {
+                "columns": ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "points"],
+                "rows": [],
+                "omitted_points": 0,
+                "group_m": [0.0, 0.0],
+            },
         }
         if len(pts) == 0:
             return out
@@ -428,39 +426,34 @@ class PointCloud2(Timestamped):
         ]
         floor_cells = np.unique(np.floor(xy / 0.2), axis=0)
         out["xy_footprint_m2"] = round(float(floor_cells.shape[0]) * 0.04, 2)
-        out["boxes"] = self._native_z_boxes(pts, decimals)
-        slices = out["boxes"]["slices"]
-        records = [part["bounds"] for part in slices]
-        for part, bounds in zip(slices, records, strict=True):
-            part["bounds"] = []
-            part["omitted_boxes"] = len(bounds)
-            part["omitted_points"] = part["count"]
+        group_m, records = self._bounds_groups(pts, decimals)
+        out["bounds"]["group_m"] = group_m
+        out["bounds"]["omitted_points"] = len(pts)
         # Preserve raster evidence and reserve comparable space for every z slice.
         available = self.ENCODE_SOFT_CAP - len(json.dumps(out)) - 128
         out["raster"] = self._height_raster(pts, max_bytes=max(256, int(available * 0.55)))
-        quota = max(0, (self.ENCODE_SOFT_CAP - len(json.dumps(out))) // len(slices))
-        for part, bounds in zip(slices, records, strict=True):
+        quota = max(0, (self.ENCODE_SOFT_CAP - len(json.dumps(out))) // len(records))
+        for bounds in records:
             sizes = np.array([len(json.dumps(record)) + 2 for record in bounds])
-            count = min(len(bounds), (quota + 2) // int(sizes.min()))
+            count = min(len(bounds), quota // int(sizes.min()))
             indices = np.empty(0, dtype=int)
             # Evenly spaced selections are not nested, so their costs need not be
             # monotonic. Try counts in descending order rather than binary search.
             while count >= 2:
                 candidate = np.linspace(0, len(bounds) - 1, count, dtype=int)
-                if int(sizes[candidate].sum()) - 2 <= quota:
+                if int(sizes[candidate].sum()) <= quota:
                     indices = candidate
                     break
                 count -= 1
             if count == 1:
-                fitting = np.flatnonzero(sizes - 2 <= quota)
+                fitting = np.flatnonzero(sizes <= quota)
                 indices = fitting[
                     np.argsort(np.abs(fitting - (len(bounds) - 1) / 2), kind="stable")[:1]
                 ]
             for index in indices:
                 record = bounds[index]
-                part["bounds"].append(record)
-                part["omitted_boxes"] -= 1
-                part["omitted_points"] -= record[4]
+                out["bounds"]["rows"].append(record)
+                out["bounds"]["omitted_points"] -= record[6]
         return out
 
     @classmethod
@@ -500,10 +493,7 @@ class PointCloud2(Timestamped):
             qmin[qmax < 0] = levels
             qmax[qmax < 0] = levels
             pairs = np.char.add(glyph[qmin], glyph[qmax]).reshape(ny, nx)
-            rows = [
-                f"{float(origin[1] + j * cell)} " + "".join(pairs[j].tolist())
-                for j in range(ny - 1, -1, -1)
-            ]
+            rows = ["".join(row.tolist()) for row in pairs]
             raster = {
                 "cell_m": cell,
                 "origin_xy_m": [float(origin[0]), float(origin[1])],
@@ -517,8 +507,16 @@ class PointCloud2(Timestamped):
             cell *= 2.0
 
     @classmethod
-    def _native_z_boxes(cls, pts: np.ndarray, decimals: list[int]) -> dict[str, Any]:
-        """Partition all finite returns into native-z slices and containing x-y runs."""
+    def _bounds_groups(
+        cls, pts: np.ndarray, decimals: list[int]
+    ) -> tuple[list[float], list[list[list[float]]]]:
+        """Group finite returns into 3D bounds, stratified for equal payload quotas.
+
+        Four half-open z strata cover the native range; the last includes zmax.
+        Constant z uses one stratum. Within each stratum, y bands and consecutive
+        x gaps use the XY grouping width. Each record bounds its own assigned
+        points on all three axes; strata themselves are not serialized.
+        """
         z = pts[:, 2]
         z_lo, z_hi = float(z.min()), float(z.max())
         edges = np.linspace(z_lo, z_hi, 5) if z_hi > z_lo else np.array([z_lo, z_hi])
@@ -538,7 +536,7 @@ class PointCloud2(Timestamped):
             )
             records = []
             for band in np.unique(bands)[::-1]:
-                run_points = xy[bands == band]
+                run_points = selected[bands == band]
                 run_points = run_points[np.argsort(run_points[:, 0], kind="stable")]
                 cuts = np.flatnonzero(np.diff(run_points[:, 0]) > group) + 1
                 for run in np.split(run_points, cuts):
@@ -549,20 +547,13 @@ class PointCloud2(Timestamped):
                             cls._outward_endpoint(float(hi[0]), decimals[0], upper=True),
                             cls._outward_endpoint(float(lo[1]), decimals[1], upper=False),
                             cls._outward_endpoint(float(hi[1]), decimals[1], upper=True),
+                            cls._outward_endpoint(float(lo[2]), decimals[2], upper=False),
+                            cls._outward_endpoint(float(hi[2]), decimals[2], upper=True),
                             len(run),
                         ]
                     )
-            slices.append(
-                {
-                    "index": index,
-                    "z_m": [float(selected[:, 2].min()), float(selected[:, 2].max())],
-                    "count": len(selected),
-                    "bounds": records,
-                    "omitted_boxes": 0,
-                    "omitted_points": 0,
-                }
-            )
-        return {"slice_edges_m": edges.tolist(), "xy_group_m": group, "slices": slices}
+            slices.append(records)
+        return [group, (z_hi - z_lo) / 4], slices
 
     @staticmethod
     def _outward_endpoint(value: float, decimals: int, *, upper: bool) -> float:
