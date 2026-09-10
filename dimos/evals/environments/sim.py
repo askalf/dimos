@@ -89,6 +89,9 @@ class Sim(Environment):
             proc = DimosCliCall()
             proc.simulator = self.config.simulator
             proc.global_args = ["--dimsim-scene", self.config.scene, "--record"]
+            if self.config.simulator == "dimsim":
+                # DimSim's bridge publishes sensor data over LCM.
+                proc.global_args += ["--transport", "lcm"]
             disabled = [arg for name in self.config.disable for arg in ("--disable", name)]
             proc.demo_args = ["run", *self.config.blueprint, *modules, *disabled]
             self._resources.callback(proc.stop)

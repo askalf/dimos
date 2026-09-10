@@ -285,8 +285,11 @@ def test_sim_attach_rejects_added_modules() -> None:
         _sim(attach=True).preflight(McpClientAdapter(modules=("mcp-client",)))
 
 
+@pytest.mark.parametrize(
+    ("simulator", "transport_args"), [("dimsim", ["--transport", "lcm"]), ("mujoco", [])]
+)
 def test_sim_launches_base_blueprints_and_agent_modules_in_order(
-    dataset: str, mocker: MockerFixture
+    dataset: str, mocker: MockerFixture, simulator: str, transport_args: list[str]
 ) -> None:
     proc = mocker.patch("dimos.evals.environments.sim.DimosCliCall").return_value
     adapter = mocker.patch("dimos.evals.environments.sim.McpAdapter")
@@ -294,6 +297,7 @@ def test_sim_launches_base_blueprints_and_agent_modules_in_order(
     sim_client = mocker.patch("dimos.evals.environments.sim.DimSimClient")
     setup = mocker.Mock()
     env = _sim(
+        simulator=simulator,
         scene="empty",
         launch_timeout_s=4.0,
         setup=setup,
@@ -315,7 +319,7 @@ def test_sim_launches_base_blueprints_and_agent_modules_in_order(
             "--disable",
             "patrolling-module",
         ]
-        assert proc.global_args == ["--dimsim-scene", "empty", "--record"]
+        assert proc.global_args == ["--dimsim-scene", "empty", "--record", *transport_args]
         adapter.return_value.wait_for_ready.assert_called_once_with(timeout=4.0, interval=2.0)
         setup.assert_called_once_with(sim_client.return_value)
         proc.start.assert_called_once_with()
