@@ -189,7 +189,7 @@ class PiAdapter(Agent):
             try:
                 with TemporaryDirectory(prefix="dimos-pi-isolation-") as temporary:
                     probe = Path(temporary)
-                    token = probe.name
+                    token = f"marker-{probe.name}"
                     command = self._isolate_tmp(
                         [
                             sys.executable,
@@ -213,8 +213,13 @@ class PiAdapter(Agent):
                             "Pi temporary-file isolation did not verify both bindings"
                         )
             except (OSError, subprocess.SubprocessError) as error:
+                detail = (
+                    error.stderr.strip()
+                    if isinstance(error, subprocess.CalledProcessError) and error.stderr
+                    else str(error)
+                )
                 raise RuntimeError(
-                    f"Pi temporary-file isolation cannot verify PRoot bindings: {error}"
+                    f"Pi temporary-file isolation cannot verify PRoot bindings: {detail}"
                 ) from error
 
     def run(

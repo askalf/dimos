@@ -263,9 +263,13 @@ def test_missing_tmp_isolation_executable_fails_before_running(mocker, monkeypat
 def test_unusable_tmp_isolation_fails_without_fallback(mocker, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     mocker.patch.object(pi.shutil, "which", side_effect=["/bin/pi", "/bin/proot", "/bin/proot"])
-    mocker.patch.object(pi.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "proot"))
+    mocker.patch.object(
+        pi.subprocess,
+        "run",
+        side_effect=subprocess.CalledProcessError(1, "proot", stderr="ptrace is unavailable"),
+    )
 
-    with pytest.raises(RuntimeError, match="temporary-file isolation cannot verify PRoot bindings"):
+    with pytest.raises(RuntimeError, match="cannot verify PRoot bindings: ptrace is unavailable"):
         PiAdapter(tmp_isolation_proot="proot").preflight(mocker.Mock(has_robot=False))
 
 
@@ -307,17 +311,28 @@ def test_tmp_preflight_rejects_successful_wrappers_without_bindings(
     assert list(probe_root.iterdir()) == []
 
 
+@pytest.mark.parametrize("layout", ["nested", "tmp-root"])
 def test_tmp_preflight_verifies_real_bindings_and_cleans_probe(
-    tmp_path, proot_cli, mocker, monkeypatch
+    tmp_path, proot_cli, mocker, monkeypatch, layout
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(pi, "TemporaryDirectory", partial(TemporaryDirectory, dir=tmp_path))
+    created = []
+
+    def temporary_directory(*args, **kwargs):
+        directory = TemporaryDirectory(
+            *args, dir="/tmp" if layout == "tmp-root" else tmp_path, **kwargs
+        )
+        created.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(pi, "TemporaryDirectory", temporary_directory)
 
     PiAdapter(cli=sys.executable, tmp_isolation_proot=proot_cli).preflight(
         mocker.Mock(has_robot=False)
     )
 
-    assert list(tmp_path.iterdir()) == []
+    assert len(created) == 1
+    assert not created[0].exists()
 
 
 def test_private_tmp_keeps_concurrent_tools_inputs_and_localhost_separate(tmp_path, proot_cli):
