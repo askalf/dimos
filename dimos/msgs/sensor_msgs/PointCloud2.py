@@ -352,7 +352,8 @@ class PointCloud2(Timestamped):
         "origin-aligned 0.2m XY cells times 0.04. "
         "bounds: columns label rows; group_m=[XY grouping width,Z stratum width]; "
         "omitted_points counts unrepresented returns. "
-        "raster: rows increase y; pairs increase x from origin_xy_m at cell_m spacing. "
+        "raster.rows: [y_min_m,cell_codes], increasing y; y_min_m is the row's lower edge. "
+        "Code pairs increase x from origin_xy_m[0] at cell_m spacing. "
         "Each pair encodes minimum/maximum z with alphabet 0123456789ABCDEFGHIJKLMNOPQRSTU; "
         "z=z_min_m+index*z_step_m; z_error_m bounds quantization error. '..': no return. "
         "Bounds may contain gaps. Axes require external context; absence does not "
@@ -458,7 +459,7 @@ class PointCloud2(Timestamped):
 
     @classmethod
     def _height_raster(cls, pts: np.ndarray, max_bytes: int = 5200) -> dict[str, Any]:
-        """Quantized min/max z per x-y cell, bounded in dimensions and JSON size."""
+        """Quantized min/max z per x-y cell; max_bytes excludes row-coordinate labels."""
         xy = pts[:, :2]
         lo = xy.min(axis=0)
         hi = xy.max(axis=0)
@@ -503,6 +504,16 @@ class PointCloud2(Timestamped):
                 "rows": rows,
             }
             if len(json.dumps(raster)) <= max_bytes or nx * ny == 1:
+                # Attach coordinates after choosing the grid, charging their bytes
+                # to the remaining bounds budget without coarsening the raster.
+                y_edges = [float(origin[1] + j * cell) for j in range(ny)]
+                if not np.isfinite(y_edges).all() or np.any(np.diff(y_edges) <= 0):
+                    raise ValueError(
+                        "Point cloud row coordinates exceed the encoder's numeric range"
+                    )
+                raster["rows"] = [
+                    [y_min, codes] for y_min, codes in zip(y_edges, rows, strict=True)
+                ]
                 return raster
             cell *= 2.0
 
