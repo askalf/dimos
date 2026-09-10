@@ -336,7 +336,7 @@ def test_agent_encode_every_key_on_every_frame() -> None:
     raster = floor["raster"]
     assert isinstance(raster, dict)
     assert raster["rows"]
-    widths = {len(codes) for _, codes in raster["rows"]}
+    widths = {len(row) for row in raster["rows"]}
     assert len(widths) == 1
 
 
@@ -374,8 +374,7 @@ def test_agent_encode_raster_quantization_round_trips(scale, offset) -> None:
 
     assert encoded["frame_id"] == "camera_optical"
     assert len(rows) <= PointCloud2._RASTER_MAX_CELLS
-    for j, (y_min, cells) in enumerate(rows):
-        assert y_min == origin[1] + j * cell
+    for j, cells in enumerate(rows):
         assert set(cells) <= set(alphabet + ".")
         assert len(cells) % 2 == 0
         assert len(cells) // 2 <= PointCloud2._RASTER_MAX_CELLS
@@ -407,68 +406,13 @@ def test_agent_encode_raster_cell_rule() -> None:
 def test_agent_encode_raster_single_return_is_min_equals_max() -> None:
     raster = PointCloud2.from_numpy(np.array([[0.1, 0.1, 0.62]])).agent_encode()["raster"]
     assert isinstance(raster, dict)
-    ((y_min, pair),) = raster["rows"]
-    assert y_min == raster["origin_xy_m"][1]
+    (row,) = raster["rows"]
+    pair = row
     assert len(pair) == 2
     assert pair[0] == pair[1]
     decoded = raster["z_min_m"] + PointCloud2._RASTER_ALPHABET.index(pair[0]) * raster["z_step_m"]
     assert decoded == pytest.approx(0.62)
     assert raster["z_error_m"] == 0.0
-
-
-@pytest.mark.parametrize("scale,offset", [(1.0, -10.0), (1.0, 10.0), (1e-9, 0.0), (0.001, 1e8)])
-def test_agent_encode_raster_row_coordinates_survive_reordering(scale, offset) -> None:
-    points = np.array([[0, 0, -3], [1, 3, 0], [2, 6, 3]], dtype=np.float64) * scale
-    points[:, :2] += offset
-    cloud = PointCloud2()
-    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
-
-    encoded = cloud.agent_encode()
-    raster = encoded["raster"]
-    origin = np.array(raster["origin_xy_m"])
-    cell = raster["cell_m"]
-    expected = {tuple(np.floor((p[:2] - origin) / cell).astype(int)): p for p in points}
-    occupied = {}
-    # Coordinates stay attached even if the consumer reverses the display.
-    for y_min, codes in reversed(raster["rows"]):
-        row_index = round((y_min - origin[1]) / cell)
-        assert y_min == origin[1] + row_index * cell
-        for column in range(len(codes) // 2):
-            pair = codes[2 * column : 2 * column + 2]
-            if pair != "..":
-                occupied[column, row_index] = pair
-
-    assert occupied.keys() == expected.keys()
-    for index, point in expected.items():
-        pair = occupied[index]
-        height = (
-            raster["z_min_m"] + PointCloud2._RASTER_ALPHABET.index(pair[0]) * raster["z_step_m"]
-        )
-        assert pair[0] == pair[1]
-        assert abs(height - point[2]) <= raster["z_error_m"]
-    assert len(json.dumps(encoded)) <= PointCloud2.ENCODE_SOFT_CAP
-
-
-def test_agent_encode_rejects_unrepresentable_raster_row_coordinates() -> None:
-    points = np.array([[0, 1e16, 0], [0, 1e16 + 2, 1]], dtype=np.float64)
-    cloud = PointCloud2()
-    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
-
-    with pytest.raises(ValueError, match="numeric range"):
-        cloud.agent_encode()
-
-
-def test_agent_encode_raster_label_overhead_does_not_coarsen_the_grid() -> None:
-    xy = _grid(3.0, 0.5)
-    points = np.column_stack([xy, np.zeros(len(xy))])
-    raster = PointCloud2._height_raster(points)
-    without_labels = {**raster, "rows": [codes for _, codes in raster["rows"]]}
-    geometry_budget = len(json.dumps(without_labels))
-
-    budgeted = PointCloud2._height_raster(points, max_bytes=geometry_budget)
-
-    assert len(json.dumps(budgeted)) > geometry_budget
-    assert budgeted == raster
 
 
 def test_agent_encode_stays_within_prompt_budget() -> None:
