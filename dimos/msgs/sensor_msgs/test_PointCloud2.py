@@ -452,6 +452,10 @@ def test_agent_encode_range_profile_measures_bearing_sectors_from_the_center() -
     assert banded["range_profile_m"][9] == 2.0
     assert banded["range_profile_m"][0] is None
     assert _cloud(points).agent_encode()["range_profile_m"] is None
+    whole = _cloud(points).agent_encode(center=(0, 0))
+    assert whole["selection"] == {"center_xy": [0, 0], "radius_m": None}
+    assert whole["points_selected"] == 6
+    assert whole["range_profile_m"] == profile
 
 
 def test_agent_encode_selection_without_returns_still_describes_the_window() -> None:
@@ -466,7 +470,6 @@ def test_agent_encode_selection_without_returns_still_describes_the_window() -> 
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"center": (0, 0)},
         {"radius": 1.0},
         {"center": (0, 0), "radius": 0},
         {"z_range": (1, 0)},

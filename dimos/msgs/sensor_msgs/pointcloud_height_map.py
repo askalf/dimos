@@ -56,7 +56,9 @@ LEGEND = (
     "With a center, range_profile_m lists the horizontal distance from the center to the "
     "nearest selected return in each of 36 bearing sectors of 10 degrees, counterclockwise "
     "from +x in the XY plane (entry k spans 10k-5 to 10k+5 degrees), null when the sector "
-    "holds none."
+    "holds none. agent_encode options: center=(x, y), radius=r (square half-width; omitted "
+    "= whole cloud), z_range=(low, high), cell=m, cells=n (max columns/rows, default 48, "
+    "limit 120), z_step=m."
 )
 
 _STEP_LADDER = (1.0, 2.0, 2.5, 5.0)
@@ -204,8 +206,8 @@ def encode_points(
     z_step: float | None = None,
 ) -> dict[str, Any]:
     """Encode an (N, 3) array of stored coordinates. See :data:`LEGEND` for the fields."""
-    if (center is None) != (radius is None):
-        raise ValueError("center and radius must be given together")
+    if radius is not None and center is None:
+        raise ValueError("radius needs a center")
     if radius is not None and not (math.isfinite(radius) and radius > 0):
         raise ValueError("radius must be positive and finite")
     cells = min(max(int(cells), 2), MAX_CELLS)
@@ -217,14 +219,16 @@ def encode_points(
     points = stored[finite].astype(np.float64)
     selection: dict[str, Any] | None = None
     window: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
-    if center is not None and radius is not None:
+    if center is not None:
         cx, cy = float(center[0]), float(center[1])
         if not (math.isfinite(cx) and math.isfinite(cy)):
             raise ValueError("center must be finite")
-        keep = (np.abs(points[:, 0] - cx) <= radius) & (np.abs(points[:, 1] - cy) <= radius)
-        points = points[keep]
-        window = (np.array([cx - radius, cy - radius]), np.array([cx + radius, cy + radius]))
-        selection = {"center_xy": [cx, cy], "radius_m": float(radius), "shape": "square"}
+        selection = {"center_xy": [cx, cy], "radius_m": None}
+        if radius is not None:
+            keep = (np.abs(points[:, 0] - cx) <= radius) & (np.abs(points[:, 1] - cy) <= radius)
+            points = points[keep]
+            window = (np.array([cx - radius, cy - radius]), np.array([cx + radius, cy + radius]))
+            selection = {"center_xy": [cx, cy], "radius_m": float(radius), "shape": "square"}
     if z_range is not None:
         z_low, z_high = float(z_range[0]), float(z_range[1])
         if not z_low <= z_high:
