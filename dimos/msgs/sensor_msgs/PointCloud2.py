@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import functools
+import heapq
 import json
+import math
 import struct
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +28,7 @@ from dimos_lcm.sensor_msgs.PointCloud2 import (
 from dimos_lcm.sensor_msgs.PointField import PointField
 from dimos_lcm.std_msgs.Header import Header
 import numpy as np
+from numpy.typing import NDArray
 
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -341,36 +344,31 @@ class PointCloud2(Timestamped):
         return f"PointCloud2(frame_id='{self.frame_id}', num_points={len(self)})"
 
     ENCODE_SOFT_CAP = 6000
-    """Maximum JSON bytes for the complete summary; larger budgets refine sections."""
+    """Maximum JSON bytes per observation; larger budgets refine the partition."""
+    _ENCODE_MAX_GROUPS = 512
 
     AGENT_ENCODE_LEGEND = (
-        "Coordinates are meters in frame_id; ts is the timestamp. num_points includes "
-        "nonfinite_points, excluded from geometry. source_dtype is stored precision; "
-        "scalar_rounding_m gives XYZ rounding steps. window_m gives native axis extrema; "
-        "centroid_xy_m is the return mean. xy_footprint_m2 counts occupied origin-aligned "
-        "0.2m XY cells times 0.04. axis_gaps_m lists up to four largest intervals between "
-        "consecutive distinct coordinates on each axis, largest first, at stored precision. "
-        "sections columns label metric bounds and return counts. Every finite return "
-        "belongs to one row. Rows group Y/Z bands of section_m width, splitting X runs "
-        "at gaps larger than section_m. Bounds round outward and may contain gaps. "
-        "No rows are omitted; a smaller byte budget widens sections. Axis gaps are "
-        "projections, not spatial passages. Axes need external context; missing returns "
-        "do not establish free space."
+        "Coordinates: meters in frame_id; ts: timestamp. num_points includes "
+        "nonfinite_points, excluded from geometry. source_dtype: stored precision. "
+        "scalar_rounding_m: XYZ steps; scalars round nearest, bounds outward. "
+        "window_m: full-cloud axis extrema; centroid_xy_m: mean of stored XY returns. "
+        "xy_footprint_m2: occupied origin-aligned 0.2m XY cells times 0.04. "
+        "bounds.rows: numeric groups with columns [xmin,xmax,ymin,ymax,zmin,zmax,points]. "
+        "Each finite return belongs to one group; omitted_points=0. max_extent_m: "
+        "largest group width on each XYZ axis. Bounds locate returns within intervals; "
+        "they are not filled volumes and may contain gaps. Axes need external context; "
+        "missing returns do not establish free space."
     )
-    """Field reference for complete metric cross-sections and coordinate support."""
+    """Field reference for complete bounded groups of observed points."""
 
     @staticmethod
-    def _coordinate_decimals(lo: np.ndarray, hi: np.ndarray) -> list[int]:
+    def _coordinate_decimals(lo: NDArray[np.float64], hi: NDArray[np.float64]) -> list[int]:
         """Keep centimeter reporting for maps and finer precision for small spans."""
         scale = np.where(hi > lo, hi - lo, np.maximum(np.abs(lo), np.abs(hi)))
         return [max(2, int(np.ceil(-np.log10(s))) + 4) if 0 < s < 1 else 2 for s in scale]
 
     def agent_encode(self) -> dict[str, Any]:
-        """Describe all finite returns as bounded, native-frame metric cross-sections.
-
-        Section spacing adapts to the byte budget. Each row bounds one complete
-        spatial run; no return is discarded and no floor or robot pose is assumed.
-        """
+        """Complete, bounded XYZ groups of stored returns in the cloud's frame."""
         stored = self.points().numpy()
         finite = np.isfinite(stored).all(axis=1)
         pts = stored[finite].astype(np.float64)
@@ -381,22 +379,23 @@ class PointCloud2(Timestamped):
             "nonfinite_points": int((~finite).sum()),
             "source_dtype": str(stored.dtype),
             "scalar_rounding_m": [],
-            "window_m": {axis: [] for axis in "xyz"},
+            "window_m": {"x": [], "y": [], "z": []},
             "centroid_xy_m": [],
             "xy_footprint_m2": 0.0,
-            "axis_gaps_m": {axis: [] for axis in "xyz"},
-            "sections": {
+            "bounds": {
                 "columns": ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "points"],
                 "rows": [],
-                "section_m": 0.0,
                 "omitted_points": 0,
+                "max_extent_m": [],
             },
         }
         if len(pts) == 0:
             if len(json.dumps(out)) > self.ENCODE_SOFT_CAP:
-                raise ValueError("Point cloud metadata exceeds the encoder byte budget")
+                raise ValueError("Point cloud metadata exceeds the encoder's byte budget")
             return out
-        mins, maxs = pts.min(axis=0), pts.max(axis=0)
+        xy = pts[:, :2]
+        mins = pts.min(axis=0)
+        maxs = pts.max(axis=0)
         with np.errstate(over="ignore"):
             spans = maxs - mins
         scale = np.where(spans > 0, spans, np.maximum(np.abs(mins), np.abs(maxs)))
@@ -408,8 +407,8 @@ class PointCloud2(Timestamped):
             axis: [round(float(mins[i]), decimals[i]), round(float(maxs[i]), decimals[i])]
             for i, axis in enumerate("xyz")
         }
-        # Fixed summation order prevents permutation-dependent rounding at ties.
-        centered = np.sort(pts[:, :2] - mins[:2], axis=0)
+        # Sorted reductions keep scalar output independent of input point order.
+        centered = np.sort(xy - mins[:2], axis=0)
         if np.any(spans[:2] > np.finfo(float).max / len(pts)):
             # Division before summing avoids overflow for finite, very large clouds.
             mean = (centered / len(pts)).sum(axis=0, dtype=np.float64)
@@ -422,66 +421,82 @@ class PointCloud2(Timestamped):
             round(float(c), d) for c, d in zip(center, decimals[:2], strict=True)
         ]
         with np.errstate(over="ignore"):
-            cells = np.floor(pts[:, :2] / 0.2)
+            cells = np.floor(xy / 0.2)
         if not np.isfinite(cells).all():
             raise ValueError("Point cloud XY footprint exceeds the encoder's numeric range")
-        occupied_xy = np.unique(cells, axis=0)
-        out["xy_footprint_m2"] = round(float(len(occupied_xy)) * 0.04, 2)
-        for axis, name in enumerate("xyz"):
-            coordinates = np.unique(pts[:, axis])
-            gaps = np.diff(coordinates)
-            indices = np.argsort(-gaps, kind="stable")[:4]
-            # Endpoints retain stored precision; rounding can close a small gap.
-            out["axis_gaps_m"][name] = [
-                [float(coordinates[i]), float(coordinates[i + 1])] for i in indices
-            ]
-        span = float(spans.max())
-        section = span / 64 if span else 1.0
-        if section == 0:
-            raise ValueError("Point cloud sections exceed the encoder's numeric range")
-        while True:
-            out["sections"]["section_m"] = section if span else 0.0
-            records = self._section_runs(pts, mins, section, decimals)
-            if records is not None:
-                out["sections"]["rows"] = records
-                if len(json.dumps(out)) <= self.ENCODE_SOFT_CAP:
-                    return out
-            if section > span:
-                raise ValueError("Point cloud metadata exceeds the encoder byte budget")
-            section *= 2.0
-            if not np.isfinite(section):
-                raise ValueError("Point cloud sections exceed the encoder's numeric range")
+        floor_cells = np.unique(cells, axis=0)
+        out["xy_footprint_m2"] = round(float(floor_cells.shape[0]) * 0.04, 2)
+        # Reserve the full precision of the extent metadata before partitioning.
+        out["bounds"]["max_extent_m"] = [float(v) for v in spans]
+        available = self.ENCODE_SOFT_CAP - len(json.dumps(out)) - 128
+        rows = self._partition_bounds(pts, decimals, max_bytes=available)
+        out["bounds"]["rows"] = rows
+        extents = np.array(rows)[:, 1:6:2] - np.array(rows)[:, :6:2]
+        out["bounds"]["max_extent_m"] = [float(v) for v in extents.max(axis=0)]
+        if len(json.dumps(out)) > self.ENCODE_SOFT_CAP:
+            raise ValueError("Point cloud metadata exceeds the encoder's byte budget")
+        return out
 
     @classmethod
-    def _section_runs(
-        cls, pts: np.ndarray, origin: np.ndarray, section: float, decimals: list[int]
-    ) -> list[list[float]] | None:
-        """Cover all returns, or decline sections that cannot fit before formatting."""
-        bands = np.floor((pts[:, 1:] - origin[1:]) / section).astype(np.int64)
-        order = np.lexsort((pts[:, 0], bands[:, 0], bands[:, 1]))
-        selected = pts[order]
-        band_order = bands[order]
-        new_run = np.any(np.diff(band_order, axis=0) != 0, axis=1)
-        new_run |= np.diff(selected[:, 0]) > section
-        starts = np.r_[0, np.flatnonzero(new_run) + 1]
-        # Even single-digit fields need 21 bytes per seven-column JSON row.
-        if len(starts) * 21 > cls.ENCODE_SOFT_CAP:
-            return None
-        ends = np.r_[starts[1:], len(selected)]
-        lower = np.minimum.reduceat(selected, starts, axis=0)
-        upper = np.maximum.reduceat(selected, starts, axis=0)
-        records = []
-        for lo, hi, count in zip(lower, upper, ends - starts, strict=True):
-            record = []
-            for axis in range(3):
-                record.extend(
-                    [
-                        cls._outward_endpoint(float(lo[axis]), decimals[axis], upper=False),
-                        cls._outward_endpoint(float(hi[axis]), decimals[axis], upper=True),
-                    ]
+    def _partition_bounds(
+        cls, pts: NDArray[np.float64], decimals: list[int], *, max_bytes: int
+    ) -> list[list[float]]:
+        """Refine spatial bounds without dropping any assigned input returns."""
+        records: dict[int, list[float]] = {}
+        pending: list[
+            tuple[float, int, NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
+        ] = []
+
+        def add(points: NDArray[np.float64], index: int) -> int:
+            lo, hi = points.min(axis=0), points.max(axis=0)
+            row = [
+                endpoint
+                for axis in range(3)
+                for endpoint in (
+                    cls._outward_endpoint(float(lo[axis]), decimals[axis], upper=False),
+                    cls._outward_endpoint(float(hi[axis]), decimals[axis], upper=True),
                 )
-            records.append([*record, int(count)])
-        return records
+            ] + [len(points)]
+            records[index] = row
+            width = float(np.max(hi - lo))
+            if width > 0:
+                # Weight the squared midpoint error bound by return count. Logs
+                # preserve the ordering without squaring extreme finite widths.
+                priority = math.log(len(points)) + 2 * math.log(width)
+                heapq.heappush(pending, (-priority, index, points, lo, hi))
+            return len(json.dumps(row)) + 2
+
+        used = add(pts, 0)
+        next_index = 1
+        while pending and len(records) < cls._ENCODE_MAX_GROUPS:
+            _, index, points, lo, hi = heapq.heappop(pending)
+            axis = int(np.argmax(hi - lo))
+            values = np.unique(points[:, axis])
+            gaps = np.diff(values)
+            gap_index = int(np.argmax(gaps))
+            # Isolate a significant separation; otherwise bisect physical extent.
+            gap = float(gaps[gap_index])
+            width = float(hi[axis] - lo[axis])
+            if gap > max(float(np.median(gaps)) * 1.5, width * 0.05):
+                cut = values[gap_index + 1]
+            else:
+                cut = lo[axis] + width / 2
+                if cut <= lo[axis]:
+                    cut = hi[axis]
+            selected = points[:, axis] < cut
+            left, right = points[selected], points[~selected]
+            old_cost = len(json.dumps(records[index])) + 2
+            new_cost = add(left, next_index) + add(right, next_index + 1)
+            if used - old_cost + new_cost > max_bytes:
+                del records[next_index], records[next_index + 1]
+                # These entries remain queued but must not be refined.
+                pending = [entry for entry in pending if entry[1] < next_index]
+                heapq.heapify(pending)
+            else:
+                used += new_cost - old_cost
+                del records[index]
+            next_index += 2
+        return sorted(records.values(), key=lambda row: (row[4], row[2], row[0], *row))
 
     @staticmethod
     def _outward_endpoint(value: float, decimals: int, *, upper: bool) -> float:
