@@ -34,6 +34,7 @@ DEFAULT_CELLS = 48
 MAX_CELLS = 120
 FOOTPRINT_CELL_M = 0.2
 LARGEST_GAPS = 4
+SECTORS = 36
 
 LEGEND = (
     "Coordinates are meters in frame_id, as stored, with no floor, robot or gravity "
@@ -50,7 +51,11 @@ LEGEND = (
     "row = largest y) and character i of a row at x_centers_m[i]. Each character is the "
     "base-36 digit k (0-9 then A-Z) of the highest (zmax_rows) or lowest (zmin_rows) "
     "return z in that cell, meaning z0_m + k*z_step_m <= z < z0_m + (k+1)*z_step_m. "
-    "'.' means the cell holds no selected return; it does not establish free space."
+    "'.' means the cell holds no selected return; it does not establish free space. "
+    "With a center, range_profile_m lists the horizontal distance from the center to the "
+    "nearest selected return in each of 36 bearing sectors of 10 degrees, counterclockwise "
+    "from +x in the XY plane (entry k spans 10k-5 to 10k+5 degrees), null when the sector "
+    "holds none."
 )
 
 _STEP_LADDER = (1.0, 2.0, 2.5, 5.0)
@@ -95,6 +100,19 @@ def _axis_extrema(values: NDArray[np.float64]) -> dict[str, Any]:
             if gaps[i] > 0
         ],
     }
+
+
+def _range_profile(
+    points: NDArray[np.float64], center: tuple[float, float], decimals: int
+) -> list[float | None]:
+    """Nearest selected return per bearing sector, measured from an explicit center."""
+    offsets = points[:, :2] - np.array(center)
+    distances = np.hypot(offsets[:, 0], offsets[:, 1])
+    bearings = np.degrees(np.arctan2(offsets[:, 1], offsets[:, 0]))
+    sectors = np.floor((bearings + 180 / SECTORS) / (360 / SECTORS)).astype(np.int64) % SECTORS
+    nearest = np.full(SECTORS, np.inf)
+    np.minimum.at(nearest, sectors, distances)
+    return [round(float(r), decimals) if np.isfinite(r) else None for r in nearest]
 
 
 def _check_range(values: NDArray[np.float64], cell: float) -> None:
@@ -227,6 +245,7 @@ def encode_points(
         "centroid_xy_m": [],
         "footprint_m2": 0.0,
         "height_map": None,
+        "range_profile_m": None,
     }
     if len(points):
         lower, upper = points.min(axis=0), points.max(axis=0)
@@ -253,4 +272,6 @@ def encode_points(
         decimals = _decimals(out["height_map"]["cell_m"] / 2) + 1
         if len(points):
             out["centroid_xy_m"] = [round(float(v), decimals) for v in mean]
+        if center is not None:
+            out["range_profile_m"] = _range_profile(points, center, decimals)
     return out

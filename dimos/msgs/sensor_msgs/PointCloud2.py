@@ -358,8 +358,10 @@ class PointCloud2(Timestamped):
         Keyword options select and scale the description. All are explicit; none
         assume a robot, a floor or a gravity direction:
 
-            center=(x, y), radius=r   keep returns with |x-cx| <= r and |y-cy| <= r
-                                      and grid that whole square, empty cells included.
+            center=(x, y), radius=r   keep returns with |x-cx| <= r and |y-cy| <= r,
+                                      grid that whole square, empty cells included, and
+                                      add range_profile_m: the nearest selected return
+                                      per 10 degree bearing sector around the center.
             z_range=(low, high)       keep returns with low <= z <= high.
             cell=m                    grid cell size; by default the smallest round
                                       size that fits within `cells` columns and rows.

@@ -432,12 +432,32 @@ def test_agent_encode_selection_grids_the_whole_window_and_filters_heights() -> 
     assert grid["zmax_rows"] == [".....", ".....", "..K..", ".....", "0...."]
 
 
+def test_agent_encode_range_profile_measures_bearing_sectors_from_the_center() -> None:
+    points = [[1.5, 0, 0], [0, 2, 0.5], [-0.4, 0, 1.0], [0.7, 0.7, 2.0], [0, -3, 0], [2.5, 0, 0]]
+    encoded = _cloud(points).agent_encode(center=(0, 0), radius=3)
+    profile = encoded["range_profile_m"]
+
+    assert len(profile) == 36
+    assert profile[0] == 1.5  # east, nearest of two returns
+    assert profile[9] == 2.0  # north
+    assert profile[18] == 0.4  # west
+    assert profile[27] == 3.0  # south
+    assert profile[5] == pytest.approx(0.99, abs=0.005)  # 45 degrees opens sector 5
+    assert profile.count(None) == 31
+
+    banded = _cloud(points).agent_encode(center=(0, 0), radius=3, z_range=(0.4, 1.5))
+    assert banded["range_profile_m"][9] == 2.0
+    assert banded["range_profile_m"][0] is None
+    assert _cloud(points).agent_encode()["range_profile_m"] is None
+
+
 def test_agent_encode_selection_without_returns_still_describes_the_window() -> None:
     encoded = _cloud([[10, 10, 0]]).agent_encode(center=(0, 0), radius=1, cell=1.0)
 
     assert encoded["points_selected"] == 0
     assert encoded["bounds_m"]["x"] == []
     assert encoded["height_map"]["zmax_rows"] == ["...", "...", "..."]
+    assert encoded["range_profile_m"] == [None] * 36
 
 
 @pytest.mark.parametrize(
