@@ -74,6 +74,7 @@ SWEPT_CELL = 0.2  # grid "holds a return" is judged on; 0.1 m cells speckle
 LOW_Z = 0.15  # returns above this are in the way
 MARGIN = 0.2  # a path keeps this far from any return above LOW_Z
 BODY = 0.35  # returns within this of the robot are its own body
+PAD = 0.5  # unmeasured border kept round the map, the robot and the goal
 CHOICES = ("measured", "unmeasured", "blocked")
 
 
@@ -99,13 +100,17 @@ def _question(goal: np.ndarray, name: str) -> str:
 def verdict(pts: np.ndarray, robot: np.ndarray, goal: np.ndarray) -> str:
     """``measured`` / ``unmeasured`` / ``blocked`` for a goal, by flood fill.
 
-    The grid is widened to hold the goal, so a goal past the sensing window
-    sits in unmeasured cells rather than off the map. Start and goal are
-    taken as any cell within ``BODY`` / ``MARGIN`` of them. Connectivity is
-    8-way; the blocked ring round a return is two cells thick, so a path
-    cannot slip diagonally between two returns.
+    The grid is widened past the cloud, the robot and the goal by ``PAD``,
+    so unmeasured cells surround everything the lidar saw: a goal past the
+    sensing window sits in unmeasured cells, and a wall that runs to the edge
+    of the map can be rounded through unmeasured cells rather than sealing
+    the map like a box. Start and goal are taken as any cell within ``BODY``
+    / ``MARGIN`` of them. Connectivity is 8-way; the blocked ring round a
+    return is two cells thick, so a path cannot slip diagonally between two
+    returns.
     """
-    bounds = (np.minimum(robot, goal) - 0.5, np.maximum(robot, goal) + 0.5)
+    corners = np.array([pts[:, :2].min(axis=0), pts[:, :2].max(axis=0), robot, goal])
+    bounds = (corners.min(axis=0) - PAD, corners.max(axis=0) + PAD)
     origin, count, _, zmax = generate._cell_grid(pts, CELL, bounds=bounds)
     wx, wy = generate._cell_centers(origin, CELL, count.shape)
     from_robot = np.hypot(wx - robot[0], wy - robot[1])
