@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import functools
-import json
 import struct
 from typing import TYPE_CHECKING, Any
 
@@ -29,7 +28,7 @@ import numpy as np
 
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
-from dimos.msgs.sensor_msgs.pointcloud_views import add_pointcloud_views
+from dimos.msgs.sensor_msgs import pointcloud_height_map
 from dimos.types.timestamped import Timestamped
 
 if TYPE_CHECKING:
@@ -341,163 +340,47 @@ class PointCloud2(Timestamped):
     def __str__(self) -> str:
         return f"PointCloud2(frame_id='{self.frame_id}', num_points={len(self)})"
 
-    ENCODE_SOFT_CAP = 24000
-    """Maximum JSON bytes, including numeric data and PNG projections."""
-    _ENCODE_SUMMARY_CAP = 6000
+    AGENT_ENCODE_LEGEND = pointcloud_height_map.LEGEND
+    """Field reference for agent_encode(); delivered once per stream by consumers."""
 
-    AGENT_ENCODE_LEGEND = (
-        "Coordinates are meters in frame_id; ts is the timestamp. num_points includes "
-        "nonfinite_points, excluded from geometry. source_dtype is stored precision; "
-        "scalar_rounding_m gives XYZ rounding steps. window_m gives native axis extrema; "
-        "centroid_xy_m is the return mean. xy_footprint_m2 counts occupied origin-aligned "
-        "0.2m XY cells times 0.04. axis_gaps_m lists up to four largest intervals between "
-        "consecutive distinct coordinates on each axis, largest first, at stored precision. "
-        "sections columns label metric bounds and return counts. Every finite return "
-        "belongs to one row. Rows group Y/Z bands of section_m width, splitting X runs "
-        "at gaps larger than section_m. Bounds round outward and may contain gaps. "
-        "No rows are omitted; a smaller byte budget widens sections. Axis gaps are "
-        "projections, not spatial passages. Axes need external context; missing returns "
-        "do not establish free space. views contains a PNG of native XY, XZ and YZ "
-        "projections, with equal metric scale within each panel. White means no "
-        "projected return. Coordinates round to the nearest pixel. Pixel color uses "
-        "eight equal bins of the maximum third-axis coordinate, blue to red; "
-        "overlaps hide lower returns. pixel_m gives pixel spacing."
-    )
-    """Field reference for complete metric cross-sections and coordinate support."""
+    def agent_encode(
+        self,
+        *,
+        center: tuple[float, float] | None = None,
+        radius: float | None = None,
+        z_range: tuple[float, float] | None = None,
+        cell: float | None = None,
+        cells: int = pointcloud_height_map.DEFAULT_CELLS,
+        z_step: float | None = None,
+    ) -> dict[str, Any]:
+        """Describe the finite returns as exact native bounds and a top-down height map.
 
-    @staticmethod
-    def _coordinate_decimals(lo: np.ndarray, hi: np.ndarray) -> list[int]:
-        """Keep centimeter reporting for maps and finer precision for small spans."""
-        scale = np.where(hi > lo, hi - lo, np.maximum(np.abs(lo), np.abs(hi)))
-        return [max(2, int(np.ceil(-np.log10(s))) + 4) if 0 < s < 1 else 2 for s in scale]
+        Keyword options select and scale the description. All are explicit; none
+        assume a robot, a floor or a gravity direction:
 
-    def agent_encode(self) -> dict[str, Any]:
-        """Describe all finite returns as bounded, native-frame metric cross-sections.
+            center=(x, y), radius=r   keep returns with |x-cx| <= r and |y-cy| <= r
+                                      and grid that whole square, empty cells included.
+            z_range=(low, high)       keep returns with low <= z <= high.
+            cell=m                    grid cell size; by default the smallest round
+                                      size that fits within `cells` columns and rows.
+            cells=n                   maximum columns and rows (default 48, at most 120).
+            z_step=m                  height quantum; by default the selection's z span
+                                      in at most 36 steps.
 
-        Section spacing adapts to the byte budget. Each row bounds one complete
-        spatial run; no return is discarded and no floor or robot pose is assumed.
+        The result is deterministic for the same cloud and options. Fields are
+        documented in AGENT_ENCODE_LEGEND.
         """
-        stored = self.points().numpy()
-        finite = np.isfinite(stored).all(axis=1)
-        pts = stored[finite].astype(np.float64)
-        out: dict[str, Any] = {
-            "frame_id": self.frame_id,
-            "ts": None if self.ts is None else float(self.ts),
-            "num_points": int(stored.shape[0]),
-            "nonfinite_points": int((~finite).sum()),
-            "source_dtype": str(stored.dtype),
-            "scalar_rounding_m": [],
-            "window_m": {axis: [] for axis in "xyz"},
-            "centroid_xy_m": [],
-            "xy_footprint_m2": 0.0,
-            "axis_gaps_m": {axis: [] for axis in "xyz"},
-            "sections": {
-                "columns": ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "points"],
-                "rows": [],
-                "section_m": 0.0,
-                "omitted_points": 0,
-            },
-        }
-        summary_cap = min(self._ENCODE_SUMMARY_CAP, self.ENCODE_SOFT_CAP // 2)
-        if len(pts) == 0:
-            if len(json.dumps(out)) > self.ENCODE_SOFT_CAP:
-                raise ValueError("Point cloud metadata exceeds the encoder byte budget")
-            return add_pointcloud_views(out, pts, self.ENCODE_SOFT_CAP)
-        mins, maxs = pts.min(axis=0), pts.max(axis=0)
-        with np.errstate(over="ignore"):
-            spans = maxs - mins
-        scale = np.where(spans > 0, spans, np.maximum(np.abs(mins), np.abs(maxs)))
-        if not np.isfinite(spans).all() or np.any((scale > 0) & (scale < np.finfo(float).tiny)):
-            raise ValueError("Point cloud extent exceeds the encoder's numeric range")
-        decimals = self._coordinate_decimals(mins, maxs)
-        out["scalar_rounding_m"] = [10.0**-d for d in decimals]
-        out["window_m"] = {
-            axis: [round(float(mins[i]), decimals[i]), round(float(maxs[i]), decimals[i])]
-            for i, axis in enumerate("xyz")
-        }
-        # Fixed summation order prevents permutation-dependent rounding at ties.
-        centered = np.sort(pts[:, :2] - mins[:2], axis=0)
-        if np.any(spans[:2] > np.finfo(float).max / len(pts)):
-            # Division before summing avoids overflow for finite, very large clouds.
-            mean = (centered / len(pts)).sum(axis=0, dtype=np.float64)
-        else:
-            mean = centered.mean(axis=0, dtype=np.float64)
-        center = mins[:2] + mean
-        if not np.isfinite(center).all():
-            raise ValueError("Point cloud centroid exceeds the encoder's numeric range")
-        out["centroid_xy_m"] = [
-            round(float(c), d) for c, d in zip(center, decimals[:2], strict=True)
-        ]
-        with np.errstate(over="ignore"):
-            cells = np.floor(pts[:, :2] / 0.2)
-        if not np.isfinite(cells).all():
-            raise ValueError("Point cloud XY footprint exceeds the encoder's numeric range")
-        occupied_xy = np.unique(cells, axis=0)
-        out["xy_footprint_m2"] = round(float(len(occupied_xy)) * 0.04, 2)
-        for axis, name in enumerate("xyz"):
-            coordinates = np.unique(pts[:, axis])
-            gaps = np.diff(coordinates)
-            indices = np.argsort(-gaps, kind="stable")[:4]
-            # Endpoints retain stored precision; rounding can close a small gap.
-            out["axis_gaps_m"][name] = [
-                [float(coordinates[i]), float(coordinates[i + 1])] for i in indices
-            ]
-        span = float(spans.max())
-        section = span / 64 if span else 1.0
-        if section == 0:
-            raise ValueError("Point cloud sections exceed the encoder's numeric range")
-        while True:
-            out["sections"]["section_m"] = section if span else 0.0
-            records = self._section_runs(pts, mins, section, decimals)
-            if records is not None:
-                out["sections"]["rows"] = records
-                if len(json.dumps(out)) <= summary_cap:
-                    return add_pointcloud_views(out, pts, self.ENCODE_SOFT_CAP)
-            if section > span:
-                raise ValueError("Point cloud metadata exceeds the encoder byte budget")
-            section *= 2.0
-            if not np.isfinite(section):
-                raise ValueError("Point cloud sections exceed the encoder's numeric range")
-
-    @classmethod
-    def _section_runs(
-        cls, pts: np.ndarray, origin: np.ndarray, section: float, decimals: list[int]
-    ) -> list[list[float]] | None:
-        """Cover all returns, or decline sections that cannot fit before formatting."""
-        bands = np.floor((pts[:, 1:] - origin[1:]) / section).astype(np.int64)
-        order = np.lexsort((pts[:, 0], bands[:, 0], bands[:, 1]))
-        selected = pts[order]
-        band_order = bands[order]
-        new_run = np.any(np.diff(band_order, axis=0) != 0, axis=1)
-        new_run |= np.diff(selected[:, 0]) > section
-        starts = np.r_[0, np.flatnonzero(new_run) + 1]
-        # Even single-digit fields need 21 bytes per seven-column JSON row.
-        if len(starts) * 21 > cls.ENCODE_SOFT_CAP:
-            return None
-        ends = np.r_[starts[1:], len(selected)]
-        lower = np.minimum.reduceat(selected, starts, axis=0)
-        upper = np.maximum.reduceat(selected, starts, axis=0)
-        records = []
-        for lo, hi, count in zip(lower, upper, ends - starts, strict=True):
-            record = []
-            for axis in range(3):
-                record.extend(
-                    [
-                        cls._outward_endpoint(float(lo[axis]), decimals[axis], upper=False),
-                        cls._outward_endpoint(float(hi[axis]), decimals[axis], upper=True),
-                    ]
-                )
-            records.append([*record, int(count)])
-        return records
-
-    @staticmethod
-    def _outward_endpoint(value: float, decimals: int, *, upper: bool) -> float:
-        """Round an endpoint without shrinking its containing interval."""
-        rounded = round(value, decimals)
-        quantum = 10.0**-decimals
-        if upper:
-            return max(value, round(rounded + quantum, decimals)) if rounded < value else rounded
-        return min(value, round(rounded - quantum, decimals)) if rounded > value else rounded
+        return pointcloud_height_map.encode_points(
+            self.points().numpy(),
+            frame_id=self.frame_id,
+            ts=self.ts,
+            center=center,
+            radius=radius,
+            z_range=z_range,
+            cell=cell,
+            cells=cells,
+            z_step=z_step,
+        )
 
     @functools.cached_property
     def center(self) -> Vector3:

@@ -135,7 +135,7 @@ def test_fused_selection_reaches_question_answer_and_pi_export(
     (encoded_text,) = [text for text in texts if text.startswith("[t=")]
     encoded = json.loads(encoded_text.partition("] ")[2])
     assert encoded["num_points"] == 2
-    assert encoded["window_m"]["x"] == [1.05, 3.05]
+    assert encoded["bounds_m"]["x"] == pytest.approx([1.05, 3.05])
     assert case.grade(Outcome(trajectory=trajectory, artifacts={})) == 1.0
 
     with SqliteStore(path=str(exported_path), must_exist=True) as exported:
