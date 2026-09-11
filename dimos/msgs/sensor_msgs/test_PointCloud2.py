@@ -471,15 +471,25 @@ def test_agent_encode_selection_without_returns_still_describes_the_window() -> 
         {"center": (0, 0), "radius": 0},
         {"z_range": (1, 0)},
         {"cell": 0},
-        {"cells": 1},
-        {"cells": 1000},
         {"z_step": -1},
-        {"cell": 0.001},
     ],
 )
-def test_agent_encode_rejects_invalid_or_oversized_options(kwargs: dict[str, object]) -> None:
+def test_agent_encode_rejects_invalid_options(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         _cloud([[0, 0, 0], [5, 5, 1]]).agent_encode(**kwargs)  # type: ignore[arg-type]
+
+
+def test_agent_encode_explicit_cell_may_exceed_default_cells_but_not_the_limit() -> None:
+    cloud = _cloud([[0, 0, 0], [5, 5, 1]])
+
+    fine = cloud.agent_encode(cell=0.05)["height_map"]
+    assert fine["cell_m"] == 0.05
+    assert len(fine["x_centers_m"]) == 101
+
+    coarsened = cloud.agent_encode(cell=0.01)["height_map"]
+    assert coarsened["cell_m"] == 0.05
+    assert len(cloud.agent_encode(cells=1000)["height_map"]["x_centers_m"]) <= 120
+    assert len(cloud.agent_encode(cells=1)["height_map"]["x_centers_m"]) <= 2
 
 
 def test_agent_encode_default_cell_fits_the_requested_grid() -> None:

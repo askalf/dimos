@@ -131,8 +131,11 @@ def _height_map(
     """Grid the window (lower, upper XY corners) and quantize z per cell."""
     lower, upper = window
     span = float(max(upper[0] - lower[0], upper[1] - lower[1]))
-    explicit = cell is not None
-    if cell is None:
+    if cell is not None:
+        # An explicit cell may exceed the default grid up to the hard limit;
+        # beyond that it coarsens to the next round size and reports cell_m.
+        cells = MAX_CELLS
+    else:
         cell = nice_step(span / (cells - 1)) if span > 0 else 1.0
     while True:
         _check_range(np.concatenate([lower, upper]), cell)
@@ -140,11 +143,6 @@ def _height_map(
         shape = (np.floor((upper - origin) / cell) + 1).astype(np.int64)
         if shape.max() <= cells:
             break
-        if explicit:
-            raise ValueError(
-                f"cell={cell} needs {int(shape.max())} columns or rows; raise cells "
-                f"(at most {MAX_CELLS}) or use a larger cell"
-            )
         cell = nice_step(cell * (1 + 1e-9))
     columns, rows = int(shape[0]), int(shape[1])
     zmax = np.full((rows, columns), -np.inf)
@@ -210,8 +208,7 @@ def encode_points(
         raise ValueError("center and radius must be given together")
     if radius is not None and not (math.isfinite(radius) and radius > 0):
         raise ValueError("radius must be positive and finite")
-    if not 1 < cells <= MAX_CELLS:
-        raise ValueError(f"cells must be between 2 and {MAX_CELLS}")
+    cells = min(max(int(cells), 2), MAX_CELLS)
     if cell is not None and not (math.isfinite(cell) and cell > 0):
         raise ValueError("cell must be positive and finite")
     if z_step is not None and not (math.isfinite(z_step) and z_step > 0):

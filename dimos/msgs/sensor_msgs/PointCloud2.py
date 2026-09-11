@@ -365,7 +365,8 @@ class PointCloud2(Timestamped):
             z_range=(low, high)       keep returns with low <= z <= high.
             cell=m                    grid cell size; by default the smallest round
                                       size that fits within `cells` columns and rows.
-            cells=n                   maximum columns and rows (default 48, at most 120).
+            cells=n                   maximum columns and rows (default 48, at most 120);
+                                      an explicit cell may use up to 120 and coarsens beyond.
             z_step=m                  height quantum; by default the selection's z span
                                       in at most 36 steps.
 
