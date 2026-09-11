@@ -67,6 +67,7 @@ def _legend_block(obs: Observation[Any]) -> Blocks:
 
 class QuestionAnswerConfig(SingleCallAgentConfig):
     frames_per_stream: int = Field(default=8, ge=1)
+    include_images: bool = True
 
 
 class QuestionAnswer(SingleCallAgent):
@@ -101,4 +102,10 @@ class QuestionAnswer(SingleCallAgent):
                 blocks += _observation_blocks(obs, f"[t={obs.ts - t0:.1f}s]")
         if not blocks:
             raise ValueError("nothing in the recording to encode; the run would be blind")
+        if not self.config.include_images:
+            blocks = [
+                block
+                for block in blocks
+                if not isinstance(block, dict) or block.get("type") != "image_url"
+            ]
         return blocks
