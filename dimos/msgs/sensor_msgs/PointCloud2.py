@@ -341,27 +341,23 @@ class PointCloud2(Timestamped):
         return f"PointCloud2(frame_id='{self.frame_id}', num_points={len(self)})"
 
     ENCODE_SOFT_CAP = 6000
-    """Ceiling on one frame's encoding, JSON bytes: a full frame fits in one
-    readout of a tool that caps its output here."""
+    """Maximum JSON bytes for the complete summary; larger budgets refine sections."""
 
     AGENT_ENCODE_LEGEND = (
-        "Coordinates: meters in frame_id; ts: timestamp. num_points includes "
-        "nonfinite_points, excluded from geometry. source_dtype: stored precision; "
-        "scalar_rounding_m: xyz steps, nearest scalars, outward bounds. window_m: "
-        "axis extrema; centroid_xy_m: return mean. xy_footprint_m2: occupied "
-        "origin-aligned 0.2m XY cells times 0.04. "
-        "bounds: columns label rows; group_m=[XY grouping width,Z stratum width]; "
-        "omitted_points counts unrepresented returns. "
-        "raster: rows increase y; pairs increase x from origin_xy_m at cell_m spacing. "
-        "Each pair encodes minimum/maximum z with alphabet 0123456789ABCDEFGHIJKLMNOPQRSTU; "
-        "z=z_min_m+index*z_step_m; z_error_m bounds quantization error. '..': no return. "
-        "Bounds may contain gaps. Axes require external context; absence does not "
-        "establish free space."
+        "Coordinates are meters in frame_id; ts is the timestamp. num_points includes "
+        "nonfinite_points, excluded from geometry. source_dtype is stored precision; "
+        "scalar_rounding_m gives XYZ rounding steps. window_m gives native axis extrema; "
+        "centroid_xy_m is the return mean. xy_footprint_m2 counts occupied origin-aligned "
+        "0.2m XY cells times 0.04. axis_gaps_m lists up to four largest intervals between "
+        "consecutive distinct coordinates on each axis, largest first, at stored precision. "
+        "sections columns label metric bounds and return counts. Every finite return "
+        "belongs to one row. Rows group Y/Z bands of section_m width, splitting X runs "
+        "at gaps larger than section_m. Bounds round outward and may contain gaps. "
+        "No rows are omitted; a smaller byte budget widens sections. Axis gaps are "
+        "projections, not spatial passages. Axes need external context; missing returns "
+        "do not establish free space."
     )
-    """Compact field reference for the numeric tables and raster."""
-
-    _RASTER_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTU"
-    _RASTER_MAX_CELLS = 48
+    """Field reference for complete metric cross-sections and coordinate support."""
 
     @staticmethod
     def _coordinate_decimals(lo: np.ndarray, hi: np.ndarray) -> list[int]:
@@ -370,10 +366,10 @@ class PointCloud2(Timestamped):
         return [max(2, int(np.ceil(-np.log10(s))) + 4) if 0 < s < 1 else 2 for s in scale]
 
     def agent_encode(self) -> dict[str, Any]:
-        """Finite stored-return geometry in the cloud's own coordinate frame.
+        """Describe all finite returns as bounded, native-frame metric cross-sections.
 
-        Scalar precision, raster resolution and native-z slice bounds adapt to
-        the cloud without assuming a robot body, floor reference or world axes.
+        Section spacing adapts to the byte budget. Each row bounds one complete
+        spatial run; no return is discarded and no floor or robot pose is assumed.
         """
         stored = self.points().numpy()
         finite = np.isfinite(stored).all(axis=1)
@@ -385,29 +381,22 @@ class PointCloud2(Timestamped):
             "nonfinite_points": int((~finite).sum()),
             "source_dtype": str(stored.dtype),
             "scalar_rounding_m": [],
-            "window_m": {"x": [], "y": [], "z": []},
+            "window_m": {axis: [] for axis in "xyz"},
             "centroid_xy_m": [],
             "xy_footprint_m2": 0.0,
-            "raster": {
-                "cell_m": 0.0,
-                "origin_xy_m": [],
-                "z_step_m": 0.0,
-                "z_min_m": 0.0,
-                "z_error_m": 0.0,
-                "rows": [],
-            },
-            "bounds": {
+            "axis_gaps_m": {axis: [] for axis in "xyz"},
+            "sections": {
                 "columns": ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "points"],
                 "rows": [],
+                "section_m": 0.0,
                 "omitted_points": 0,
-                "group_m": [0.0, 0.0],
             },
         }
         if len(pts) == 0:
+            if len(json.dumps(out)) > self.ENCODE_SOFT_CAP:
+                raise ValueError("Point cloud metadata exceeds the encoder byte budget")
             return out
-        xy = pts[:, :2]
-        mins = pts.min(axis=0)
-        maxs = pts.max(axis=0)
+        mins, maxs = pts.min(axis=0), pts.max(axis=0)
         with np.errstate(over="ignore"):
             spans = maxs - mins
         scale = np.where(spans > 0, spans, np.maximum(np.abs(mins), np.abs(maxs)))
@@ -419,141 +408,80 @@ class PointCloud2(Timestamped):
             axis: [round(float(mins[i]), decimals[i]), round(float(maxs[i]), decimals[i])]
             for i, axis in enumerate("xyz")
         }
-        # Center before summing to avoid error accumulation at large offsets.
-        center = mins[:2] + (xy - mins[:2]).mean(axis=0, dtype=np.float64)
+        # Fixed summation order prevents permutation-dependent rounding at ties.
+        centered = np.sort(pts[:, :2] - mins[:2], axis=0)
+        if np.any(spans[:2] > np.finfo(float).max / len(pts)):
+            # Division before summing avoids overflow for finite, very large clouds.
+            mean = (centered / len(pts)).sum(axis=0, dtype=np.float64)
+        else:
+            mean = centered.mean(axis=0, dtype=np.float64)
+        center = mins[:2] + mean
+        if not np.isfinite(center).all():
+            raise ValueError("Point cloud centroid exceeds the encoder's numeric range")
         out["centroid_xy_m"] = [
             round(float(c), d) for c, d in zip(center, decimals[:2], strict=True)
         ]
-        floor_cells = np.unique(np.floor(xy / 0.2), axis=0)
-        out["xy_footprint_m2"] = round(float(floor_cells.shape[0]) * 0.04, 2)
-        group_m, records = self._bounds_groups(pts, decimals)
-        out["bounds"]["group_m"] = group_m
-        out["bounds"]["omitted_points"] = len(pts)
-        # Preserve raster evidence and reserve comparable space for every z slice.
-        available = self.ENCODE_SOFT_CAP - len(json.dumps(out)) - 128
-        out["raster"] = self._height_raster(pts, max_bytes=max(256, int(available * 0.55)))
-        quota = max(0, (self.ENCODE_SOFT_CAP - len(json.dumps(out))) // len(records))
-        for bounds in records:
-            sizes = np.array([len(json.dumps(record)) + 2 for record in bounds])
-            count = min(len(bounds), quota // int(sizes.min()))
-            indices = np.empty(0, dtype=int)
-            # Evenly spaced selections are not nested, so their costs need not be
-            # monotonic. Try counts in descending order rather than binary search.
-            while count >= 2:
-                candidate = np.linspace(0, len(bounds) - 1, count, dtype=int)
-                if int(sizes[candidate].sum()) <= quota:
-                    indices = candidate
-                    break
-                count -= 1
-            if count == 1:
-                fitting = np.flatnonzero(sizes <= quota)
-                indices = fitting[
-                    np.argsort(np.abs(fitting - (len(bounds) - 1) / 2), kind="stable")[:1]
-                ]
-            for index in indices:
-                record = bounds[index]
-                out["bounds"]["rows"].append(record)
-                out["bounds"]["omitted_points"] -= record[6]
-        return out
-
-    @classmethod
-    def _height_raster(cls, pts: np.ndarray, max_bytes: int = 5200) -> dict[str, Any]:
-        """Quantized min/max z per x-y cell, bounded in dimensions and JSON size."""
-        xy = pts[:, :2]
-        lo = xy.min(axis=0)
-        hi = xy.max(axis=0)
-        span = float(np.max(hi - lo))
-        cell = 0.25
-        # Preserve map resolution while allowing small geometry to occupy cells.
-        while 0 < span / cell < 12:
-            cell /= 2.0
-        levels = len(cls._RASTER_ALPHABET)
-        z_min = float(pts[:, 2].min())
-        z_span = float(pts[:, 2].max() - z_min)
-        z_step = z_span / (levels - 1) if z_span > 0 else 0.1
-        if not np.isfinite(z_step) or z_step == 0:
-            raise ValueError("Point cloud z quantization exceeds the encoder's numeric range")
-        q = np.rint((pts[:, 2] - z_min) / z_step)
-        q = np.clip(q, 0, levels - 1).astype(np.int64)
+        with np.errstate(over="ignore"):
+            cells = np.floor(pts[:, :2] / 0.2)
+        if not np.isfinite(cells).all():
+            raise ValueError("Point cloud XY footprint exceeds the encoder's numeric range")
+        occupied_xy = np.unique(cells, axis=0)
+        out["xy_footprint_m2"] = round(float(len(occupied_xy)) * 0.04, 2)
+        for axis, name in enumerate("xyz"):
+            coordinates = np.unique(pts[:, axis])
+            gaps = np.diff(coordinates)
+            indices = np.argsort(-gaps, kind="stable")[:4]
+            # Endpoints retain stored precision; rounding can close a small gap.
+            out["axis_gaps_m"][name] = [
+                [float(coordinates[i]), float(coordinates[i + 1])] for i in indices
+            ]
+        span = float(spans.max())
+        section = span / 64 if span else 1.0
+        if section == 0:
+            raise ValueError("Point cloud sections exceed the encoder's numeric range")
         while True:
-            # A local anchor avoids division losing cell positions at large offsets.
-            origin = np.floor(lo / cell) * cell if np.max(np.abs(lo)) / cell < 2**50 else lo
-            shape = np.floor((hi - origin) / cell) + 1
-            if float(shape.max()) > cls._RASTER_MAX_CELLS:
-                cell *= 2.0
-                continue
-            nx, ny = int(shape[0]), int(shape[1])
-            ij = np.floor((xy - origin) / cell).astype(np.int64)
-            lin = ij[:, 1] * nx + ij[:, 0]
-            qmin = np.full(nx * ny, levels, dtype=np.int64)
-            qmax = np.full(nx * ny, -1, dtype=np.int64)
-            np.minimum.at(qmin, lin, q)
-            np.maximum.at(qmax, lin, q)
-            glyph = np.array([*cls._RASTER_ALPHABET, "."])
-            qmin[qmax < 0] = levels
-            qmax[qmax < 0] = levels
-            pairs = np.char.add(glyph[qmin], glyph[qmax]).reshape(ny, nx)
-            rows = ["".join(row.tolist()) for row in pairs]
-            raster = {
-                "cell_m": cell,
-                "origin_xy_m": [float(origin[0]), float(origin[1])],
-                "z_step_m": z_step,
-                "z_min_m": z_min,
-                "z_error_m": z_step / 2 if z_span > 0 else 0.0,
-                "rows": rows,
-            }
-            if len(json.dumps(raster)) <= max_bytes or nx * ny == 1:
-                return raster
-            cell *= 2.0
+            out["sections"]["section_m"] = section if span else 0.0
+            records = self._section_runs(pts, mins, section, decimals)
+            if records is not None:
+                out["sections"]["rows"] = records
+                if len(json.dumps(out)) <= self.ENCODE_SOFT_CAP:
+                    return out
+            if section > span:
+                raise ValueError("Point cloud metadata exceeds the encoder byte budget")
+            section *= 2.0
+            if not np.isfinite(section):
+                raise ValueError("Point cloud sections exceed the encoder's numeric range")
 
     @classmethod
-    def _bounds_groups(
-        cls, pts: np.ndarray, decimals: list[int]
-    ) -> tuple[list[float], list[list[list[float]]]]:
-        """Group finite returns into 3D bounds, stratified for equal payload quotas.
-
-        Four half-open z strata cover the native range; the last includes zmax.
-        Constant z uses one stratum. Within each stratum, y bands and consecutive
-        x gaps use the XY grouping width. Each record bounds its own assigned
-        points on all three axes; strata themselves are not serialized.
-        """
-        z = pts[:, 2]
-        z_lo, z_hi = float(z.min()), float(z.max())
-        edges = np.linspace(z_lo, z_hi, 5) if z_hi > z_lo else np.array([z_lo, z_hi])
-        assigned = np.searchsorted(edges[1:-1], z, side="right")
-        span = float(np.ptp(pts[:, :2], axis=0).max())
-        group = span / 28
-        slices = []
-        for index in range(len(edges) - 1):
-            selected = pts[assigned == index]
-            if len(selected) == 0:
-                continue
-            xy = selected[:, :2]
-            bands = (
-                np.floor((xy[:, 1] - xy[:, 1].min()) / group).astype(int)
-                if group
-                else np.zeros(len(xy), dtype=int)
-            )
-            records = []
-            for band in np.unique(bands)[::-1]:
-                run_points = selected[bands == band]
-                run_points = run_points[np.argsort(run_points[:, 0], kind="stable")]
-                cuts = np.flatnonzero(np.diff(run_points[:, 0]) > group) + 1
-                for run in np.split(run_points, cuts):
-                    lo, hi = run.min(axis=0), run.max(axis=0)
-                    records.append(
-                        [
-                            cls._outward_endpoint(float(lo[0]), decimals[0], upper=False),
-                            cls._outward_endpoint(float(hi[0]), decimals[0], upper=True),
-                            cls._outward_endpoint(float(lo[1]), decimals[1], upper=False),
-                            cls._outward_endpoint(float(hi[1]), decimals[1], upper=True),
-                            cls._outward_endpoint(float(lo[2]), decimals[2], upper=False),
-                            cls._outward_endpoint(float(hi[2]), decimals[2], upper=True),
-                            len(run),
-                        ]
-                    )
-            slices.append(records)
-        return [group, (z_hi - z_lo) / 4], slices
+    def _section_runs(
+        cls, pts: np.ndarray, origin: np.ndarray, section: float, decimals: list[int]
+    ) -> list[list[float]] | None:
+        """Cover all returns, or decline sections that cannot fit before formatting."""
+        bands = np.floor((pts[:, 1:] - origin[1:]) / section).astype(np.int64)
+        order = np.lexsort((pts[:, 0], bands[:, 0], bands[:, 1]))
+        selected = pts[order]
+        band_order = bands[order]
+        new_run = np.any(np.diff(band_order, axis=0) != 0, axis=1)
+        new_run |= np.diff(selected[:, 0]) > section
+        starts = np.r_[0, np.flatnonzero(new_run) + 1]
+        # Even single-digit fields need 21 bytes per seven-column JSON row.
+        if len(starts) * 21 > cls.ENCODE_SOFT_CAP:
+            return None
+        ends = np.r_[starts[1:], len(selected)]
+        lower = np.minimum.reduceat(selected, starts, axis=0)
+        upper = np.maximum.reduceat(selected, starts, axis=0)
+        records = []
+        for lo, hi, count in zip(lower, upper, ends - starts, strict=True):
+            record = []
+            for axis in range(3):
+                record.extend(
+                    [
+                        cls._outward_endpoint(float(lo[axis]), decimals[axis], upper=False),
+                        cls._outward_endpoint(float(hi[axis]), decimals[axis], upper=True),
+                    ]
+                )
+            records.append([*record, int(count)])
+        return records
 
     @staticmethod
     def _outward_endpoint(value: float, decimals: int, *, upper: bool) -> float:
