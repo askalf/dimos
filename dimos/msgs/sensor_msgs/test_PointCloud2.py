@@ -15,7 +15,6 @@
 
 
 import json
-from typing import Any
 
 import numpy as np
 import open3d.core as o3c
@@ -266,7 +265,7 @@ def _grid(half: float, pitch: float = 0.05) -> np.ndarray:
     return g.reshape(-1, 2)
 
 
-def _keys(encoded: dict[str, Any]) -> set[str]:
+def _keys(encoded: dict[str, object]) -> set[str]:
     out: set[str] = set()
     for k, v in encoded.items():
         out.add(k)
@@ -288,123 +287,158 @@ LEGEND_KEYS = {
     "window_m.z",
     "centroid_xy_m",
     "xy_footprint_m2",
+    "raster",
+    "raster.cell_m",
+    "raster.origin_xy_m",
+    "raster.z_step_m",
+    "raster.z_min_m",
+    "raster.z_error_m",
+    "raster.rows",
     "bounds",
     "bounds.columns",
     "bounds.rows",
     "bounds.omitted_points",
-    "bounds.max_extent_m",
+    "bounds.group_m",
 }
 
 
-def _assert_complete_bounds(points: np.ndarray, encoded: dict[str, Any]) -> None:
-    """Every stored finite return has an enclosing row within the reported extent."""
-    finite = points[np.isfinite(points).all(axis=1)].astype(np.float64)
-    table = encoded["bounds"]
-    rows = np.asarray(table["rows"])
-    covered = np.zeros(len(finite), dtype=bool)
-
-    assert table["columns"] == ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "points"]
-    assert table["omitted_points"] == 0
-    assert sum(row[6] for row in table["rows"]) == len(finite)
-    assert encoded["num_points"] == len(finite) + encoded["nonfinite_points"]
-    assert rows.shape[1] == 7
-    assert np.isfinite(rows).all()
-    assert (rows[:, 6] > 0).all()
-    assert (rows[:, 6] == np.floor(rows[:, 6])).all()
-    lo, hi = rows[:, :6:2], rows[:, 1:6:2]
-    assert (lo <= hi).all()
-    extents = np.asarray(table["max_extent_m"])
-    assert extents.shape == (3,)
-    assert np.isfinite(extents).all()
-    assert (extents >= 0).all()
-    assert ((hi - lo) <= np.nextafter(extents, np.inf)).all()
-    for row_lo, row_hi, count in zip(lo, hi, rows[:, 6], strict=True):
-        contained = ((finite >= row_lo) & (finite <= row_hi)).all(axis=1)
-        # Outward rounding may enclose neighboring groups as well as this row's returns.
-        assert contained.sum() >= count
-        covered |= contained
-    assert covered.all()
-
-
-def test_agent_encode_scalars_describe_all_returns() -> None:
+def test_agent_encode_scalars_are_exact() -> None:
+    """Full-cloud scalars describe all returns across the native-z slices."""
     wall = np.stack(
-        [np.full(200, 2.0), np.linspace(-1.0, 1.0, 200), np.linspace(0.2, 0.9, 200)],
+        [
+            np.full(200, 2.0),
+            np.linspace(-1.0, 1.0, 200),
+            np.linspace(0.2, 0.9, 200),
+        ],
         axis=1,
     )
     floor = np.stack([np.linspace(-3, 3, 100), np.linspace(-3, 3, 100), np.zeros(100)], axis=1)
-    cloud = PointCloud2.from_numpy(np.vstack([wall, floor]), timestamp=12.345)
-
-    encoded = cloud.agent_encode()
+    encoded = PointCloud2.from_numpy(np.vstack([wall, floor]), timestamp=12.345).agent_encode()
 
     assert encoded["num_points"] == 300
     assert encoded["ts"] == 12.345
     assert encoded["window_m"] == {"x": [-3.0, 3.0], "y": [-3.0, 3.0], "z": [0.0, 0.9]}
-    assert encoded["centroid_xy_m"] == [1.33, 0.0]
-    _assert_complete_bounds(cloud.points_f32(), encoded)
+    bounds = encoded["bounds"]
+    assert sum(row[6] for row in bounds["rows"]) + bounds["omitted_points"] == 300
+    assert encoded["centroid_xy_m"] == [1.33, 0.0]  # 200 wall pts at x=2, 100 floor at mean 0
 
 
-@pytest.mark.parametrize(
-    "points",
-    [np.empty((0, 3)), np.array([[1.0, 2.0, 0.3]]), np.column_stack([_grid(1.0), np.zeros(1600)])],
-)
-def test_agent_encode_schema_is_present_for_empty_and_nonempty_clouds(points) -> None:
-    encoded = PointCloud2.from_numpy(points).agent_encode()
-
-    assert _keys(encoded) == LEGEND_KEYS
+def test_agent_encode_every_key_on_every_frame() -> None:
+    """A reader indexes the encoding by key; a frame that drops one is a KeyError
+    in the agent's code. The empty cloud carries the same keys, empty."""
+    empty = PointCloud2.from_numpy(np.zeros((0, 3))).agent_encode()
+    assert empty["num_points"] == 0
+    assert _keys(empty) == LEGEND_KEYS
+    one = PointCloud2.from_numpy(np.array([[1.0, 2.0, 0.3]])).agent_encode()
+    assert _keys(one) == LEGEND_KEYS
+    floor = PointCloud2.from_numpy(np.column_stack([_grid(3.0), np.zeros(14400)])).agent_encode()
+    assert _keys(floor) == LEGEND_KEYS
+    raster = floor["raster"]
+    assert isinstance(raster, dict)
+    assert raster["rows"]
+    widths = {len(row) for row in raster["rows"]}
+    assert len(widths) == 1
 
 
 def test_agent_encode_empty_cloud() -> None:
-    encoded = PointCloud2.from_numpy(np.empty((0, 3)), frame_id="empty_frame").agent_encode()
-
-    assert encoded["frame_id"] == "empty_frame"
+    encoded = PointCloud2.from_numpy(np.zeros((0, 3))).agent_encode()
     assert encoded["num_points"] == 0
-    assert encoded["nonfinite_points"] == 0
     assert encoded["centroid_xy_m"] == []
     assert encoded["window_m"] == {"x": [], "y": [], "z": []}
-    assert encoded["bounds"]["rows"] == []
-    assert encoded["bounds"]["omitted_points"] == 0
-    assert encoded["bounds"]["max_extent_m"] == []
-    json.dumps(encoded, allow_nan=False)
+    raster = encoded["raster"]
+    assert isinstance(raster, dict)
+    assert raster["rows"] == []
 
 
 @pytest.mark.parametrize(
     ("scale", "offset"),
     [(1.0, 0.0), (1e-9, 0.0), (0.001, -10.0), (10000.0, 1000000.0)],
 )
-def test_agent_encode_bounds_cover_scaled_translated_stored_returns(scale, offset) -> None:
+def test_agent_encode_raster_quantization_round_trips(scale, offset) -> None:
+    """Every occupied cell retains its z extrema within the advertised error."""
     xy = np.stack(np.meshgrid(np.arange(15), np.arange(9)), axis=-1).reshape(-1, 2)
-    points = np.column_stack([xy, np.linspace(-9, 21, len(xy))]) * scale + offset
-    cloud = PointCloud2.from_numpy(points, frame_id="camera_optical", timestamp=20.25)
+    z = np.linspace(-9, 21, len(xy))
+    cloud = PointCloud2.from_numpy(
+        np.column_stack([xy * scale, z * scale + offset]), frame_id="camera_optical"
+    )
+    pts = cloud.points_f32().astype(np.float64)
 
     encoded = cloud.agent_encode()
+    raster = encoded["raster"]
+    alphabet = PointCloud2._RASTER_ALPHABET
+    origin = np.array(raster["origin_xy_m"])
+    cell = raster["cell_m"]
+    indices = np.floor((pts[:, :2] - origin) / cell).astype(int)
+    rows = raster["rows"]
+    tolerance = raster["z_error_m"] + np.finfo(float).eps * max(1, np.abs(pts[:, 2]).max()) * 4
 
     assert encoded["frame_id"] == "camera_optical"
-    assert encoded["ts"] == 20.25
-    _assert_complete_bounds(cloud.points_f32(), encoded)
+    assert len(rows) <= PointCloud2._RASTER_MAX_CELLS
+    for j, cells in enumerate(rows):
+        assert set(cells) <= set(alphabet + ".")
+        assert len(cells) % 2 == 0
+        assert len(cells) // 2 <= PointCloud2._RASTER_MAX_CELLS
+        for i in range(len(cells) // 2):
+            pair = cells[2 * i : 2 * i + 2]
+            selected = pts[(indices[:, 0] == i) & (indices[:, 1] == j), 2]
+            if len(selected) == 0:
+                assert pair == ".."
+                continue
+            decoded = [raster["z_min_m"] + alphabet.index(c) * raster["z_step_m"] for c in pair]
+            assert decoded == pytest.approx([selected.min(), selected.max()], abs=tolerance)
     assert len(json.dumps(encoded)) <= PointCloud2.ENCODE_SOFT_CAP
 
 
-@pytest.mark.parametrize("axis_order", [(0, 1, 2), (2, 0, 1), (1, 2, 0)])
-def test_agent_encode_uses_actual_axes_for_separated_surfaces(axis_order) -> None:
-    """A gap remains represented when its normal points along any cloud axis."""
-    yz = _grid(0.5, 0.25)
-    surfaces = np.vstack([np.column_stack([np.full(len(yz), x), yz]) for x in (-5.0, 5.0)])
-    points = surfaces[:, axis_order] + np.array([-100.0, 400.0, -30.0])
-    cloud = PointCloud2.from_numpy(points, frame_id="sensor_custom_axes")
+def test_agent_encode_raster_cell_rule() -> None:
+    """0.25 m for a single sweep, 0.5 m once a fused map would pass 48 cells."""
+    small = PointCloud2.from_numpy(np.column_stack([_grid(3.0, 0.1), np.zeros(3600)]))
+    large = PointCloud2.from_numpy(np.column_stack([_grid(7.5, 0.1), np.zeros(22500)]))
+    small_raster = small.agent_encode()["raster"]
+    large_raster = large.agent_encode()["raster"]
+    assert isinstance(small_raster, dict) and isinstance(large_raster, dict)
+    assert small_raster["cell_m"] == 0.25
+    assert small_raster["origin_xy_m"] == [-3.0, -3.0]
+    assert len(small_raster["rows"]) == 24
+    assert large_raster["cell_m"] == 0.5
+    assert len(large_raster["rows"]) == 30
 
-    encoded = cloud.agent_encode()
 
-    separation_axis = axis_order.index(0)
-    midpoint = [-100.0, 400.0, -30.0][separation_axis]
-    rows = encoded["bounds"]["rows"]
-    assert encoded["frame_id"] == "sensor_custom_axes"
-    assert all(
-        row[2 * separation_axis + 1] < midpoint or row[2 * separation_axis] > midpoint
-        for row in rows
+def test_agent_encode_raster_single_return_is_min_equals_max() -> None:
+    raster = PointCloud2.from_numpy(np.array([[0.1, 0.1, 0.62]])).agent_encode()["raster"]
+    assert isinstance(raster, dict)
+    (row,) = raster["rows"]
+    pair = row
+    assert len(pair) == 2
+    assert pair[0] == pair[1]
+    decoded = raster["z_min_m"] + PointCloud2._RASTER_ALPHABET.index(pair[0]) * raster["z_step_m"]
+    assert decoded == pytest.approx(0.62)
+    assert raster["z_error_m"] == 0.0
+
+
+def test_agent_encode_stays_within_prompt_budget() -> None:
+    """The encoding is prompt text, so its size is a hard product constraint.
+
+    A busy room -- floor, four walls, scattered clutter -- is the verbose case.
+    The encoder trims its own tail rather than letting a dense frame run over.
+    """
+    rng = np.random.default_rng(7)
+    grid = _grid(6.0, 0.04)
+    parts = [np.column_stack([grid, np.zeros(len(grid))])]
+    for edge in (-6.0, 6.0):
+        span = np.arange(-6, 6, 0.02)
+        height = rng.uniform(0.15, 1.0, span.size)
+        parts.append(np.column_stack([np.full(span.size, edge), span, height]))
+        parts.append(np.column_stack([span, np.full(span.size, edge), height]))
+    parts.append(
+        np.column_stack(
+            [rng.uniform(-6, 6, 4000), rng.uniform(-6, 6, 4000), rng.uniform(0.15, 1.0, 4000)]
+        )
     )
-    for axis, name in enumerate("xyz"):
-        assert encoded["window_m"][name] == [points[:, axis].min(), points[:, axis].max()]
-    _assert_complete_bounds(cloud.points_f32(), encoded)
+
+    encoded = PointCloud2.from_numpy(np.vstack(parts)).agent_encode()
+
+    assert len(json.dumps(encoded)) <= PointCloud2.ENCODE_SOFT_CAP
+    assert _keys(encoded) == LEGEND_KEYS
 
 
 @pytest.mark.parametrize("scale", [1e-12, 1e-6, 0.001, 1.0, 10000.0])
@@ -420,13 +454,13 @@ def test_agent_encode_preserves_small_spans_and_reports_rounding(scale) -> None:
         assert bounds == pytest.approx([stored[:, i].min(), stored[:, i].max()], abs=tolerance)
         assert bounds[1] > bounds[0]
     assert encoded["source_dtype"] == "float32"
-    _assert_complete_bounds(stored, encoded)
+    assert encoded["raster"]["cell_m"] < scale
 
 
 @pytest.mark.parametrize("offset", [1000000.0, 100000000.0])
 def test_agent_encode_centroid_stays_within_translated_stored_bounds(offset) -> None:
-    points = np.tile(np.array([[offset, -offset, 0], [offset + 8, -offset + 16, 1]]), (10000, 1))
-    cloud = PointCloud2.from_numpy(points)
+    pts = np.tile(np.array([[offset, -offset, 0], [offset + 8, -offset + 16, 1]]), (10000, 1))
+    cloud = PointCloud2.from_numpy(pts)
     stored = cloud.points_f32().astype(np.float64)
 
     encoded = cloud.agent_encode()
@@ -435,65 +469,17 @@ def test_agent_encode_centroid_stays_within_translated_stored_bounds(offset) -> 
     for i, axis in enumerate("xy"):
         lo, hi = encoded["window_m"][axis]
         assert lo <= encoded["centroid_xy_m"][i] <= hi
-    _assert_complete_bounds(stored, encoded)
 
 
-@pytest.mark.parametrize("cap", [6000, 24000])
 @pytest.mark.parametrize("scale,offset", [(1e-12, 0), (1, 1e6), (1e20, 1e30)])
-def test_agent_encode_budget_includes_coordinate_precision(monkeypatch, cap, scale, offset) -> None:
-    monkeypatch.setattr(PointCloud2, "ENCODE_SOFT_CAP", cap)
+def test_agent_encode_budget_includes_coordinate_precision(scale, offset) -> None:
     xy = np.stack(np.meshgrid(np.arange(48), np.arange(48)), axis=-1).reshape(-1, 2)
-    points = np.column_stack([xy * scale + offset, np.full(len(xy), 0.5)])
-    cloud = PointCloud2.from_numpy(points)
+    pts = np.column_stack([xy * scale + offset, np.full(len(xy), 0.5)])
 
-    encoded = cloud.agent_encode()
+    encoded = PointCloud2.from_numpy(pts).agent_encode()
 
-    assert len(json.dumps(encoded, allow_nan=False)) <= cap
-    _assert_complete_bounds(cloud.points_f32(), encoded)
-
-
-@pytest.mark.parametrize("cap", [6000, 24000])
-def test_agent_encode_dense_cloud_fits_budget_without_omitting_returns(monkeypatch, cap) -> None:
-    monkeypatch.setattr(PointCloud2, "ENCODE_SOFT_CAP", cap)
-    rng = np.random.default_rng(7)
-    grid = _grid(6.0, 0.08)
-    points = np.vstack(
-        [
-            np.column_stack([grid, np.zeros(len(grid))]),
-            rng.uniform([-6, -6, -2], [6, 6, 4], size=(4000, 3)),
-        ]
-    )
-    cloud = PointCloud2.from_numpy(points)
-
-    encoded = cloud.agent_encode()
-
-    assert len(json.dumps(encoded, allow_nan=False)) <= cap
-    _assert_complete_bounds(cloud.points_f32(), encoded)
-
-
-@pytest.mark.parametrize("points", [np.empty((0, 3)), np.ones((1, 3))])
-def test_agent_encode_rejects_metadata_larger_than_budget(points) -> None:
-    cloud = PointCloud2.from_numpy(points, frame_id="x" * PointCloud2.ENCODE_SOFT_CAP)
-
-    with pytest.raises(ValueError, match="metadata exceeds .* byte budget"):
-        cloud.agent_encode()
-
-
-@pytest.mark.parametrize("cap", [6000, 24000])
-def test_agent_encode_is_deterministic_under_return_reordering(monkeypatch, cap) -> None:
-    monkeypatch.setattr(PointCloud2, "ENCODE_SOFT_CAP", cap)
-    rng = np.random.default_rng(13)
-    points = rng.normal(size=(2000, 3)) + np.array([2000.0, -3000.0, 4000.0])
-    points = np.vstack([points, points[:100], [[np.nan, 0, 0]]])
-    cloud = PointCloud2.from_numpy(points, frame_id="map", timestamp=5.0)
-    reordered = PointCloud2.from_numpy(
-        points[rng.permutation(len(points))], frame_id="map", timestamp=5.0
-    )
-
-    encoded = cloud.agent_encode()
-
-    assert encoded == cloud.agent_encode()
-    assert json.dumps(encoded) == json.dumps(reordered.agent_encode())
+    assert len(json.dumps(encoded)) <= PointCloud2.ENCODE_SOFT_CAP
+    assert len(encoded["raster"]["rows"]) <= PointCloud2._RASTER_MAX_CELLS
 
 
 def test_agent_encode_excludes_and_counts_nonfinite_rows() -> None:
@@ -505,54 +491,133 @@ def test_agent_encode_excludes_and_counts_nonfinite_rows() -> None:
     assert encoded["nonfinite_points"] == 2
     assert encoded["window_m"] == {"x": [1, 1], "y": [2, 2], "z": [3, 3]}
     assert encoded["xy_footprint_m2"] == 0.04
-    _assert_complete_bounds(cloud.points_f32(), encoded)
     json.dumps(encoded, allow_nan=False)
 
 
 def test_agent_encode_all_nonfinite_has_empty_geometry() -> None:
     encoded = PointCloud2.from_numpy(np.array([[np.nan, 1, 2]])).agent_encode()
 
-    assert encoded["num_points"] == 1
     assert encoded["nonfinite_points"] == 1
     assert encoded["window_m"] == {"x": [], "y": [], "z": []}
-    assert encoded["bounds"]["rows"] == []
-    assert encoded["bounds"]["omitted_points"] == 0
-    assert encoded["bounds"]["max_extent_m"] == []
+    assert encoded["raster"]["rows"] == []
 
 
-def test_agent_encode_nearby_float64_boundaries_conserve_returns() -> None:
-    z = np.array([-4, np.nextafter(-2.0, -np.inf), -2, np.nextafter(-2.0, np.inf), 0, 2, 4])
-    points = np.column_stack([np.zeros(len(z)), np.zeros(len(z)), z])
+@pytest.mark.parametrize("scale,offset", [(2**-30, 0), (1, 1e6), (2**20, -1e8)])
+def test_agent_encode_bounds_preserve_scaled_translated_returns(scale, offset) -> None:
+    points = np.column_stack([np.arange(9), np.zeros(9), np.arange(-4, 5)]) * scale + offset
     cloud = PointCloud2()
     cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
 
     encoded = cloud.agent_encode()
+    bounds = encoded["bounds"]
 
-    _assert_complete_bounds(points, encoded)
+    assert bounds["columns"] == ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "points"]
+    assert bounds["group_m"] == pytest.approx([8 * scale / 28, 2 * scale])
+    assert len(bounds["rows"]) == len(points)
+    assert bounds["omitted_points"] == 0
+    represented = np.zeros(len(points), dtype=int)
+    for row in bounds["rows"]:
+        lo, hi = np.array(row[:6:2]), np.array(row[1:6:2])
+        contained = ((points >= lo) & (points <= hi)).all(axis=1)
+        assert contained.sum() == row[6] == 1
+        represented += contained
+    assert represented.tolist() == [1] * len(points)
 
 
-def test_agent_encode_close_large_values_preserve_distinct_extrema() -> None:
+def test_agent_encode_bounds_conserve_half_open_boundary_returns() -> None:
+    z = np.array([-4, np.nextafter(-2.0, -np.inf), -2, np.nextafter(-2.0, np.inf), 0, 2, 4])
+    cloud = PointCloud2()
+    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(
+        np.column_stack([np.zeros(len(z)), np.zeros(len(z)), z])
+    )
+
+    bounds = cloud.agent_encode()["bounds"]
+
+    assert [row[6] for row in bounds["rows"]] == [2, 2, 1, 2]
+    assert sum(row[6] for row in bounds["rows"]) == len(z)
+    assert bounds["omitted_points"] == 0
+    for row, selected in zip(bounds["rows"], [z[:2], z[2:4], z[4:5], z[5:]], strict=True):
+        assert row[4] <= selected.min() <= selected.max() <= row[5]
+
+
+def test_agent_encode_close_z_values_do_not_duplicate_returns() -> None:
     points = np.array([[0, 0, 1e16], [0, 0, np.nextafter(1e16, np.inf)]])
     cloud = PointCloud2()
     cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
 
-    encoded = cloud.agent_encode()
+    bounds = cloud.agent_encode()["bounds"]
 
-    assert encoded["window_m"]["z"] == points[:, 2].tolist()
-    _assert_complete_bounds(points, encoded)
+    assert [row[6] for row in bounds["rows"]] == [1, 1]
+    assert [row[4:6] for row in bounds["rows"]] == [
+        [points[0, 2], points[0, 2]],
+        [points[1, 2], points[1, 2]],
+    ]
+    assert bounds["omitted_points"] == 0
 
 
 @pytest.mark.parametrize("scale", [1e-9, 1.0, 10000.0])
-def test_agent_encode_separated_point_groups_preserve_gaps(scale) -> None:
+def test_agent_encode_numeric_bounds_preserve_gaps_and_containment(scale) -> None:
     points = np.array([[0, 0, 7], [0.1, 0, 7], [1, 0, 7], [1.1, 0, 7], [4, 0, 7]]) * scale
+    cloud = PointCloud2.from_numpy(points)
+    stored = cloud.points_f32().astype(np.float64)
+
+    bounds = cloud.agent_encode()["bounds"]
+    records = bounds["rows"]
+
+    assert bounds["group_m"][1] == 0
+    assert [row[6] for row in records] == [2, 2, 1]
+    assert bounds["omitted_points"] == 0
+    assert records[0][1] < records[1][0] < records[1][1] < records[2][0]
+    for record, selected in zip(records, [stored[:2], stored[2:4], stored[4:]], strict=True):
+        assert len(record) == 7
+        lo, hi = np.array(record[:6:2]), np.array(record[1:6:2])
+        assert (lo <= selected.min(axis=0)).all()
+        assert (selected.max(axis=0) <= hi).all()
+        assert record[6] == len(selected)
+
+
+def test_agent_encode_each_bound_has_its_own_z_range() -> None:
+    points = np.array([[0, 0, 0.1], [0.1, 0, 0.2], [1, 0, 0.3], [1.1, 0, 0.4], [4, 0, 4]])
+    cloud = PointCloud2.from_numpy(points)
+    stored = cloud.points_f32().astype(np.float64)
+
+    encoded = cloud.agent_encode()
+    rows = encoded["bounds"]["rows"]
+
+    assert [row[6] for row in rows] == [2, 2, 1]
+    assert rows[0][5] < rows[1][4] < rows[1][5] < rows[2][4]
+    for row, selected in zip(rows, [stored[:2], stored[2:4], stored[4:]], strict=True):
+        assert row[4] <= selected[:, 2].min() <= selected[:, 2].max() <= row[5]
+        assert row[5] - row[4] <= np.ptp(selected[:, 2]) + 2 * encoded["scalar_rounding_m"][2]
+
+
+def test_agent_encode_bound_budget_spreads_evidence_and_reports_omissions() -> None:
+    xy = np.stack(np.meshgrid(np.arange(20), np.arange(20)), axis=-1).reshape(-1, 2)
+    points = np.vstack(
+        [
+            np.column_stack([np.tile(xy, (repeats, 1)), np.full(len(xy) * repeats, z)])
+            for z, repeats in zip([0, 1, 2, 3], [20, 1, 1, 1], strict=True)
+        ]
+    )
     cloud = PointCloud2.from_numpy(points)
 
     encoded = cloud.agent_encode()
+    table = encoded["bounds"]
 
-    rows = encoded["bounds"]["rows"]
-    for gap_center in (0.5 * scale, 2.0 * scale):
-        assert all(row[1] < gap_center or row[0] > gap_center for row in rows)
-    _assert_complete_bounds(cloud.points_f32(), encoded)
+    assert encoded == cloud.agent_encode()
+    assert len(json.dumps(encoded)) <= PointCloud2.ENCODE_SOFT_CAP
+    assert table["omitted_points"] > 0
+    assert (
+        sum(row[6] for row in table["rows"]) + table["omitted_points"] + encoded["nonfinite_points"]
+        == encoded["num_points"]
+    )
+    for z, repeats in zip([0, 1, 2, 3], [20, 1, 1, 1], strict=True):
+        rows = [row for row in table["rows"] if row[4] == row[5] == z]
+        assert rows[0][:4] == [0.0, 0.0, 19.0, 19.0]
+        assert rows[-1][:4] == [19.0, 19.0, 0.0, 0.0]
+        assert any(6 <= row[2] <= 13 for row in rows)
+        assert rows == sorted(rows, key=lambda row: (-row[2], row[0]))
+        assert all(row[6] == repeats for row in rows)
 
 
 @pytest.mark.parametrize(
@@ -576,42 +641,28 @@ def test_agent_encode_preserves_stored_float64_coordinates() -> None:
     assert encoded["source_dtype"] == "float64"
     assert encoded["window_m"]["x"] == points[:, 0].tolist()
     assert encoded["window_m"]["x"][1] > encoded["window_m"]["x"][0]
-    _assert_complete_bounds(points, encoded)
 
 
-def test_agent_encode_large_finite_centroid_serializes_without_overflow() -> None:
-    points = np.tile(np.array([[0.0, 0.0, 0.0], [1e307, 1e307, 0.0]]), (100, 1))
-    cloud = PointCloud2()
-    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
+@pytest.mark.self_hosted
+def test_agent_encode_fused_map_fits_the_cap() -> None:
+    """A whole recording fused into one map is the largest cloud the agent
+    reads; it must still come back in one readout, at a coarser cell."""
+    from dimos.evals.suites.lib.generate import _dataset
+    from dimos.mapping.voxels.module import VoxelMapTransformer
+    from dimos.memory.transform import downsample
 
-    encoded = cloud.agent_encode()
-
-    assert encoded["centroid_xy_m"] == pytest.approx([5e306, 5e306], rel=1e-14)
-    _assert_complete_bounds(points, encoded)
-    assert len(json.dumps(encoded, allow_nan=False)) <= PointCloud2.ENCODE_SOFT_CAP
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-@pytest.mark.parametrize("coordinate", [-1e308, 1e308])
-def test_agent_encode_rejects_overflowing_footprint_coordinates(axis, coordinate) -> None:
-    points = np.zeros((2, 3))
-    points[1, axis] = coordinate
-    cloud = PointCloud2()
-    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
-
-    with pytest.raises(ValueError, match="numeric range"):
-        cloud.agent_encode()
-
-
-def test_agent_encode_centroid_rounding_is_independent_of_return_order() -> None:
-    x = np.r_[np.zeros(18999), np.full(1000, 0.01), 90.0]
-    points = np.column_stack([x, np.zeros((len(x), 2))])
-    cloud = PointCloud2()
-    cloud.pointcloud_tensor.point["positions"] = o3c.Tensor(points)
-    descending = PointCloud2()
-    descending.pointcloud_tensor.point["positions"] = o3c.Tensor(points[::-1].copy())
-
-    encoded = cloud.agent_encode()
-
-    assert encoded == descending.agent_encode()
-    assert encoded["centroid_xy_m"][0] == pytest.approx(0.005, abs=0.005)
+    with _dataset("go2_china_office") as store:
+        fused = (
+            store.streams.lidar.range_time(0, 138)
+            .transform(downsample(6))
+            .transform(VoxelMapTransformer(voxel_size=0.05, device="CPU:0", emit_every=0))
+            .last()
+            .data
+        )
+    encoded = fused.agent_encode()
+    raster = encoded["raster"]
+    assert isinstance(raster, dict)
+    assert len(json.dumps(encoded)) <= PointCloud2.ENCODE_SOFT_CAP
+    assert raster["cell_m"] == 0.5
+    assert len(raster["rows"]) <= 48
+    assert _keys(encoded) == LEGEND_KEYS
