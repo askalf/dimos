@@ -402,6 +402,9 @@ def test_agent_encode_height_glyphs_quantize_from_z0_in_z_step_units() -> None:
     grid = _cloud(points).agent_encode(cell=1.0)["height_map"]
 
     assert (grid["z0_m"], grid["z_step_m"]) == (-0.4, 0.05)
+    assert grid["glyph_z_m"][:3] == [-0.4, -0.35, -0.3]
+    assert grid["glyph_z_m"][32] == 1.2
+    assert len(grid["glyph_z_m"]) == 33
     assert grid["zmax_rows"] == ["0BBW"]
     assert grid["zmax_rows"] == grid["zmin_rows"]
 

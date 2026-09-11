@@ -48,9 +48,10 @@ LEGEND = (
     "the mean XY; footprint_m2 counts occupied 0.2 m XY cells times 0.04. height_map is a "
     "top-down grid: cell_m is the cell size; x_centers_m and y_centers_m give the cell "
     "center coordinates. Row j of zmax_rows and zmin_rows lies at y_centers_m[j] (first "
-    "row = largest y) and character i of a row at x_centers_m[i]. Each character is the "
-    "base-36 digit k (0-9 then A-Z) of the highest (zmax_rows) or lowest (zmin_rows) "
-    "return z in that cell, meaning z0_m + k*z_step_m <= z < z0_m + (k+1)*z_step_m. "
+    "row = largest y) and character i of a row at x_centers_m[i]. Each character is a "
+    "base-36 digit k (0-9 then A-Z): the highest (zmax_rows) or lowest (zmin_rows) return "
+    "z in that cell satisfies glyph_z_m[k] <= z < glyph_z_m[k] + z_step_m, where "
+    "glyph_z_m[k] = z0_m + k*z_step_m. "
     "'.' means the cell holds no selected return; it does not establish free space. "
     "With a center, range_profile_m lists the horizontal distance from the center to the "
     "nearest selected return in each of 36 bearing sectors of 10 degrees, counterclockwise "
@@ -165,6 +166,7 @@ def _height_map(
             break
         z_step = nice_step(z_step * (1 + 1e-9))
     origin = np.array([_clean(float(v)) for v in origin])
+    levels = int(np.floor((z_high - z0) / z_step)) + 1 if len(points) else 1
     occupied = np.isfinite(zmax)
     glyphs = np.array(list(GLYPHS))
 
@@ -185,6 +187,7 @@ def _height_map(
         ],
         "z0_m": z0,
         "z_step_m": z_step,
+        "glyph_z_m": [_clean(z0 + k * z_step) for k in range(levels)],
         "zmax_rows": render(zmax),
         "zmin_rows": render(zmin),
     }
