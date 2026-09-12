@@ -138,14 +138,16 @@ The PR adds a feedback base trajectory task and splits whole-body plans between
 base and joint tasks, with coupled cancellation. The bench teacher currently uses
 its own physical prepositioning for collection. Native integration must use the
 SDK execution boundary, retain the plan ID, and verify completion before ACT.
-The PR is still open and its API may change; it has not been merged into this branch.
+The PR is still open and its API may change; its current five commits are included
+in the integration described below.
 
 ## Native integration under validation
 
 Development is currently in `/tmp/dimos-r1pro-primitives` on
 `feat/r1pro-primitives-integration`. It includes main `9314c76543` and the five
-commits from PR #4096. The original training checkout is unchanged while its
-job runs. The existing `r1pro-objects-sim-agent` remains the earlier working demo.
+commits from PR #4096. The original R1Pro checkout has been fast-forwarded to
+these committed changes. Ongoing training uses the separate integration checkout.
+The existing `r1pro-objects-sim-agent` remains the earlier working demo.
 
 The new `r1pro-primitives-sim` and `r1pro-primitives-sim-agent` compose four
 independent ACT runtimes. Each arm's trajectory task claims only its seven joints

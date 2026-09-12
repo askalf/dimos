@@ -223,3 +223,10 @@ ManipulationModule, ACT runtimes, ControlCoordinator, and the blueprint/MCP
 interface. RoboPlan is a dependency inside DimOS; only the demo planner selection
 changed to DimOS RRTConnectPlanner with the existing RoboPlanWorld. Use specific
 DimOS module names in further explanations to avoid implying another robot stack.
+
+Original `/home/mustafa/dimos-wt/r1pro-act-sim` was fast-forwarded from 607ce29498
+to integration through 4d4a08e18b after the original four-policy pipeline finished.
+Its source and documentation now include these changes; active jobs continue from
+`/tmp/dimos-r1pro-primitives`. Root `/home/mustafa/dimos` Alfred work is untouched.
+Recent source commit: 58fdec4749; documentation clarification: 4d4a08e18b. Both
+passed commit hooks without co-author trailers. These changes are still local.
