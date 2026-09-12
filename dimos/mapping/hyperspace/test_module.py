@@ -119,7 +119,14 @@ def fill(store: SqliteStore, poses: list[np.ndarray], *, with_depth: bool = True
     model = StubModel()
     config = IngestConfig(
         gate=hs.KeyframeGateConfig(
-            lookahead=0, max_angular_velocity=None, max_dark_fraction=None, min_interval=None
+            lookahead=0,
+            # Every distinct pose is a keyframe here: these tests are about what an
+            # ingest writes, not about the tuned novelty of a real recording.
+            novelty_threshold=0.0,
+            patch_novelty_threshold=None,
+            max_angular_velocity=None,
+            max_dark_fraction=None,
+            min_interval=None,
         ),
         min_frame_interval_s=0.0,
     )
@@ -404,7 +411,14 @@ def fill_ensemble(store: SqliteStore, poses: list[np.ndarray]) -> PatchIngestor:
     model = StubEnsemble()
     config = IngestConfig(
         gate=hs.KeyframeGateConfig(
-            lookahead=0, max_angular_velocity=None, max_dark_fraction=None, min_interval=None
+            lookahead=0,
+            # Every distinct pose is a keyframe here: these tests are about what an
+            # ingest writes, not about the tuned novelty of a real recording.
+            novelty_threshold=0.0,
+            patch_novelty_threshold=None,
+            max_angular_velocity=None,
+            max_dark_fraction=None,
+            min_interval=None,
         ),
         min_frame_interval_s=0.0,
     )

@@ -161,7 +161,11 @@ def test_pooling_rewards_more_frames_and_more_directions() -> None:
 
 def test_rolling_buffer_keeps_one_frame_per_distinct_view() -> None:
     config = KeyframeGateConfig(
-        lookahead=2, min_interval=None, max_angular_velocity=None, max_dark_fraction=None
+        lookahead=2,
+        novelty_threshold=0.05,
+        min_interval=None,
+        max_angular_velocity=None,
+        max_dark_fraction=None,
     )
     buffer = RollingBuffer(config)
     rng = np.random.default_rng(0)
@@ -207,7 +211,13 @@ def test_a_turning_camera_keeps_every_frame_and_a_parked_one_keeps_none() -> Non
     rate however fast the view was changing.
     """
     config = KeyframeGateConfig(
-        lookahead=2, min_interval=None, max_angular_velocity=None, max_dark_fraction=None
+        lookahead=2,
+        # Pinned, not inherited: this is about the SHAPE of the rate, so the threshold
+        # must not move when the production default is retuned for real footage.
+        novelty_threshold=0.05,
+        min_interval=None,
+        max_angular_velocity=None,
+        max_dark_fraction=None,
     )
 
     def grid(angle: float) -> np.ndarray:

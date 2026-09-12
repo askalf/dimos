@@ -105,8 +105,9 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
     # comes from novelty, not from this.
     lookahead: int = 2
     quality_margin: float = 0.25
-    novelty_threshold: float = 0.05
-    patch_novelty_threshold: float = 0.5
+    novelty_threshold: float = 0.30
+    # Negative = off, which is the default: see KeyframeGateConfig.
+    patch_novelty_threshold: float = -1.0
     max_angular_velocity: float = 1.5
     max_linear_velocity: float = -1.0
     max_dark_fraction: float = 0.6

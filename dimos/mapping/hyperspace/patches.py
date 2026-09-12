@@ -69,11 +69,20 @@ class KeyframeGateConfig:
     # noise in the motion estimate.
     quality_margin: float = 0.25
     # Mean per-patch (1 - cosine) against the last kept keyframe needed to keep one.
-    # This, not the window, is what sets the rate: a still camera repeats itself and
-    # keeps nothing, a moving one changes every frame and keeps at the embed rate.
-    novelty_threshold: float = 0.05
-    # Any single patch changing more than this keeps a frame (a new object in a static view).
-    patch_novelty_threshold: float | None = 0.5
+    # This is what sets the rate: a still camera repeats itself and keeps nothing, a
+    # moving one keeps up to the embed rate. Tuned on 120 s of a grocery walk for an
+    # average near 5 Hz -- 0.05 gave 12.5 Hz, 0.15 gave 10.4, 0.30 gives 4.24 with a
+    # median gap of 0.167 s and its one long gap over a parked camera. Steep either
+    # side of it (0.45 gives 0.46 Hz), and the right value depends on the content, so
+    # measure the rate when a recording looks unlike a person walking a shop.
+    novelty_threshold: float = 0.30
+    # Any single patch changing more than this keeps a frame, whatever the mean says.
+    # OFF by default: at 0.5 it fired on nearly every frame of a walked recording -- one
+    # patch somewhere always moves that much -- so it pinned the rate at the embed rate
+    # and `novelty_threshold` had no effect at any value. Measured over 120 s of a
+    # grocery walk: 11.90 Hz kept at every mean from 0.15 to 0.60. Set it to catch a new
+    # object appearing in a genuinely static view, and check what it does to the rate.
+    patch_novelty_threshold: float | None = None
     max_angular_velocity: float | None = 1.5
     max_linear_velocity: float | None = None
     max_dark_fraction: float | None = 0.6
