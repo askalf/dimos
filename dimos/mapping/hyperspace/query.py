@@ -29,6 +29,7 @@ import numpy as np
 from dimos.mapping.hyperspace import patches as hs
 from dimos.mapping.hyperspace.ingest import (
     TF_STREAM,
+    patch_stream_for,
     stream_names,
     transform_to_matrix,
 )
@@ -67,7 +68,7 @@ class HyperspaceQuery:
         # Which index in the recording to answer from: "" is the canonical one. A
         # recording can hold several, one per model, to compare them on one question.
         self.slug = slug
-        self.keyframe_stream, self.patch_stream = stream_names(slug)
+        self.keyframe_stream, _ = stream_names(slug)
         self.embed_text = embed_text
         self.config = config
         # None = raw map. Set (or pass) to get ranked clusters; see refine.py.
@@ -93,6 +94,14 @@ class HyperspaceQuery:
         self.tf = MultiTBuffer(buffer_size=math.inf)
         self._tf_last_id = -1
 
+    def patch_stream(self, member: str = "") -> str:
+        """The vec0 stream of one model's patch vectors, named after that model.
+
+        Defaults to the primary member, which is the one a single-grid store answers
+        from. The keyframes must be loaded first: the member names come off them.
+        """
+        return patch_stream_for(self.slug, member or (self._members[0] if self._members else ""))
+
     def keyframe(self, keyframe_id: int) -> tuple[hs.Keyframe, NDArray[np.float16]] | None:
         """A keyframe and its patch grid. The first miss loads every keyframe in
         one pass: grids are ~1.3 MB each and a per-id scan would unpickle all
@@ -112,6 +121,9 @@ class HyperspaceQuery:
                     patch_depth=np.asarray(payload["patch_depth"], dtype=np.float32),
                 )
                 self._keyframes[obs.id] = (keyframe, np.asarray(payload["grid"], dtype=np.float16))
+                # Provenance is on every keyframe, ensemble or not, and it names the
+                # vec0 stream holding this model's vectors.
+                self._members = list(payload.get("members", self._members))
                 if "grids" in payload:
                     self._member_grids[obs.id] = [
                         (np.asarray(grid, dtype=np.float16), (int(shape[0]), int(shape[1])))
@@ -166,7 +178,7 @@ class HyperspaceQuery:
         backgrounds = self._relevant_backgrounds(0, query)
         try:
             hits = (
-                self.store.stream(self.patch_stream, dict)
+                self.store.stream(self.patch_stream(), dict)
                 .search(Embedding(vector=query), k=min(self.config.max_hot_patches, VEC0_MAX_K))
                 .to_list()
             )

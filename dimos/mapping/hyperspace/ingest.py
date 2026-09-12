@@ -69,16 +69,16 @@ def sql_safe(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")
 
 
-def patch_stream_for(slug: str = "", member: str = "") -> str:
+def patch_stream_for(slug: str, member: str) -> str:
     """The vec0 stream holding ONE model's patch vectors.
 
-    Every member of an ensemble gets its own, because a vec0 table has one fixed
-    width and two checkpoints need not share it -- and because the query asks each
-    model its own nearest-neighbour question. A single-member index keeps the bare
-    name, so stores written before ensembles existed still read.
+    Always named after the model, even when there is only one. A stream of vectors is
+    unusable without knowing which checkpoint made them -- you cannot encode the query
+    text to compare against it -- so the name carries the answer rather than leaving
+    it to be looked up somewhere else.
     """
     _, patches = stream_names(slug)
-    return patches if not member else f"{patches}__m_{sql_safe(member)}"
+    return f"{patches}__m_{sql_safe(member)}"
 
 
 def stream_names(slug: str = "") -> tuple[str, str]:
@@ -243,8 +243,9 @@ class PatchIngestor:
     def patch_stream(self, member: str) -> Stream[Any]:
         """This model's vec0 stream, opened once."""
         if member not in self.patches_by_member:
-            name = patch_stream_for(self.slug, member if len(self.members) > 1 else "")
-            self.patches_by_member[member] = self.store.stream(name, dict)
+            self.patches_by_member[member] = self.store.stream(
+                patch_stream_for(self.slug, member), dict
+            )
         return self.patches_by_member[member]
 
     def _write_patch_vectors(

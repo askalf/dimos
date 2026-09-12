@@ -47,6 +47,7 @@ from dimos.mapping.hyperspace.ingest import (
     index_slug,
     index_specs,
     indexes_in,
+    patch_stream_for,
     stream_names,
     transform_to_matrix,
 )
@@ -148,7 +149,8 @@ def drop_index(memory: Store, slug: str = "") -> None:
     keyframes, patches = stream_names(slug)
     # Every per-model vec0 stream too (`<patches>__m_<member>`), or a re-ingest would
     # append a second copy of every vector into indexes the drop had missed.
-    members = [name for name in memory.list_streams() if name.startswith(f"{patches}__m_")]
+    prefix = patch_stream_for(slug, "x").rsplit("_x", 1)[0]
+    members = [name for name in memory.list_streams() if name.startswith(prefix)]
     names = [keyframes, patches, *members] + ([COMPLETE_STREAM] if not slug else [])
     for name in names:
         if name in memory.list_streams():

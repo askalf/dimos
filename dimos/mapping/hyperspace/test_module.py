@@ -59,6 +59,9 @@ class StubModel:
 
     patches_per_side = SIDE
     dim = DIM
+    # A real model always names itself; the stream of its vectors is named after it.
+    specs = ["stub"]
+    tags = ["stub"]
 
     def __init__(self) -> None:
         self.pixel: tuple[float, float] | None = None
@@ -178,7 +181,7 @@ def test_ingest_writes_keyframes_and_one_vector_per_patch(store: SqliteStore) ->
     ingestor = fill(store, ring(3, 2.5))
     assert ingestor.stats["kept"] == 3
     assert store.stream(KEYFRAME_STREAM, dict).count() == 3
-    assert store.stream(PATCH_STREAM, dict).count() == 3 * SIDE * SIDE
+    assert store.stream(cli.patch_stream_for("", "stub"), dict).count() == 3 * SIDE * SIDE
     first = store.stream(KEYFRAME_STREAM, dict).order_by("ts").first()
     assert first.data["camera_frame"] == CAMERA
     assert first.data["grid"].shape == (SIDE * SIDE, DIM)
@@ -659,7 +662,7 @@ def test_every_keyframe_and_patch_records_the_model_that_wrote_it(store: SqliteS
     assert first.data["model"], "a keyframe with no model is a keyframe nobody can place"
     assert "member_specs" in first.data and "members" in first.data
     assert first.tags["model"] == first.data["model"]
-    patch = store.stream(PATCH_STREAM, dict).order_by("ts").first()
+    patch = store.stream(cli.patch_stream_for("", "stub"), dict).order_by("ts").first()
     assert patch.data["model"] == first.data["model"]
 
 
@@ -709,7 +712,7 @@ def test_every_model_gets_its_own_searchable_index(store: SqliteStore, tmp_path:
     """
     # One model keeps the bare name, so stores written before ensembles still read.
     fill(store, ring(2, 2.5))
-    assert store.stream(PATCH_STREAM, dict).count() == 2 * SIDE * SIDE
+    assert store.stream(cli.patch_stream_for("", "stub"), dict).count() == 2 * SIDE * SIDE
 
     other = SqliteStore(path=str(tmp_path / "ensemble.db"))
     other.start()
