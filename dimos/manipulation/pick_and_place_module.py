@@ -54,6 +54,7 @@ class PickAndPlaceModuleConfig(ModuleConfig):
     # frame points Z out of the back of the palm need the other side, or the
     # approach starts underneath the object.
     pregrasp_along_tool_z: bool = False
+    max_grasp_attempts: int = Field(default=5, gt=0)
     yaw_policy: Literal["generated", "preserve_current"] = "generated"
     place_yaw_offsets: tuple[float, ...] = (0.0,)
     place_orientations_rpy: tuple[tuple[float, float, float], ...] = ()
@@ -145,6 +146,7 @@ class PickAndPlaceModule(Module):
         except (RuntimeError, ValueError) as exc:
             return SkillResult.fail("GRASP_GENERATION_FAILED", str(exc))
         self._grasp_candidates = candidates
+        self._manipulation.show_grasp_proposals(candidates)
         if candidates.header.frame_id != self.config.planning_frame:
             return SkillResult.fail(
                 "GRASP_FRAME_MISMATCH",
@@ -164,7 +166,7 @@ class PickAndPlaceModule(Module):
         # physical grasp at another angle is fine, so a proposal that will not
         # plan is skipped rather than failing the pick.
         last_failure: SkillResult[ManipulationSkillError] | None = None
-        for rank, candidate in enumerate(candidates.candidates):
+        for rank, candidate in enumerate(candidates.candidates[: self.config.max_grasp_attempts]):
             grasp = self._apply_yaw_policy(
                 PoseStamped(
                     ts=candidates.header.timestamp,
@@ -175,7 +177,8 @@ class PickAndPlaceModule(Module):
                 group,
             )
             pregrasp = self._offset_pose(grasp, self._pregrasp_offset())
-            if failure := self._move_sequence([pregrasp, grasp], group):
+            failure = self._move(pregrasp, group) or self._servo(pregrasp, grasp, group)
+            if failure is not None:
                 if failure.error_code != "PLANNING_FAILED":
                     return failure
                 last_failure = failure
@@ -297,6 +300,7 @@ class PickAndPlaceModule(Module):
 
     def _clear_selection(self) -> None:
         self._grasp_candidates = GraspCandidateArray()
+        self._manipulation.show_grasp_proposals(GraspCandidateArray())
         self._selected_object_id = None
         self._selected_grasp = None
         self._holding_group = None
@@ -334,6 +338,31 @@ class PickAndPlaceModule(Module):
             position=pose.position + pose.orientation.rotate_vector(Vector3(0.0, 0.0, -offset)),
             orientation=pose.orientation,
         )
+
+    def _servo(
+        self, start: PoseStamped, end: PoseStamped, planning_group: PlanningGroupID
+    ) -> SkillResult[ManipulationSkillError] | None:
+        """Drive the last leg as a straight line with collision checking off.
+
+        The object being grasped is itself mapped geometry once a voxel map feeds
+        the planner, so a collision-checked plan into it can only ever be
+        rejected. This leg is short, straight, and deliberately ends in contact.
+        """
+        result = self._manipulation.move_linear(
+            end.position.x - start.position.x,
+            end.position.y - start.position.y,
+            end.position.z - start.position.z,
+            planning_group,
+            check_collision=False,
+        )
+        if not result.plan.succeeded:
+            # A planning failure demotes to the next candidate; a drive fault
+            # would repeat for every one of them, so keep the two distinct.
+            return SkillResult.fail("PLANNING_FAILED", result.plan.message)
+        if result.execution is None or not result.execution.succeeded:
+            message = "" if result.execution is None else result.execution.message
+            return SkillResult.fail("EXECUTION_FAILED", message)
+        return self._await_pose(end, planning_group)
 
     def _move(
         self, pose: PoseStamped, planning_group: PlanningGroupID

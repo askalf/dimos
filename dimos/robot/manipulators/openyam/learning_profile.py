@@ -60,5 +60,5 @@ def _profile(name: str, action_stream: str) -> PolicyIOProfile:
     )
 
 
-OPENYAM_QUEST_IO = _profile("openyam-quest", "applied_joint_position_command")
+OPENYAM_WEBXR_IO = _profile("openyam-quest", "applied_joint_position_command")
 OPENYAM_TEACH_IO = _profile("openyam-teach", "coordinator_joint_state")

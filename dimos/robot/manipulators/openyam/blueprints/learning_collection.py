@@ -27,14 +27,14 @@ from dimos.hardware.whole_body.spec import WholeBodyConfig
 from dimos.imitation.cameras import CameraDevice, profile_cameras
 from dimos.imitation.collection.episode_monitor import EpisodeMonitorModule
 from dimos.imitation.profile import PolicyIOProfile
-from dimos.robot.manipulators.openyam.blueprints.teleop import teleop_quest_openyam
+from dimos.robot.manipulators.openyam.blueprints.teleop import teleop_webxr_openyam
 from dimos.robot.manipulators.openyam.config import (
     OPENYAM_JOINTS,
     openyam_hardware,
 )
 from dimos.robot.manipulators.openyam.learning import (
-    OPENYAM_QUEST_IO,
     OPENYAM_TEACH_IO,
+    OPENYAM_WEBXR_IO,
     OpenYamQuestRecorder,
     OpenYamTeachRecorder,
 )
@@ -89,11 +89,11 @@ def build_quest_collection(
     """Build one Quest-controlled OpenYAM collection session."""
     return _collection(
         recorder=OpenYamQuestRecorder,
-        profile=OPENYAM_QUEST_IO,
+        profile=OPENYAM_WEBXR_IO,
         recording=recording,
         task=task,
         cameras=cameras,
-        robot=teleop_quest_openyam,
+        robot=teleop_webxr_openyam,
     )
 
 

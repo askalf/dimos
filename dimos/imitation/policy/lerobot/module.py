@@ -22,7 +22,7 @@ from dimos.robot.galaxea.r1pro.learning import (
 )
 from dimos.robot.galaxea.r1pro.object_packing import OBJECT_PACKING_IO
 from dimos.robot.manipulators.dual_openyam.learning_profile import DUAL_OPENYAM_LEROBOT_IO
-from dimos.robot.manipulators.openyam.learning_profile import OPENYAM_QUEST_IO
+from dimos.robot.manipulators.openyam.learning_profile import OPENYAM_WEBXR_IO
 
 
 class LeRobotPolicyConfig(PolicyRolloutConfig):
@@ -32,7 +32,7 @@ class LeRobotPolicyConfig(PolicyRolloutConfig):
 OpenYamLeRobotPolicy = declare_policy_module(
     "OpenYamLeRobotPolicy",
     __name__,
-    OPENYAM_QUEST_IO,
+    OPENYAM_WEBXR_IO,
     LeRobotPolicyConfig,
     "dimos_lerobot.runtime:LeRobotPolicyRuntime",
 )

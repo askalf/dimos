@@ -89,7 +89,7 @@ COLLECTION_WORKFLOWS = {
             method="Quest teleoperation",
             required_hardware=("OpenYAM arm", "wrist RGB camera", "Quest headset"),
             builder=f"{_OPENYAM_BLUEPRINTS}.learning_collection:build_quest_collection",
-            profile=f"{_OPENYAM_PROFILE}:OPENYAM_QUEST_IO",
+            profile=f"{_OPENYAM_PROFILE}:OPENYAM_WEBXR_IO",
         ),
         CollectionWorkflow(
             name="dual-openyam-quest",
@@ -100,7 +100,7 @@ COLLECTION_WORKFLOWS = {
                 "right wrist RGB camera",
                 "Quest headset",
             ),
-            builder=(f"{_DUAL_BLUEPRINTS}.learning_collection:build_dual_openyam_quest_collection"),
+            builder=(f"{_DUAL_BLUEPRINTS}.learning_collection:build_dual_openyam_webxr_collection"),
             profile=f"{_DUAL_PROFILE}:DUAL_OPENYAM_TWO_WRIST_IO",
             dual_can=True,
         ),
@@ -133,7 +133,7 @@ ROLLOUT_WORKFLOWS = {
             backend="LeRobot",
             required_hardware=("OpenYAM arm", "wrist RGB camera"),
             builder=f"{_OPENYAM_BLUEPRINTS}.learning_rollout:build_openyam_rollout",
-            profile=f"{_OPENYAM_PROFILE}:OPENYAM_QUEST_IO",
+            profile=f"{_OPENYAM_PROFILE}:OPENYAM_WEBXR_IO",
         ),
         RolloutWorkflow(
             name="dual-openyam-abc",

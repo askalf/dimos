@@ -37,7 +37,7 @@ from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.spec.utils import Spec
-from dimos.teleop.quest.quest_types import BUTTON_ALIASES, Buttons
+from dimos.teleop.webxr.controller_types import BUTTON_ALIASES, Buttons
 
 POLICY_ROLLOUT_TASK_NAME = "policy_rollout"
 POLICY_ROLLOUT_INSTANCE_NAME = "PolicyRolloutModule"
