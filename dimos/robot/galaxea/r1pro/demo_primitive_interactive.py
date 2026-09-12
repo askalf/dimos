@@ -27,6 +27,7 @@ from dimos.constants import RECORDINGS_DIR
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.robot.galaxea.r1pro.primitive_blueprint import build_primitive_blueprint
 from dimos.robot.galaxea.r1pro.primitive_sim import R1ProPrimitiveSim
+from dimos.robot.galaxea.r1pro.primitive_skills import R1ProPrimitiveSkills
 from dimos.robot.galaxea.r1pro.sim_session import reserve_demo_session
 
 
@@ -47,6 +48,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         bilateral_layout=not args.right_layout,
                     )
                     if a.module is R1ProPrimitiveSim
+                    else dict(action_timeout=args.action_timeout)
+                    if a.module is R1ProPrimitiveSkills
                     else {}
                 ),
             },
@@ -106,6 +109,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     row.update(outcome=outcome, after=call("get_scene"))
                     (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
                     if not outcome["success"]:
+                        if args.recover_on_failure:
+                            report["recovery_accepted"] = call("recover_action")
+                            if report["recovery_accepted"]["accepted"]:
+                                deadline = time.monotonic() + 120
+                                while True:
+                                    recovery = call("wait_for_action", {"seconds": 20})
+                                    if recovery["state"] != "running":
+                                        break
+                                    if time.monotonic() > deadline:
+                                        call("stop_action")
+                                        raise RuntimeError("Recovery did not finish")
+                                report["recovery"] = recovery
+                                report["after_recovery"] = call("get_scene")
                         raise RuntimeError(f"Action failed: {outcome}")
                 report["success"] = True
                 if args.stay_open:
@@ -136,6 +152,8 @@ def main() -> None:
     parser.add_argument("--right-layout", action="store_true")
     parser.add_argument("--viewer", action="store_true")
     parser.add_argument("--stay-open", action="store_true")
+    parser.add_argument("--action-timeout", type=float, default=40.0)
+    parser.add_argument("--recover-on-failure", action="store_true")
     parser.add_argument("--mcp-port", type=int, required=True)
     parser.add_argument("--zenoh-scout-addr", required=True)
     parser.add_argument(

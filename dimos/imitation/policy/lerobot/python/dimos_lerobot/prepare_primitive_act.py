@@ -349,13 +349,16 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--primitive", choices=("pick", "place"))
     parser.add_argument("--arm", choices=("left", "right"))
+    parser.add_argument("--action-steps", type=int, default=20)
     args = parser.parse_args()
     if args.operation == "convert":
         convert(args.source, args.output)
     elif args.operation == "export":
         if args.primitive is None or args.arm is None:
             parser.error("Export requires --primitive and --arm")
-        export_deployment(args.source, args.output, 20, primitive_profile(args.primitive, args.arm))
+        export_deployment(
+            args.source, args.output, args.action_steps, primitive_profile(args.primitive, args.arm)
+        )
     else:
         if args.dataset is None or args.primitive is None or args.arm is None:
             parser.error("Initialization requires --dataset, --primitive and --arm")
