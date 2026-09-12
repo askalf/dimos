@@ -3,12 +3,12 @@
 Where the query is going, and why. Written 2026-09-12 with Jeff, working through the
 current design step by step. Nothing here is built yet unless it says so.
 
-**Target: a 100 ms query.** Today "soda" over 3,462 keyframes takes 92.5 s.
+**Target: a 100 ms query.** Today "soda" over 3,462 embedding frames takes 92.5 s.
 
 ## What the query does now
 
 1. Turn the text into a vector, one per model.
-2. Load every keyframe's patch grids from the db.
+2. Load every embedding frame's patch grids from the db.
 3. Score every patch; keep the ones that beat their background.
 4. For each hot patch, look up where the camera was and how far away that patch was,
    and draw a thin shell at that distance along its ray.
@@ -17,11 +17,11 @@ current design step by step. Nothing here is built yet unless it says so.
    size, group what is left into blobs.
 7. Return the blobs, ranked.
 
-## Measured, on grocery.db, 3,462 keyframes
+## Measured, on grocery.db, 3,462 embedding frames
 
 | | |
 |---|---|
-| load the keyframes | 1.2 s |
+| load the embedding frames | 1.2 s |
 | answer without refine | 9.9 s |
 | answer with refine | 92.5 s |
 | build the tf buffer | 4.1 s, once per process |
@@ -37,24 +37,24 @@ O(bounding-box volume), not O(hot voxels), so spreading the same heat across a l
 store grows it cubically while the useful data does not move.
 
 **Everything is loaded because of how it is stored.** The numbers the query needs live
-inside one pickled blob per keyframe, so reading one patch means unpickling the whole
-row -- 6.3 GB of them.
+inside one pickled blob per embedding frame, so reading one patch means unpickling the
+whole row -- 6.3 GB of them.
 
 ## The layout
 
 Three kinds of thing, three streams.
 
-**depth_thumbnails** -- one row per kept photo: a small point cloud in the camera's own
+**depth_thumbnails** -- one row per embedding frame: a small point cloud in the camera's own
 frame, plus the camera frame and timestamp needed to place it. Nothing else: once each
 patch carries its own ray and depth, the occupancy check is the only thing that needs a
-per-photo row at all, so the stream is named for the one job it does.
+per-frame row at all, so the stream is named for the one job it does.
 
 **patches, one stream per model** -- `hyperspace_patches__m_<model>`, one row per patch:
 the vec0 vector, plus camera frame, timestamp, cell number, ray direction and depth.
 Everything needed to place a hit, so a search result needs no second read. The per-model
 streams are shipped (commits 7fa21a969, 25f617f46); the self-contained row is not.
 
-What leaves today's keyframe row, and why: `grid`/`grids` become the per-model patch
+What leaves today's embedding-frame row, and why: `grid`/`grids` become the per-model patch
 streams; `intrinsics` is unnecessary once every patch and every thumbnail point carries
 its own direction; `rows`/`cols`/`grid_shapes` collapse into the one fixed cell grid;
 `thumbnail_mm`/`thumbnail_stride` become the point cloud; and
@@ -66,7 +66,7 @@ it.
 
 ### A fixed cell grid, chosen independently of the models
 
-Say 48x48 for every photo, with each model's patches resampled onto it at ingest. Then
+Say 48x48 for every embedding frame, with each model's patches resampled onto it at ingest. Then
 cell 231 means the same place in every model, so any subset of models can be combined at
 runtime and a fourth model can be added next month without touching the first three.
 
@@ -75,10 +75,10 @@ what forces them to be ingested as a group.
 
 ### The thumbnail is a point cloud, not a depth picture
 
-The occupancy step is the only thing that reads it: every kept photo's depth is placed
+The occupancy step is the only thing that reads it: every embedding frame's depth is placed
 into the world to give a rough "we saw a surface here" cloud, and answer voxels that are
 not on it get dropped. That is what removes hits floating in mid-air. It deliberately
-uses the whole photo rather than the hot patches, so it is a check rather than a
+uses the whole frame rather than the hot patches, so it is a check rather than a
 restatement of what the patch already claimed.
 
 Storing it as 3D points in the CAMERA's frame instead of a depth raster means nothing
@@ -128,7 +128,7 @@ snapshot referencing it, so there is nothing to invalidate. That is also why a
 `DeformationNode` must edit existing messages rather than append corrective ones.
 
 For hyperspace: we already walk the whole tf stream at ingest, so build it there. Per
-photo, store the row ids of the two tf entries bracketing its timestamp for each edge of
+embedding frame, store the row ids of the two tf entries bracketing its timestamp for each edge of
 the camera->odom chain, about ten ids. At query, fetch those rows, interpolate, compose.
 No buffer.
 
@@ -141,14 +141,22 @@ row ids. Jeff's June work added `fetch_by_ids` for exactly this, and it is not i
 today. Resolving by `at(ts)` instead would work but resolves by time rather than by row,
 so corrections stop propagating, which defeats the point.
 
-Cheap win available before any of that: patches from one photo share a timestamp, so
-look up once per photo rather than once per patch.
+Cheap win available before any of that: patches from one embedding frame share a
+timestamp, so look up once per frame rather than once per patch. Better still, every
+timestamp is known up front, so sort them and interpolate the whole batch in numpy in
+one pass -- batching beats threading here, where each lookup is a few tiny matrix ops
+and the cost is Python call overhead the GIL holds anyway.
+
+Note that `placer()` calls `self.tf.get` once per frame against a `MultiTBuffer` today,
+and core has no batched `get`. Both the batch and the tree mean doing the interpolation
+in hyperspace instead, so `self.tf.get` goes away either way.
 
 ## What each piece needs
 
 | | db | core |
 |---|---|---|
 | per-model vector streams | yes (shipped) | no |
+| batched tf interpolation | no | no |
 | patch carries frame, ts, depth, ray | yes, re-ingest | no |
 | photos stream, point-cloud thumbnail | yes, re-ingest | no |
 | fixed model-independent cell grid | yes, re-ingest | no |
