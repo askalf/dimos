@@ -18,7 +18,16 @@ import json
 
 import pytest
 
-from dimos.manipulation.manipulation_spec import ExecutionResult, ExecutionStatus
+from dimos.manipulation.manipulation_spec import (
+    ExecutionResult,
+    ExecutionStatus,
+    PlanResult,
+    PlanStatus,
+)
+from dimos.manipulation.planning.spec.models import GeneratedPlan
+from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
+from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
+from dimos.robot.galaxea.r1pro.grasping_sim import VIRTUAL_BASE_JOINTS
 from dimos.robot.galaxea.r1pro.primitive_blueprint import (
     POLICIES,
     R1ProPrimitiveCoordinator,
@@ -168,3 +177,24 @@ def test_occupied_requested_hand_is_rejected_without_selecting_the_other(skills)
     skills._sim.prepare_primitive.assert_not_called()
     skills._pick_right.start_rollout.assert_not_called()
     skills._pick_left.start_rollout.assert_not_called()
+
+
+def test_obstructed_sdk_base_path_is_rejected_before_execution_or_act(skills):
+    skills._sim.prepare_primitive.return_value = dict(
+        base_waypoints=[[0.0, 0.0, 0.0], [0.2, 0.0, 0.0]]
+    )
+    skills._sim.primitive_state.return_value["base_pose"] = [0.0, 0.0, 0.0]
+    trajectory = JointTrajectory(
+        joint_names=list(VIRTUAL_BASE_JOINTS),
+        points=[TrajectoryPoint(positions=[0.2, 0.0, 0.0], time_from_start=2.0)],
+    )
+    skills._manipulation.plan_to_joints.return_value = PlanResult(
+        PlanStatus.SUCCEEDED,
+        plan=GeneratedPlan(group_ids=("moving_base",), trajectory=trajectory),
+    )
+    skills._sim.validate_primitive_base_plan.side_effect = RuntimeError("Held object hits clutter")
+    with pytest.raises(RuntimeError, match="Held object hits clutter"):
+        skills._execute("place", "right", -1, "tray", {})
+    skills._sim.validate_primitive_base_plan.assert_called_once_with(trajectory)
+    skills._manipulation.execute.assert_not_called()
+    skills._place_right.start_rollout.assert_not_called()

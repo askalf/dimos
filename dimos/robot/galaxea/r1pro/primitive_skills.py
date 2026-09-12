@@ -199,8 +199,11 @@ class R1ProPrimitiveSkills(Module):
         self._stop_control()
         selection = self._sim.prepare_primitive(primitive, arm, index, region)
         report["selection"] = selection
-        target = np.asarray(selection["base_target"])
-        if np.max(np.abs(target - self._sim.primitive_state()["base_pose"])) > 0.004:
+        report["base_plan_ids"] = []
+        for waypoint in selection["base_waypoints"][1:]:
+            target = np.asarray(waypoint)
+            if np.max(np.abs(target - self._sim.primitive_state()["base_pose"])) <= 0.004:
+                continue
             plan = self._manipulation.plan_to_joints(
                 {
                     "moving_base": JointState(
@@ -211,7 +214,8 @@ class R1ProPrimitiveSkills(Module):
             )
             if not plan.succeeded or plan.plan is None:
                 raise RuntimeError(f"SDK prepositioning plan failed: {plan.message}")
-            report["base_plan_id"] = plan.plan.plan_id
+            self._sim.validate_primitive_base_plan(plan.plan.trajectory)
+            report["base_plan_ids"].append(plan.plan.plan_id)
             self._pause(0)
             report["motion_started"] = True
             execution = self._manipulation.execute(blocking=False, plan_id=plan.plan.plan_id)

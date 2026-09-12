@@ -258,8 +258,29 @@ cd /home/mustafa/dimos-wt/r1pro-act-sim
 This opens the MuJoCo table scene and starts idle. The blueprint uses
 `recordings/r1pro-act-task/policy-primitives-preview`: all four first-round
 independent policies with unchanged weights and the tested 30-action setting.
-It is a preview with known placement failures. Ongoing refinement and its queued
-checks use separate artifacts and local transport sessions.
+It is a preview with known placement failures. Background evaluation uses separate
+artifacts and local transport sessions.
+
+For natural-language interaction, launch the agent variant instead:
+
+```bash
+.home-venv/bin/dimos run r1pro-primitives-sim-agent
+```
+
+Then, in another terminal in this directory:
+
+```bash
+.home-venv/bin/dimos humancli --transport zenoh
+```
+
+For example, say "Pick up object_2 with your right hand and hold it."
+After success, separately request "Place the held object in the tray."
+The agent needs your configured model credentials. HumanCLI is wired to these
+skills, but the full language-agent interaction has not been validated here.
+The first placement refinement finished; it passed 4/8 fresh-layout sequences,
+and the full DimOS tests still found release stalls and a failed second-hand pick.
+It has not replaced the preview weights. These are experimental primitives, not
+yet a reliable two-hand demo.
 
 In another terminal in the same directory:
 
