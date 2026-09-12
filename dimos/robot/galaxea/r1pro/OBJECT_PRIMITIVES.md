@@ -203,10 +203,10 @@ checked against the saved checkpoint: every model tensor and normalization
 mean/std tensor was unchanged before optimizer updates. New exports use 30-action
 chunks and are evaluated on fresh seeds beginning at 352000.
 
-The first correction batch accepted nine right-arm and seven left-arm examples;
-rejected grasps and disturbed-object episodes are excluded. A separate left-arm
-supplement adds verified examples before left placement conversion. Its original
-manifest and all source arrays are retained, with supplement provenance recorded.
+The correction data contains nine right-arm and fourteen left-arm examples;
+rejected grasps and disturbed-object episodes are excluded. Seven of the left-arm
+examples came from a separate supplement added before left placement conversion.
+The initial manifest and all source arrays are retained with supplement provenance.
 
 Monitor the active work from any terminal:
 
@@ -232,3 +232,14 @@ retained. The primitive blueprint explicitly selects the SDK's shared RRT-Connec
 planner over the same RoboPlan collision world: the native RoboPlan RRT rejected
 the recorded, collision-free, in-range arm state while the shared planner found
 and executed a valid path. Normal pick and place commands still use ACT.
+
+### What runs through DimOS
+
+All interactive commands use DimOS modules. `R1ProPrimitiveSkills` selects an
+independent ACT runtime for pick or place; its joint chunks execute through
+`ControlCoordinator`. Base positioning and recovery use DimOS `ManipulationModule`
+for planning and the same coordinator for execution. The demo selects DimOS
+`RRTConnectPlanner`, with `RoboPlanWorld` providing robot geometry and collision
+queries. RoboPlan is a planning dependency inside DimOS. The phrase "native
+validation" in older notes means testing the composed DimOS processes and MCP
+interface, as distinct from an offline policy rollout in the training harness.
