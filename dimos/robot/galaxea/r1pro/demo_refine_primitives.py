@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 from dimos.robot.galaxea.r1pro.demo_collect_objects import save_manifest
@@ -33,14 +34,16 @@ def merge_demonstrations(rehearsal: Path, corrections: Path, output: Path) -> No
         if original[field] != fresh[field]:
             raise ValueError(f"Rehearsal and correction contracts differ: {field}")
     if len(fresh["episodes"]) < 8:
-        raise ValueError("At least eight successful ACT-held corrections per arm are required")
+        raise ValueError(
+            "At least eight successful additional demonstrations per profile are required"
+        )
     rows: list[dict[str, Any]] = []
     seen = set()
     for folder, manifest in ((rehearsal, original), (corrections, fresh)):
         for row in manifest["episodes"]:
             key = (row["seed"], row["selected"])
             if key in seen or not row["success"]:
-                raise ValueError("Duplicate or failed placement demonstration")
+                raise ValueError("Duplicate or failed primitive demonstration")
             seen.add(key)
             rows.append(
                 {
@@ -83,6 +86,8 @@ def run(args: argparse.Namespace) -> None:
         steps=args.steps,
         action_steps=args.action_steps,
     )
+    if args.interactive_context:
+        contract["interactive_context"] = True
     settings = job / "settings.json"
     if settings.exists() and json.loads(settings.read_text()) != contract:
         raise ValueError("Resume settings or source policies differ")
@@ -92,24 +97,48 @@ def run(args: argparse.Namespace) -> None:
     try:
         stage(
             "collect",
-            [
-                *stage.learned,
-                "-m",
-                "dimos_lerobot.demo_collect_primitive_corrections",
-                "--policies",
-                str(args.policies.resolve()),
-                "--output",
-                str(job / "collection"),
-                "--layouts",
-                str(args.layouts),
-                "--start-seed",
-                str(args.start_seed),
-                "--action-steps",
-                str(args.action_steps),
-            ],
+            (
+                [
+                    sys.executable,
+                    "-m",
+                    "dimos.robot.galaxea.r1pro.demo_collect_primitives",
+                    "--interactive-context",
+                    "--output",
+                    str(job / "collection"),
+                    "--layouts",
+                    str(args.layouts),
+                    "--start-seed",
+                    str(args.start_seed),
+                ]
+                if args.interactive_context
+                else [
+                    *stage.learned,
+                    "-m",
+                    "dimos_lerobot.demo_collect_primitive_corrections",
+                    "--policies",
+                    str(args.policies.resolve()),
+                    "--output",
+                    str(job / "collection"),
+                    "--layouts",
+                    str(args.layouts),
+                    "--start-seed",
+                    str(args.start_seed),
+                    "--action-steps",
+                    str(args.action_steps),
+                ]
+            ),
         )
-        for arm in ARMS:
-            name = f"place-{arm}"
+        for primitive, arm in (
+            (p, a) for a in ARMS for p in (PRIMITIVES if args.interactive_context else ("place",))
+        ):
+            name = f"{primitive}-{arm}"
+            if args.interactive_context:
+                fresh = json.loads((job / "collection" / name / "manifest.json").read_text())
+                held_examples = sum(bool(row.get("other_hand_object")) for row in fresh["episodes"])
+                if held_examples < 4:
+                    raise ValueError(
+                        f"Need at least four other-hand-held demonstrations for {name}"
+                    )
             merged = job / "merged" / name
             merge_demonstrations(args.rehearsal / name, job / "collection" / name, merged)
             dataset, initialization, training = (
@@ -138,7 +167,7 @@ def run(args: argparse.Namespace) -> None:
                     "--output",
                     str(initialization),
                     "--primitive",
-                    "place",
+                    primitive,
                     "--arm",
                     arm,
                 ],
@@ -175,11 +204,11 @@ def run(args: argparse.Namespace) -> None:
                     "--output_dir=" + str(training),
                 ],
             )
-            for primitive in PRIMITIVES:
-                name = f"{primitive}-{arm}"
+            for export_primitive in (primitive,) if args.interactive_context else PRIMITIVES:
+                name = f"{export_primitive}-{arm}"
                 source_policy = (
                     training / "checkpoints/last/pretrained_model"
-                    if primitive == "place"
+                    if export_primitive == primitive
                     else args.policies.resolve() / name
                 )
                 stage(
@@ -192,7 +221,7 @@ def run(args: argparse.Namespace) -> None:
                         "--output",
                         str(job / "policies" / name),
                         "--primitive",
-                        primitive,
+                        export_primitive,
                         "--arm",
                         arm,
                         "--action-steps",
@@ -248,6 +277,7 @@ def main() -> None:
     parser.add_argument("--evaluation-seed", type=int, default=352000)
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--action-steps", type=int, default=30)
+    parser.add_argument("--interactive-context", action="store_true")
     args = parser.parse_args()
     if args.layouts < 8 or args.steps < 1 or min(args.start_seed, args.evaluation_seed) < 0:
         parser.error("Use at least eight layouts, positive steps and nonnegative seeds")
@@ -257,10 +287,12 @@ def main() -> None:
         range(args.evaluation_seed, args.evaluation_seed + 4)
     ):
         parser.error("Evaluation seeds must be held out of correction collection")
-    for arm in ARMS:
+    for primitive, arm in (
+        (p, a) for a in ARMS for p in (PRIMITIVES if args.interactive_context else ("place",))
+    ):
         seeds = {
             r["seed"]
-            for r in json.loads((args.rehearsal / f"place-{arm}/manifest.json").read_text())[
+            for r in json.loads((args.rehearsal / f"{primitive}-{arm}/manifest.json").read_text())[
                 "episodes"
             ]
         }

@@ -35,16 +35,28 @@ CASES = {
     "left": ["pick:left:object_1", "place:left:tray", "pick:left:object_1", "place:left:table"],
     "both": ["pick:right:object_2", "pick:left:object_1", "place:right:table", "place:left:table"],
 }
+EXTENDED_CASES = {
+    "right_cross_table": ["pick:right:object_1", "place:right:table"],
+    "left_cross_table": ["pick:left:object_2", "place:left:table"],
+    "both_reverse": [
+        "pick:left:object_1",
+        "pick:right:object_2",
+        "place:left:table",
+        "place:right:table",
+    ],
+    "custom_region": ["pick:right:object_2", "place:right:far_table"],
+}
 
 
 def run(args: argparse.Namespace) -> None:
     root = Path(__file__).resolve().parents[4]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    cases = {**CASES, **EXTENDED_CASES} if args.extended else CASES
     contract = dict(
         wait_for=str(args.wait_for.resolve()),
         seed=args.seed,
-        cases=CASES,
+        cases=cases,
         mcp_port=args.mcp_port,
         zenoh_scout_addr=args.zenoh_scout_addr,
     )
@@ -63,7 +75,7 @@ def run(args: argparse.Namespace) -> None:
             time.sleep(30)
         stage = TrainingStages(root, output)
         results = {}
-        for case, commands in CASES.items():
+        for case, commands in cases.items():
             case_output = output / case
             try:
                 stage(
@@ -82,6 +94,11 @@ def run(args: argparse.Namespace) -> None:
                         str(args.mcp_port),
                         "--zenoh-scout-addr",
                         args.zenoh_scout_addr,
+                        *(
+                            ["--region", "far_table", "0.60", "0.48", "0.12", "0.12"]
+                            if case == "custom_region"
+                            else []
+                        ),
                         "--actions",
                         *commands,
                     ],
@@ -112,6 +129,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=340000)
     parser.add_argument("--mcp-port", type=int, required=True)
     parser.add_argument("--zenoh-scout-addr", required=True)
+    parser.add_argument("--extended", action="store_true")
     args = parser.parse_args()
     run(args)
 

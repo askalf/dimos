@@ -26,6 +26,7 @@ from numpy.typing import NDArray
 
 from dimos.robot.galaxea.r1pro.demo_collect_objects import save_manifest
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_FPS
+from dimos.robot.galaxea.r1pro.object_bimanual_task import BimanualPrimitiveTask
 from dimos.robot.galaxea.r1pro.object_packing_scene import (
     sample_layout,
 )
@@ -37,11 +38,21 @@ from dimos.robot.galaxea.r1pro.object_primitives import (
     Primitive,
     primitive_profile,
 )
-from dimos.robot.galaxea.r1pro.primitive_scene import choose_placement, prepare_primitive_scene
+from dimos.robot.galaxea.r1pro.primitive_scene import (
+    bilateral_layout,
+    choose_placement,
+    prepare_primitive_scene,
+)
 
 
 def collect(
-    output: Path, *, start_seed: int, layouts: int, images: bool, choices: int = 1
+    output: Path,
+    *,
+    start_seed: int,
+    layouts: int,
+    images: bool,
+    choices: int = 1,
+    interactive_context: bool = False,
 ) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     manifests: dict[tuple[Arm, Primitive], dict[str, Any]] = {}
@@ -62,6 +73,9 @@ def collect(
                 layouts=layouts,
                 choices=choices,
             )
+            if interactive_context:
+                contract["interactive_context"] = True
+                contract["context_version"] = 2
             path = folder / "manifest.json"
             manifest = (
                 json.loads(path.read_text())
@@ -74,6 +88,8 @@ def collect(
             save_manifest(path, manifest)
     for number, seed in enumerate(range(start_seed, start_seed + layouts)):
         original = sample_layout(seed, occupied=0 if number % 2 == 0 else 1 + number % 3)
+        if interactive_context:
+            original = bilateral_layout(original)
         candidates = [
             i for i, obj in enumerate(original.objects) if obj.in_tray == bool(number % 2)
         ]
@@ -82,7 +98,9 @@ def collect(
         )
         for arm in ARMS:
             scene, layout = prepare_primitive_scene(
-                output / f"scene-{seed}-{arm}.xml", original, arm
+                output / f"scene-{seed}-{arm}.xml",
+                original,
+                "right" if interactive_context else arm,
             )
             for selected in selected_indices:
                 finished = {
@@ -95,7 +113,7 @@ def collect(
                 phase = "initialize"
                 primitive = "pick"
                 started = time.monotonic()
-                base_row = dict(
+                base_row: dict[str, Any] = dict(
                     seed=seed,
                     selected=selected,
                     shape=layout.objects[selected].shape,
@@ -105,7 +123,41 @@ def collect(
                     scene=str(scene.resolve()),
                 )
                 try:
-                    with ObjectPrimitiveTask(scene, layout, arm=arm, images=images) as task:
+                    task_type = (
+                        BimanualPrimitiveTask if interactive_context else ObjectPrimitiveTask
+                    )
+                    with task_type(scene, layout, arm=arm, images=images) as task:
+                        if interactive_context:
+                            assert isinstance(task, BimanualPrimitiveTask)
+                            base_row["other_hand_object"] = None
+                            # Half the layouts keep the other hand holding an object.
+                            # Its setup grasp is teacher-only and never mislabeled ACT.
+                            if number % 4 >= 2:
+                                other_arm: Arm = "left" if arm == "right" else "right"
+                                others = [
+                                    i
+                                    for i, o in enumerate(layout.objects)
+                                    if i != selected and not o.in_tray
+                                ]
+                                if not others:
+                                    raise RuntimeError("No supported object for the other hand")
+                                other = min(
+                                    others,
+                                    key=lambda i: abs(
+                                        layout.objects[i].position[1]
+                                        - (0.4 if other_arm == "left" else -0.4)
+                                    ),
+                                )
+                                task.switch_arm(other_arm)
+                                task.select(other)
+                                task.teacher_preposition(task.data.body(task.bottle_id).xpos.copy())
+                                protected = task.inventory()
+                                for setup_phase, action in task.teacher_pick():
+                                    phase = f"other_hand/{setup_phase}"
+                                    task.primitive_step(action)
+                                    task.validate(protected)
+                                base_row["other_hand_object"] = layout.objects[other].name
+                                task.switch_arm(arm)
                         task.select(selected)
                         for primitive in PRIMITIVES:
                             manifest = manifests[arm, primitive]
@@ -118,7 +170,7 @@ def collect(
                             else:
                                 target, region = choose_placement(
                                     task,
-                                    "table"
+                                    ("worktable" if interactive_context else "table")
                                     if layout.objects[selected].in_tray or number % 4 == 0
                                     else "tray",
                                     seed + selected,
@@ -229,6 +281,7 @@ def main() -> None:
     parser.add_argument("--layouts", type=int, default=8)
     parser.add_argument("--choices", type=int, choices=range(1, 4), default=1)
     parser.add_argument("--no-images", action="store_true")
+    parser.add_argument("--interactive-context", action="store_true")
     args = parser.parse_args()
     if args.layouts < 1 or args.start_seed < 0:
         parser.error("Use positive layouts and a nonnegative seed")
@@ -240,6 +293,7 @@ def main() -> None:
                 layouts=args.layouts,
                 choices=args.choices,
                 images=not args.no_images,
+                interactive_context=args.interactive_context,
             )
         ),
         flush=True,

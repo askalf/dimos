@@ -282,6 +282,16 @@ and the full DimOS tests still found release stalls and a failed second-hand pic
 It has not replaced the preview weights. These are experimental primitives, not
 yet a reliable two-hand demo.
 
+With carried-object routing corrected, a matched comparison on seeds
+352000–352003 completed 5/8 sequences with the original policies and 7/8 with
+the placement refinement. That is still a limited bench evaluation. Recent
+interactive failures exposed missing cross-table and other-hand-held examples.
+The next refinement reuses both existing weights and demonstration data, adds
+the interactive two-sided scene, and trains both pick and place with the other
+hand either parked or holding an object. It also records placement across the
+worktable. These checkpoints must pass the extended DimOS tests before replacing
+the preview.
+
 In another terminal in the same directory:
 
 ```bash

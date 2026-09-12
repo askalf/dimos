@@ -14,7 +14,7 @@
 
 """Native physics and measured outcomes for independent bimanual ACT primitives."""
 
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 import threading
 import time
@@ -50,7 +50,11 @@ from dimos.robot.galaxea.r1pro.object_primitives import (
     primitive_observation,
 )
 from dimos.robot.galaxea.r1pro.placement_regions import PlacementRegion
-from dimos.robot.galaxea.r1pro.primitive_scene import choose_placement, prepare_primitive_scene
+from dimos.robot.galaxea.r1pro.primitive_scene import (
+    bilateral_layout,
+    choose_placement,
+    prepare_primitive_scene,
+)
 from dimos.simulation.engines.mujoco_engine import MujocoEngine
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule, MujocoSimModuleConfig
 
@@ -99,19 +103,7 @@ class R1ProPrimitiveSim(MujocoSimModule):
             if self.config.generate_scene:
                 layout = sample_layout(self.config.seed, occupied=self.config.occupied)
                 if self.config.bilateral_layout:
-                    layout = ObjectLayout(
-                        layout.seed,
-                        tuple(
-                            replace(
-                                o,
-                                position=(o.position[0], -o.position[1], o.position[2]),
-                                yaw=-o.yaw,
-                            )
-                            if i % 2 == 0 and not o.in_tray
-                            else o
-                            for i, o in enumerate(layout.objects)
-                        ),
-                    )
+                    layout = bilateral_layout(layout)
                 output = self.config.output.expanduser().resolve()
                 if (output / "scene.xml").exists():
                     raise FileExistsError(f"Choose a new session output: {output}")

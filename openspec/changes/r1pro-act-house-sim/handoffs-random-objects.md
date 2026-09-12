@@ -312,3 +312,55 @@ detached as `jobs/primitive-matched-eval-v1`, parent PID 1689153: baseline and
 refined policies, both arms, seeds 352000..352003 in their original task order,
 30 actions, updated collision routing. Check its status.json and each result.json.
 No new training is running and no model was promoted.
+
+### September 12: actual interactive failures and next context refinement
+
+Remote branch checked directly with `git ls-remote`: last push remains
+389632263b8be793b2de8ed7f9cfb2cb6d855761 at 12:34:56 Pacific. That checkpoint
+validated four right-hand table pick/hold/explicit-tray-place cycles on seed
+210000, order 3→1→4→2. It was a limited usable demo, not general independent
+policies. No rollback was requested; keep this remote checkpoint intact.
+
+The user tested the primitive preview. Session
+`recordings/r1pro-primitives/24701af314824a5a8de2287affc5f51e` has failed right
+picks of left-side object_1, a successful right pick of object_2 followed by
+failed placement at (0.599, 0.489), and a failed left pick of right-side object_2.
+Recovery succeeded for supported failed picks but correctly refused to release
+or reset when the selected object lost stable support. Do not execute the
+earlier interrupted "pick the light blue bottle" request in the live session.
+
+Full matched evaluation finished: original 5/8, refined 7/8 on identical seeds
+352000..352003 at 30 actions with cargo routing. The remaining refined failure
+was an obstructed prepositioning goal. This does not establish the preview's
+cross-table, left/right interchangeability, or two-hand reliability.
+
+Training had a real context gap: single-sided scenes and the other arm parked.
+The preserved normalizer gives each inactive-joint context dimension std=0.01;
+holding postures therefore lie far outside the original examples. New optional
+`--interactive-context` collection shares the exact bilateral layout function
+with the simulator. It collects both arms, sources on either side and in the
+tray, half with another object held, and placements across the worktable.
+Teacher setup grasps are explicitly teacher actions, not reported as ACT.
+Separate pick/place boundaries and other-hand ownership checks remain intact.
+Refinement now optionally trains all four existing profiles, preserves weights
+and normalization, rehearses original and previous correction data, and requires
+at least four successful other-hand-held examples plus eight total new examples
+per profile before training. Existing placement-only refinement mode remains.
+
+Base positioning no longer clamps forward translation to zero: a far-table
+goal now stays in the learned local arm workspace. The physical planner checks
+the nominal pose and nearby ±4 cm alternatives, with a shared ten-second route
+budget. Placement selection tries other empty points when their carrying pose
+is obstructed. All executed base trajectories still pass the MuJoCo cargo check
+and run through DimOS ManipulationModule/ControlCoordinator. No arm grasp/place
+fallback has been substituted for ACT.
+
+Demonstration probes are in `/tmp/primitive-interactive-teacher-smoke` (8 picks,
+7 placements before wider targets), `/tmp/primitive-interactive-wide-smoke`,
+`/tmp/primitive-interactive-placement-smoke`, and the latest
+`/tmp/primitive-interactive-routing-smoke`. Intermediate versions exposed
+blocked carrying poses; retain their failed reports. The final probe is still
+running at this note. Far-table DimOS ACT test is `/tmp/primitive-far-table-dimos`.
+Regression tests passed 37 cases and changed-source typing checks passed.
+Extended validation now covers both arm orders, cross-table requested-arm picks,
+tray unloading and a custom far-table region. Model promotion remains pending.

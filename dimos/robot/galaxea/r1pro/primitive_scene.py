@@ -26,6 +26,7 @@ from numpy.typing import NDArray
 
 from dimos.robot.galaxea.r1pro.object_packing_scene import ObjectLayout, prepare_object_scene
 from dimos.robot.galaxea.r1pro.object_packing_state import object_extent
+from dimos.robot.galaxea.r1pro.object_primitive_state import PrimitiveSceneState
 from dimos.robot.galaxea.r1pro.object_primitives import Arm
 from dimos.robot.galaxea.r1pro.placement_regions import (
     PlacementObstacle,
@@ -39,8 +40,24 @@ class PrimitivePlacementContext(Protocol):
     data: mujoco.MjData
     layout: ObjectLayout
     arm: Arm
-    selected: int
+    home: NDArray[np.float64]
     bottle_id: int
+
+    @property
+    def selected(self) -> int: ...
+
+
+def bilateral_layout(layout: ObjectLayout) -> ObjectLayout:
+    """Use the interactive bench arrangement, retaining every tray occupant unchanged."""
+    return ObjectLayout(
+        layout.seed,
+        tuple(
+            replace(o, position=(o.position[0], -o.position[1], o.position[2]), yaw=-o.yaw)
+            if i % 2 == 0 and not o.in_tray
+            else o
+            for i, o in enumerate(layout.objects)
+        ),
+    )
 
 
 def prepare_primitive_scene(
@@ -82,16 +99,20 @@ def choose_placement(
         region = PlacementRegion(
             "tray", tuple(tray.xpos + np.array([0, 0, 0.015])), (0.145, 0.105), ("bin_floor",)
         )
-    elif destination == "table":
+    elif destination in ("table", "worktable"):
         sign = -1 if task.arm == "right" else 1
         top = next(
             task.model.geom(i).name
             for i in range(task.model.ngeom)
             if task.model.geom_bodyid[i] == task.model.body("task_table").id
         )
-        region = PlacementRegion("table", (0.41, sign * 0.44, 0.7), (0.15, 0.16), (top,))
+        region = (
+            PlacementRegion("worktable", (0.46, 0.0, 0.7), (0.18, 0.57), (top,))
+            if destination == "worktable"
+            else PlacementRegion("table", (0.41, sign * 0.44, 0.7), (0.15, 0.16), (top,))
+        )
     else:
-        raise ValueError("Collection destination must be table or tray")
+        raise ValueError("Collection destination must be table, worktable or tray")
     obstacles = []
     for i, obj in enumerate(task.layout.objects):
         if i == task.selected:
@@ -122,5 +143,16 @@ def choose_placement(
         points = tuple(p for p in points if np.linalg.norm(np.asarray(p[:2]) - source[:2]) >= 0.045)
     if not points:
         raise RuntimeError("No empty placement region with object and open-finger clearance")
-    index = 0 if seed is None else int(np.random.default_rng(seed).integers(len(points)))
-    return np.asarray(points[index]), region
+    first = 0 if seed is None else int(np.random.default_rng(seed).integers(len(points)))
+    scene = PrimitiveSceneState(task.model, task.data, task.layout, task.home)
+    planner = scene.transport_planner()
+    # An empty object footprint may still leave the carrying posture in a
+    # collision. Try the other empty spots before rejecting the entire region.
+    for offset in range(len(points)):
+        target = np.asarray(points[(first + offset) % len(points)])
+        if any(
+            planner.clear_pose_segment(pose, pose)
+            for pose in scene.preposition_poses(task.arm, target)
+        ):
+            return target, region
+    raise RuntimeError("No empty placement spot has a clear carrying pose in this region")
