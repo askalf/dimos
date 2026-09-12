@@ -23,6 +23,8 @@ import pytest
 
 from dimos.robot.galaxea.r1pro.grasping_blueprint import R1ProGraspingSim
 from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
+from dimos.robot.galaxea.r1pro.object_packing_scene import sample_layout
+from dimos.robot.galaxea.r1pro.object_primitive_state import PrimitiveSceneState
 
 
 @pytest.fixture
@@ -152,3 +154,24 @@ def test_existing_tray_transport_still_moves_the_tray_in_its_planning_copy(cargo
     np.testing.assert_allclose(
         checker.probe.body("task_bin").xpos, data.body("task_bin").xpos + np.array([-0.5, 0, 0])
     )
+
+
+def test_primitive_can_move_forward_to_keep_a_far_target_in_its_workspace(checker, mocker):
+    mocker.patch("dimos.robot.galaxea.r1pro.object_primitive_state.ObjectPackingState")
+    scene = PrimitiveSceneState(checker.model, checker.probe, sample_layout(0), np.zeros(20))
+    mocker.patch.object(scene, "transport_planner", return_value=checker)
+    path = scene.preposition_path("right", np.array([0.6, 0.18, 0.77]))
+    assert path[-1] == pytest.approx([0.2, 0.5, 0.0])
+    assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))
+
+
+def test_primitive_uses_a_nearby_base_pose_when_nominal_carrying_pose_is_blocked(checker, mocker):
+    mocker.patch("dimos.robot.galaxea.r1pro.object_primitive_state.ObjectPackingState")
+    scene = PrimitiveSceneState(checker.model, checker.probe, sample_layout(0), np.zeros(20))
+    mocker.patch.object(scene, "transport_planner", return_value=checker)
+    target = np.array([0.9, -0.08, 0.77])
+    nominal = scene.preposition_pose("right", target)
+    assert not checker.clear_pose_segment(nominal, nominal)
+    path = scene.preposition_path("right", target)
+    assert 0 < np.max(np.abs(np.asarray(path[-1]) - nominal)) <= 0.040001
+    assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))

@@ -14,6 +14,7 @@
 
 """Measured per-arm object ownership for composable pick and place actions."""
 
+import time
 from typing import Any
 
 import mujoco
@@ -85,18 +86,56 @@ class PrimitiveSceneState:
             sweep_spacing=0.005,
         )
 
-    def preposition_path(self, arm: Arm, target: NDArray[Any]) -> list[list[float]]:
-        """Route the held posture into the learned workspace without sweeping cargo into clutter."""
-        desired = np.array(
+    @staticmethod
+    def preposition_pose(arm: Arm, target: NDArray[Any]) -> NDArray[np.float64]:
+        """Put the target in the arm's demonstrated workspace, including forward base motion."""
+        return np.array(
             [
-                min(float(target[0]) - 0.4, 0.0),
+                float(target[0]) - 0.4,
                 float(target[1]) + (0.32 if arm == "right" else -0.32),
                 0.0,
             ]
         )
+
+    @classmethod
+    def preposition_poses(cls, arm: Arm, target: NDArray[Any]) -> list[NDArray[np.float64]]:
+        """Prefer the nominal workspace, then nearby poses that preserve arm reach."""
+        nominal = cls.preposition_pose(arm, target)
+        return [
+            nominal + np.array([x, y, 0])
+            for x, y in (
+                (0, 0),
+                (-0.04, 0),
+                (0.04, 0),
+                (0, -0.04),
+                (0, 0.04),
+                (-0.04, -0.04),
+                (-0.04, 0.04),
+                (0.04, -0.04),
+                (0.04, 0.04),
+            )
+        ]
+
+    def preposition_path(self, arm: Arm, target: NDArray[Any]) -> list[list[float]]:
+        """Route the held posture into the learned workspace without sweeping cargo into clutter."""
         planner = self.transport_planner()
-        path = planner.plan(tuple(desired[:2]), resolution=0.025, max_distance=1.5, timeout=10)
-        return planner.shorten_path([*path, desired.tolist()])
+        deadline = time.monotonic() + 10
+        for desired in self.preposition_poses(arm, target):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Prepositioning planning exceeded ten seconds")
+            if not planner.clear_pose_segment(desired, desired):
+                continue
+            try:
+                path = planner.plan(
+                    tuple(desired[:2]),
+                    resolution=0.025,
+                    max_distance=1.5,
+                    timeout=max(0, deadline - time.monotonic()),
+                )
+                return planner.shorten_path([*path, desired.tolist()])
+            except RuntimeError:
+                continue
+        raise RuntimeError("No collision-free base route into the requested arm's workspace")
 
     def select_pick(self, arm: Arm, index: int) -> ObjectPackingState:
         rows = self.inventory()

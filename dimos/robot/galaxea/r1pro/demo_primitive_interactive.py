@@ -86,6 +86,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     return value
 
                 report["initial"] = call("get_scene")
+                report["defined_regions"] = []
+                for name, x, y, width, depth in args.regions:
+                    defined = call(
+                        "define_placement_region",
+                        dict(
+                            name=name,
+                            x=float(x),
+                            y=float(y),
+                            width=float(width),
+                            depth=float(depth),
+                        ),
+                    )
+                    report["defined_regions"].append(defined)
+                    if not defined["accepted"]:
+                        raise RuntimeError(f"Placement region refused: {defined}")
                 for command in args.actions:
                     primitive, arm, target = command.split(":", 2)
                     if primitive not in ("pick", "place"):
@@ -154,6 +169,14 @@ def main() -> None:
     parser.add_argument("--stay-open", action="store_true")
     parser.add_argument("--action-timeout", type=float, default=40.0)
     parser.add_argument("--recover-on-failure", action="store_true")
+    parser.add_argument(
+        "--region",
+        dest="regions",
+        action="append",
+        nargs=5,
+        default=[],
+        metavar=("NAME", "X", "Y", "WIDTH", "DEPTH"),
+    )
     parser.add_argument("--mcp-port", type=int, required=True)
     parser.add_argument("--zenoh-scout-addr", required=True)
     parser.add_argument(

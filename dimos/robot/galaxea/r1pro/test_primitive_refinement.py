@@ -19,6 +19,8 @@ import json
 import pytest
 
 from dimos.robot.galaxea.r1pro.demo_refine_primitives import merge_demonstrations
+from dimos.robot.galaxea.r1pro.object_packing_scene import sample_layout
+from dimos.robot.galaxea.r1pro.primitive_scene import bilateral_layout
 
 
 @pytest.fixture
@@ -76,3 +78,18 @@ def test_merge_rejects_contaminated_training_data(collections, tmp_path, problem
     with pytest.raises(ValueError):
         merge_demonstrations(original, corrections, tmp_path / "merged")
     assert not (tmp_path / "merged/manifest.json").exists()
+
+
+def test_interactive_layout_keeps_tray_occupants_and_identity_when_spreading_table_objects():
+    original = sample_layout(360001, occupied=2)
+    arranged = bilateral_layout(original)
+    assert arranged.seed == original.seed
+    for index, (before, after) in enumerate(zip(original.objects, arranged.objects, strict=True)):
+        assert after.name == before.name
+        if before.in_tray or index % 2:
+            assert after == before
+        else:
+            assert after.position == (before.position[0], -before.position[1], before.position[2])
+            assert after.yaw == -before.yaw
+    assert any(o.position[1] > 0 for o in arranged.objects if not o.in_tray)
+    assert any(o.position[1] < 0 for o in arranged.objects if not o.in_tray)
