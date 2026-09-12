@@ -26,6 +26,7 @@ is kept, so a second run with new questions skips the embedding.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 from pathlib import Path
 import subprocess
@@ -39,7 +40,9 @@ import typer
 from dimos.mapping.hyperspace import patches as hs
 from dimos.mapping.hyperspace.embedder import DEFAULT_MEMBERS, PatchEnsemble
 from dimos.mapping.hyperspace.ingest import (
+    COMPLETE_STREAM,
     KEYFRAME_STREAM,
+    PATCH_STREAM,
     IngestConfig,
     PatchIngestor,
     transform_to_matrix,
@@ -77,6 +80,52 @@ def open_store(path: Path, *, must_exist: bool = True) -> Store:
         )
     store.start()
     return store
+
+
+def memory_db_for(recording: Path) -> Path:
+    """Where a recording's keyframes and patches live: the recording itself.
+
+    One recording is one file. Only an .mcap, which cannot be written to, needs a
+    companion db beside it.
+    """
+    return recording if recording.suffix == ".db" else recording.with_suffix(".hyperspace.db")
+
+
+def index_is_finished(memory: Store) -> bool:
+    """True when there are keyframes to reuse.
+
+    Jeff's call (2026-09-12): no completeness marker. A half-written index therefore
+    reads as a whole one, and the cost of that is a rerun with --no-reuse.
+    """
+    if not {KEYFRAME_STREAM, PATCH_STREAM} <= set(memory.list_streams()):
+        return False
+    return memory.stream(KEYFRAME_STREAM, dict).count() > 0
+
+
+def refuse_unless_readable(recording: Store, names: Sequence[str]) -> None:
+    """Every stream the ingest reads, checked BEFORE anything is deleted.
+
+    The ingest drops the old index so a rerun does not append a second copy of every
+    keyframe. If it then refused on an empty stream, the index it was about to replace
+    would already be gone and nothing would take its place. Derive this list from what
+    `ingest` actually reads, not from memory: today that is the colour and depth images,
+    both camera_infos and tf.
+    """
+    for name in names:
+        if next(iter(recording.streams[name].order_by(TIMELINE)), None) is None:
+            raise typer.BadParameter(f"stream {name!r} is empty; nothing was changed")
+
+
+def drop_index(memory: Store) -> None:
+    """Clear the index so a rerun replaces it instead of appending a second copy.
+
+    COMPLETE_STREAM is not written any more but is still dropped: a db indexed before
+    that changed carries one, and leaving it behind would vouch for keyframes that are
+    no longer there.
+    """
+    for name in (COMPLETE_STREAM, KEYFRAME_STREAM, PATCH_STREAM):
+        if name in memory.list_streams():
+            memory.delete_stream(name)
 
 
 def pick_stream(store: Store, wanted: str | None, *keywords: str) -> str:
@@ -353,7 +402,9 @@ def main(
         None, "--out", "-o", help="Where to write the rrd; omitted = a temp file, opened in rerun"
     ),
     memory_db: Path | None = typer.Option(
-        None, help="Memory db for keyframes + patches (default: <recording>.hyperspace.db)"
+        None,
+        help="Where the keyframes + patches go (default: into the recording itself; "
+        "an .mcap cannot be written to, so it gets <recording>.hyperspace.db)",
     ),
     reuse: bool = typer.Option(True, help="Reuse an existing memory db instead of re-embedding"),
     hz: float = typer.Option(5.0, help="Colour frames per second to consider"),
@@ -406,37 +457,50 @@ def main(
         f"streams: color={color} depth={depth} info={color_info}/{depth_info} tf={tf_stream}"
     )
 
-    memory_path = memory_db or recording.with_suffix(".hyperspace.db")
-    fresh = not (reuse and memory_path.exists())
-    memory = open_store(memory_path, must_exist=False)
+    memory_path = memory_db or memory_db_for(recording)
+    in_place = memory_path == recording
+    memory = source if in_place else open_store(memory_path, must_exist=False)
+    fresh = not (reuse and index_is_finished(memory))
     device = pick_device(device)
     stats: dict[str, int] = {}
     specs = [spec.strip() for spec in models.split(",") if spec.strip()]
     if fresh:
+        # Everything that can fail is done before a single stream is dropped: a bad
+        # stream, an empty one or a model that will not load must not cost the index
+        # that is already there.
+        refuse_unless_readable(source, (color, depth, color_info, depth_info, tf_stream))
         model = PatchEnsemble(specs, device=device, towers="vision")
         model.start()
         typer.echo(f"embedding with {model.tags} on {device} -> {memory_path}")
-        stats = ingest(
-            source,
-            memory,
-            model,
-            color_stream=color,
-            depth_stream=depth,
-            color_info_stream=color_info,
-            depth_info_stream=depth_info,
-            tf_stream=tf_stream,
-            hz=hz,
-            max_seconds=max_seconds,
-            config=IngestConfig(
-                gate=hs.KeyframeGateConfig(max_angular_velocity=None),
-                max_depth_m=max_depth,
-                depth2depth_model=depth2depth_model_of(depth2depth),
-            ),
-        )
+        drop_index(memory)
+        finished = False
+        try:
+            stats = ingest(
+                source,
+                memory,
+                model,
+                color_stream=color,
+                depth_stream=depth,
+                color_info_stream=color_info,
+                depth_info_stream=depth_info,
+                tf_stream=tf_stream,
+                hz=hz,
+                max_seconds=max_seconds,
+                config=IngestConfig(
+                    gate=hs.KeyframeGateConfig(max_angular_velocity=None),
+                    max_depth_m=max_depth,
+                    depth2depth_model=depth2depth_model_of(depth2depth),
+                ),
+            )
+            finished = True
+        finally:
+            if not finished:
+                # Half an index must not read as a whole one on the next run.
+                drop_index(memory)
         typer.echo(f"ingest: {stats}")
         model.stop()
     else:
-        typer.echo(f"reusing {memory_path} (pass --no-reuse to re-embed)")
+        typer.echo(f"reusing the index in {memory_path} (pass --no-reuse to re-embed)")
         specs = store_members(memory) or specs
     text_model = PatchEnsemble(specs, device=device, towers="text")
     text_model.start()

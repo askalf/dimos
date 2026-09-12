@@ -23,9 +23,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import typer
 
-from dimos.mapping.hyperspace import patches as hs, segmenter as seg
+from dimos.mapping.hyperspace import cli, patches as hs, segmenter as seg
 from dimos.mapping.hyperspace.ingest import (
+    COMPLETE_STREAM,
     KEYFRAME_STREAM,
     PATCH_STREAM,
     IngestConfig,
@@ -40,6 +42,7 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
+from dimos.msgs.std_msgs.String import String
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 
 SIDE = 8  # 8x8 patch grid: small, but the same code path as 24x24
@@ -565,3 +568,65 @@ def test_ensemble_cell_grid_follows_the_finest_member() -> None:
     assert ingestor.cell_grid(grids((14, 14), (28, 42))) == (28, 42)  # tiling survives
     ingestor.config = IngestConfig(gate=hs.KeyframeGateConfig(), cell_grid=(24, 24))
     assert ingestor.cell_grid(grids((14, 14), (28, 42))) == (24, 24)  # explicit still wins
+
+
+# --- one recording, one file ---------------------------------------------------------
+# The keyframes and patches belong in the recording they describe. Only an .mcap, which
+# cannot be written to, gets a companion db beside it.
+
+
+def test_a_db_indexes_itself_and_only_an_mcap_gets_a_companion() -> None:
+    assert cli.memory_db_for(Path("/data/grocery.db")) == Path("/data/grocery.db")
+    assert cli.memory_db_for(Path("/data/grocery.mcap")) == Path("/data/grocery.hyperspace.db")
+
+
+def test_keyframes_alone_are_reusable_and_a_legacy_marker_is_dropped_with_them(
+    store: SqliteStore,
+) -> None:
+    """No completeness marker (Jeff, 2026-09-12): keyframes being there is the whole test.
+
+    The cost, stated so a later reader does not think it an oversight: a run killed
+    mid-ingest leaves keyframes that read as a finished index, and only --no-reuse
+    replaces them.
+    """
+    assert not cli.index_is_finished(store)
+    fill(store, ring(3, 2.5))
+    assert store.stream(KEYFRAME_STREAM, dict).count() == 3
+    assert cli.index_is_finished(store)
+
+    # Dbs indexed before the marker went away still carry one; dropping the index must
+    # take it too, or it would vouch for keyframes that are no longer there.
+    store.stream(COMPLETE_STREAM, String).append(String("3 keyframes"), ts=1.0)
+    cli.drop_index(store)
+    assert not cli.index_is_finished(store)
+    for name in (KEYFRAME_STREAM, PATCH_STREAM, COMPLETE_STREAM):
+        assert name not in store.list_streams(), name
+
+
+def test_an_empty_source_stream_is_refused_before_the_old_index_is_touched(
+    store: SqliteStore,
+) -> None:
+    """The pre-flight is the whole point: refusing after the drop costs the index."""
+    fill(store, ring(3, 2.5))
+    store.stream("empty_camera_info", CameraInfo)  # named, never written to
+
+    with pytest.raises(typer.BadParameter, match="nothing was changed"):
+        cli.refuse_unless_readable(store, (KEYFRAME_STREAM, "empty_camera_info"))
+
+    # The refusal cost nothing: the index that was there is still there.
+    assert cli.index_is_finished(store)
+    assert store.stream(KEYFRAME_STREAM, dict).count() == 3
+
+
+def test_reingesting_in_place_replaces_the_keyframes_rather_than_appending(
+    store: SqliteStore,
+) -> None:
+    """Writing into the recording means a rerun would otherwise double every keyframe."""
+    fill(store, ring(3, 2.5))
+    patches_after_one_run = store.stream(PATCH_STREAM, dict).count()
+
+    cli.drop_index(store)  # what the ingest does before it re-embeds
+    fill(store, ring(3, 2.5))
+
+    assert store.stream(KEYFRAME_STREAM, dict).count() == 3
+    assert store.stream(PATCH_STREAM, dict).count() == patches_after_one_run

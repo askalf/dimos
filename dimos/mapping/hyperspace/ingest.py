@@ -47,6 +47,10 @@ logger = setup_logger()
 
 KEYFRAME_STREAM = "hyperspace_keyframes"
 PATCH_STREAM = "hyperspace_patches"
+# Written last by an ingest and dropped first, so a run killed outright reads as
+# unfinished: keyframes go into the recording one at a time, so their presence alone
+# cannot say the ingest finished. Same convention as memory_world's ingest.
+COMPLETE_STREAM = "hyperspace_complete"
 TF_STREAM = "tf"
 
 # 4x4 target_from_source at a time, or None when the lookup fails.

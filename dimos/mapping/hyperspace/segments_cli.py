@@ -37,10 +37,17 @@ import numpy as np
 import typer
 
 from dimos.mapping.hyperspace import segmenter as seg
-from dimos.mapping.hyperspace.cli import TIMELINE, open_store, pick_device, pick_stream
+from dimos.mapping.hyperspace.cli import (
+    TIMELINE,
+    memory_db_for,
+    open_store,
+    pick_device,
+    pick_stream,
+    refuse_unless_readable,
+)
 from dimos.mapping.hyperspace.embedder import SIGLIP2_MODEL_NAME, SigLIP2Patches
 from dimos.mapping.hyperspace.ingest import transform_to_matrix
-from dimos.mapping.hyperspace.segments import SegmentIngestConfig, SegmentIngestor
+from dimos.mapping.hyperspace.segments import SEGMENT_STREAM, SegmentIngestConfig, SegmentIngestor
 from dimos.memory.tf import StreamTF
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 
@@ -107,7 +114,9 @@ def main(
         help="Where to write the mcap; omitted = a temp file, opened in Foxglove",
     ),
     memory_db: Path | None = typer.Option(
-        None, help="Memory db for the segment records (default: <recording>.hyperspace.db)"
+        None,
+        help="Where the segment records go (default: into the recording itself; "
+        "an .mcap cannot be written to, so it gets <recording>.hyperspace.db)",
     ),
     hz: float = typer.Option(2.0, help="Frames per second to segment"),
     max_seconds: float = typer.Option(1e9, help="Stop after this much of the recording"),
@@ -161,8 +170,16 @@ def main(
         text_model.start()
         embed_text = lambda text: text_model.embed_text_array(text)[0]  # noqa: E731
 
-    memory_path = memory_db or recording.with_suffix(".hyperspace.db")
-    memory = open_store(memory_path, must_exist=False)
+    memory_path = memory_db or memory_db_for(recording)
+    in_place = memory_path == recording
+    memory = source if in_place else open_store(memory_path, must_exist=False)
+    # Everything the segment pass reads, checked before the old records are dropped --
+    # otherwise a refusal costs the segments that were already there and writes none.
+    refuse_unless_readable(source, (color, depth, color_info, depth_info, tf_stream))
+    if SEGMENT_STREAM in memory.list_streams():
+        # A rerun must replace the segments, not append a second copy of every one.
+        typer.echo(f"replacing the segments already in {memory_path}")
+        memory.delete_stream(SEGMENT_STREAM)
     recorded_tf = StreamTF.from_store(source, tf_stream)
 
     def lookup(target: str, frame: str, ts: float) -> NDArray[np.float64] | None:
@@ -220,7 +237,8 @@ def main(
                 f"{ingestor.stats['segments']} segments ({time.monotonic() - started:.0f}s)"
             )
     mcap.close()
-    memory.stop()
+    if not in_place:
+        memory.stop()
     if text_model is not None:
         text_model.stop()
 
