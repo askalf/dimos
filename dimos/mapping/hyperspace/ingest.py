@@ -211,6 +211,7 @@ class PatchIngestor:
         config: IngestConfig,
         lookup: Callable[[str, str, float], NDArray[np.float64] | None] | None = None,
         slug: str = "",
+        copy_tf: bool = True,
     ) -> None:
         self.store = store
         self.model = model
@@ -232,6 +233,8 @@ class PatchIngestor:
         self.fuser: Any = None
         keyframe_stream, _ = stream_names(slug)
         self.slug = slug
+        # False when the store IS the recording: see add_tf.
+        self.copy_tf = copy_tf
         self.keyframes: Stream[Any] = store.stream(keyframe_stream, dict)
         # One vec0 stream per model, opened when its first keyframe is written: the
         # member list is only certain once the model has run.
@@ -276,7 +279,15 @@ class PatchIngestor:
         self.intrinsics[info.frame_id] = intrinsics_of(info)
 
     def add_tf(self, msg: TFMessage, ts: float | None = None) -> None:
-        """Record tf so the query side can place keyframes at query time."""
+        """Record tf so the query side can place keyframes at query time.
+
+        Does nothing when the index lives in the recording: the transforms are already
+        there, and writing them again appends a second set of the recording's own tf to
+        itself. grocery.db reached 85,302 rows over 16,048 distinct stamps -- 5.3x
+        duplicated -- across a handful of in-place ingests before this was caught.
+        """
+        if not self.copy_tf:
+            return
         stamps = [float(t.ts) for t in msg.transforms if getattr(t, "ts", None)]
         self.tf_stream.append(
             msg, ts=ts if ts is not None else (max(stamps) if stamps else time.time())

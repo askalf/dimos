@@ -118,7 +118,13 @@ def store(tmp_path: Path) -> SqliteStore:
     memory.stop()
 
 
-def fill(store: SqliteStore, poses: list[np.ndarray], *, with_depth: bool = True) -> PatchIngestor:
+def fill(
+    store: SqliteStore,
+    poses: list[np.ndarray],
+    *,
+    with_depth: bool = True,
+    copy_tf: bool = True,
+) -> PatchIngestor:
     model = StubModel()
     config = IngestConfig(
         gate=hs.KeyframeGateConfig(
@@ -133,7 +139,7 @@ def fill(store: SqliteStore, poses: list[np.ndarray], *, with_depth: bool = True
         ),
         min_frame_interval_s=0.0,
     )
-    ingestor = PatchIngestor(store, model, config)  # type: ignore[arg-type]
+    ingestor = PatchIngestor(store, model, config, copy_tf=copy_tf)  # type: ignore[arg-type]
     ingestor.add_camera_info(camera_info())
     for index, pose in enumerate(poses):
         ts = 10.0 + index
@@ -729,3 +735,24 @@ def test_every_model_gets_its_own_searchable_index(store: SqliteStore, tmp_path:
         assert f"{PATCH_STREAM}__m_stub_a" not in set(other.list_streams())
     finally:
         other.stop()
+
+
+def test_indexing_a_recording_in_place_does_not_copy_its_tf_into_itself(
+    store: SqliteStore, tmp_path: Path
+) -> None:
+    """The index used to live in a separate file, which needed its own copy of tf.
+
+    In place, the transforms are already there, and copying them appends a second set of
+    the recording's own tf to itself. grocery.db reached 85,302 rows over 16,048 distinct
+    stamps -- 5.3x duplicated -- across a handful of ingests before this was noticed.
+    """
+    tf = store.stream("tf", TFMessage)
+    for index in range(4):
+        transform = Transform(translation=Vector3(0.0, 0.0, 0.0), rotation=Quaternion(0, 0, 0, 1))
+        transform.frame_id, transform.child_frame_id = WORLD, CAMERA
+        tf.append(TFMessage(transform), ts=float(index))
+    before = tf.count()
+
+    ingestor = fill(store, ring(2, 2.5), copy_tf=False)  # store IS the recording
+    assert ingestor.stats["kept"] == 2
+    assert store.stream("tf", TFMessage).count() == before, "the ingest duplicated tf"

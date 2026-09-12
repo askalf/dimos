@@ -44,13 +44,23 @@ row -- 6.3 GB of them.
 
 Three kinds of thing, three streams.
 
-**photos** -- one row per kept photo: camera frame, timestamp, and a small point cloud
-in the camera's own frame (see below). No embeddings, so it stays small.
+**depth_thumbnails** -- one row per kept photo: a small point cloud in the camera's own
+frame, plus the camera frame and timestamp needed to place it. Nothing else: once each
+patch carries its own ray and depth, the occupancy check is the only thing that needs a
+per-photo row at all, so the stream is named for the one job it does.
 
 **patches, one stream per model** -- `hyperspace_patches__m_<model>`, one row per patch:
-the vec0 vector, plus photo id, cell number, ray direction and depth. Everything needed
-to place a hit, so a search result needs no second read. Shipped: commits 7fa21a969 and
-25f617f46.
+the vec0 vector, plus camera frame, timestamp, cell number, ray direction and depth.
+Everything needed to place a hit, so a search result needs no second read. The per-model
+streams are shipped (commits 7fa21a969, 25f617f46); the self-contained row is not.
+
+What leaves today's keyframe row, and why: `grid`/`grids` become the per-model patch
+streams; `intrinsics` is unnecessary once every patch and every thumbnail point carries
+its own direction; `rows`/`cols`/`grid_shapes` collapse into the one fixed cell grid;
+`thumbnail_mm`/`thumbnail_stride` become the point cloud; and
+`members`/`member_specs`/`model` go because the stream name already says which model
+wrote the row -- which also disposes of the misnamed `model` field rather than renaming
+it.
 
 **tf** -- the recording's own stream, untouched.
 
@@ -153,5 +163,5 @@ look up once per photo rather than once per patch.
 - Recall: with three models, the 2nd-lowest beats the lowest -- P 0.73 R 0.88 against
   min's P 0.74 R 0.71. Untested: whether min is simply degenerating to whichever model
   scores lowest overall, which per-model z-scoring would fix.
-- `model` on the keyframe payload is misnamed. It is the name of the whole set, not a
-  model. Rename.
+- The tf that an in-place ingest used to copy into the recording (fixed 2026-09-12: it
+  had duplicated grocery.db's tf 5.3x). The dedupe is separate from the layout work.

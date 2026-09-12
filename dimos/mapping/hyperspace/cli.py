@@ -209,7 +209,9 @@ def ingest(
         transform = recorded_tf.get(target, source, ts, warn=False)
         return None if transform is None else transform_to_matrix(transform)
 
-    ingestor = PatchIngestor(memory, model, config, lookup=lookup, slug=slug)
+    ingestor = PatchIngestor(
+        memory, model, config, lookup=lookup, slug=slug, copy_tf=memory is not recording
+    )
     for name in (color_info_stream, depth_info_stream):
         first = next(iter(recording.streams[name].order_by(TIMELINE)), None)
         if first is None:
@@ -218,16 +220,22 @@ def ingest(
     colors = recording.streams[color_stream].order_by(TIMELINE)
     depths = recording.streams[depth_stream].order_by(TIMELINE)
     start_ts = float(colors.first().ts)
-    # Only the tf the slice can use; a whole recording's tf is hundreds of
-    # thousands of messages the query side would otherwise decode.
+    # Copy tf into the index only when the index is a SEPARATE file -- an .mcap cannot
+    # hold one, so its companion db carries its own copy of the transforms. When the
+    # index lives in the recording the tf is already there, and copying it appends a
+    # second set of the recording's own transforms to itself: grocery.db reached 85,302
+    # rows over 16,048 distinct stamps, 5.3x duplicated, before this was caught.
     transforms = 0
-    for observation in recording.streams[tf_stream].order_by(TIMELINE):
-        stamp = float(observation.ts)
-        if stamp < start_ts - 5.0 or stamp > start_ts + max_seconds + 5.0:
-            continue
-        ingestor.add_tf(observation.data, ts=stamp)
-        transforms += 1
-    typer.echo(f"tf: {transforms} messages")
+    if ingestor.copy_tf:
+        # Only the tf the slice can use; a whole recording's tf is hundreds of
+        # thousands of messages the query side would otherwise decode.
+        for observation in recording.streams[tf_stream].order_by(TIMELINE):
+            stamp = float(observation.ts)
+            if stamp < start_ts - 5.0 or stamp > start_ts + max_seconds + 5.0:
+                continue
+            ingestor.add_tf(observation.data, ts=stamp)
+            transforms += 1
+    typer.echo(f"tf: {transforms} copied ({'in place' if memory is recording else 'companion db'})")
 
     # --hz IS the embed rate. It used to be max(1/hz, the config default), which meant
     # it could only ever slow embedding down: --hz 15 against a 0.2 default did nothing.
