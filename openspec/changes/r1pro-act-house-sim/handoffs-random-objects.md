@@ -91,3 +91,50 @@ The existing HSSD package includes a real `flower_mug` mesh and 12 convex collis
 3. If collecting more training data, add targeted start-state/approach/occupancy corrections with images, retain the original demonstrations, and fine-tune a new artifact from the saved weights. Keep source artifacts and normalization intact; freeze a fresh final test set before acceptance.
 4. Revisit actual household geometry after the current version is stable, per the user's latest steering. Current primitive data remain useful rehearsal/pretraining but are not demonstrations of handles, thin stationery or irregular toys.
 5. Integrate current main carefully. The earlier multi-stop unloading/regrasp SDK QP failure remains separate; existing tray carrying remains classical.
+
+
+## 2026-09-12 — independent primitive policies underway
+
+User authorized the next phase: independent pick/place, either arm, tray unloading,
+general placement regions, and asked to inspect main plus locomomanipulation PR
+#4096 (subject to change). Main fetched at 9314c76543; PR head 849b284fc5. No rebase
+or PR merge has happened yet. Root checkout /home/mustafa/dimos was not edited.
+
+Added arm-only profiles (8 commands; measured torso/other arm as context), removed
+pick destination inputs, explicit ACT weight/normalization migration, separate
+RGB pick/place collection, physical region selection, fresh chained ACT evaluation,
+and a persistent training runner. New per-arm measured ownership protects another
+hand's object through prepositioning. Native policy declarations exist; their
+interactive blueprint integration remains to be completed and validated.
+
+Physical SDK teacher evidence: primitive-teacher-pilot-10 passed 4/4 table/tray
+source checks across both arms. independent-primitives-pilot-v1 accepted 32/32 RGB
+primitives on eight layouts, with separate episode boundaries and initial states.
+primitive-bimanual-pilot-01 passed both arm orders: pick first, pick second with
+first still held, place second, place first. These are demonstration results, not
+learned ACT validation. Earlier pilot failures are retained as diagnostics.
+
+Actual checkpoint migration succeeded for right pick and left place; both loaded
+with eight-action outputs. Six isolated migration tests passed. Fourteen contract/
+placement tests and the 28 existing layout tests passed (a missing action-key
+construction issue was fixed). A 20-update ACT optimizer smoke passed. Native
+six-file mypy and the three additional state/binding modules passed. The combined
+primitive/layout/existing interactive regression run passed 60 tests, and all six
+blueprint-registry checks passed. Isolated learner final typing also passed for all three modules.
+
+Detached process 1436126 runs jobs/independent-primitives-act-v1. command.json and
+pid/status.json/run.log are in that directory. It collects 24 additional layouts,
+reuses the successful eight-layout pilot without copying source arrays, converts
+and warm-starts four policies, trains 2,000 updates each, exports separately, and
+runs eight fresh chained ACT cases (four seeds × two arms) starting at 330000.
+The source is policy-objects-interactive (the existing trained weights); no old
+weights/data were rewritten. It has stage heartbeats every five minutes and does
+not auto-promote artifacts. Do not run another uv learner concurrently with the
+runner's learner stages: the isolated project environment is shared.
+
+Remaining: inspect learned evaluation, collect other-hand-held context if needed,
+wire native primitive skill/state/prepositioning, integrate the SDK base execution
+boundary, verify house regions and recovery, and test mixed interactive commands.
+The existing object blueprint remains the previous working version. Prior pending
+permission for an automated external LLM/API test is still unanswered; local ACT
+and recorded-response MCP checks do not require that API call.

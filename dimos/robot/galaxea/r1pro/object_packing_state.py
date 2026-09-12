@@ -32,6 +32,7 @@ from dimos.robot.galaxea.r1pro.object_packing_scene import (
     ObjectLayout,
     PackingObject,
 )
+from dimos.robot.galaxea.r1pro.object_primitives import Arm, active_indices
 from dimos.robot.galaxea.r1pro.packing import OccupiedFootprint, empty_slots
 
 
@@ -55,11 +56,15 @@ class ObjectPackingState:
         data: mujoco.MjData,
         layout: ObjectLayout,
         home: NDArray[Any],
+        *,
+        arm: Arm = "right",
     ) -> None:
+        active_indices(arm)
+        self.arm = arm
         self.model, self.data, self.layout = model, data, layout
         self.home = np.asarray(home, dtype=np.float64).copy()
         self.qids = np.array([model.joint(n).qposadr[0] for n in R1PRO_PICK_PLACE_JOINTS])
-        self.pad_ids = {model.geom(f"right_finger_pad{i}").id for i in (1, 2)}
+        self.pad_ids = {model.geom(f"{arm}_finger_pad{i}").id for i in (1, 2)}
         self.guard = PlanarTransport(
             model, data, cargo_bodies=tuple(o.name for o in layout.objects)
         )
@@ -190,7 +195,7 @@ class ObjectPackingState:
     def goal(self) -> NDArray[np.float32]:
         base = self.data.body("base_link")
         rotation = base.xmat.reshape(3, 3)
-        tcp = self.data.site("right_tcp").xpos
+        tcp = self.data.site(f"{self.arm}_tcp").xpos
         obj = self.layout.objects[self.selected]
         body = self.data.body(obj.name)
         values = [
@@ -199,7 +204,10 @@ class ObjectPackingState:
             *(rotation.T @ body.xmat.reshape(3, 3)).ravel(),
             *obj.half_size,
             *(float(obj.shape == s) for s in SHAPES),
-            *(np.asarray(HOME_TCP) - rotation.T @ (tcp - base.xpos)),
+            *(
+                np.asarray(HOME_TCP) * (1, -1 if self.arm == "left" else 1, 1)
+                - rotation.T @ (tcp - base.xpos)
+            ),
         ]
         neighbors = []
         for i, other in enumerate(self.layout.objects):

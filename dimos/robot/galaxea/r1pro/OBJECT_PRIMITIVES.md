@@ -83,3 +83,59 @@ servo and holonomic profile cap yaw at 0.12 rad/s. Tune both the task profile an
 servo/slew limits together, verify loaded-object stability and swept collisions,
 and keep the final approach precise. No navigation speed changed in this primitive
 interface update; locomomanipulation integration remains a separate workstream.
+
+## Independent-policy implementation (September 12)
+
+The next generation has four explicit contracts: pick/right, place/right,
+pick/left, and place/left. Each commands seven arm joints and that hand's gripper.
+The torso and the other hand remain observation context, with no action ownership.
+Pick has no destination features. Both wrist cameras are real rendered views;
+left-arm weights receive an explicit signed initialization, followed by training.
+
+`object_primitive_task.py` supplies an offline SDK teacher. It prepositions the
+physical base before each primitive, then keeps base and torso commands fixed.
+`object_primitive_state.py` measures ownership separately for each gripper and
+protects the other hand's cargo relative to its TCP during base motion.
+`placement_regions.py` selects empty supported regions with footprint and open
+finger clearance, returning no candidate when full. This currently has physical
+bench coverage for table/tray regions; arbitrary house surfaces are not validated.
+
+Evidence before learned-policy evaluation:
+
+- `jobs/primitive-teacher-pilot-10`: both arms × table/tray source = 4/4 physical
+  pick/hold/place checks, with placement back onto the original support.
+- `jobs/independent-primitives-pilot-v1/collection`: 32/32 separately accepted RGB
+  primitives across eight fresh layouts, including tray-to-table transfers.
+- `jobs/primitive-bimanual-pilot-01`: both left-first and right-first sequences
+  picked two objects, held both, and placed them separately with the SDK teacher.
+- Right-pick and left-place checkpoint migration loaded successfully and produced
+  finite eight-action chunks. A 20-update optimizer smoke test passed.
+
+These teacher and migration results are not claims of ACT success. The existing
+`r1pro-objects-sim-agent` still uses the previously validated transitional policy.
+Independent checkpoint promotion and native interactive validation remain pending.
+
+The detached job is `recordings/r1pro-act-task/jobs/independent-primitives-act-v1`.
+It adds 24 layouts to the eight-layout pilot, trains each arm/primitive for 2,000
+updates from the existing trained checkpoint, then evaluates chained ACT on fresh
+seeds starting at 330000. Original weights and demonstration files stay intact.
+Both pick and place must pass physical checks; an ACT pick failure skips placement.
+Artifacts are saved separately and never automatically replace the working demo.
+
+Monitor from the worktree:
+
+```bash
+cat recordings/r1pro-act-task/jobs/independent-primitives-act-v1/status.json
+tail -n 5 recordings/r1pro-act-task/jobs/independent-primitives-act-v1/run.log
+```
+
+The runner survives terminal disconnects. Its status identifies the current stage
+and stage log; heartbeat updates are every five minutes. `command.json` records
+the invocation, and completed stages/checkpointed training can be resumed.
+
+Locomanipulation review used main `9314c76543` and PR #4096 head `849b284fc5`.
+The PR adds a feedback base trajectory task and splits whole-body plans between
+base and joint tasks, with coupled cancellation. The bench teacher currently uses
+its own physical prepositioning for collection. Native integration must use the
+SDK execution boundary, retain the plan ID, and verify completion before ACT.
+The PR is still open and its API may change; it has not been merged into this branch.
