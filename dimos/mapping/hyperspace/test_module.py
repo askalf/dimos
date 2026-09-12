@@ -119,7 +119,7 @@ def fill(store: SqliteStore, poses: list[np.ndarray], *, with_depth: bool = True
     model = StubModel()
     config = IngestConfig(
         gate=hs.KeyframeGateConfig(
-            buffer_len=1, max_angular_velocity=None, max_dark_fraction=None, min_interval=None
+            lookahead=0, max_angular_velocity=None, max_dark_fraction=None, min_interval=None
         ),
         min_frame_interval_s=0.0,
     )
@@ -404,7 +404,7 @@ def fill_ensemble(store: SqliteStore, poses: list[np.ndarray]) -> PatchIngestor:
     model = StubEnsemble()
     config = IngestConfig(
         gate=hs.KeyframeGateConfig(
-            buffer_len=1, max_angular_velocity=None, max_dark_fraction=None, min_interval=None
+            lookahead=0, max_angular_velocity=None, max_dark_fraction=None, min_interval=None
         ),
         min_frame_interval_s=0.0,
     )
@@ -630,3 +630,55 @@ def test_reingesting_in_place_replaces_the_keyframes_rather_than_appending(
 
     assert store.stream(KEYFRAME_STREAM, dict).count() == 3
     assert store.stream(PATCH_STREAM, dict).count() == patches_after_one_run
+
+
+# --- several models in one recording ---------------------------------------------------
+# A recording can carry more than one index so two checkpoints can be compared on the
+# same question. Each keyframe and patch says which model wrote it.
+
+
+def test_every_keyframe_and_patch_records_the_model_that_wrote_it(store: SqliteStore) -> None:
+    fill(store, ring(2, 2.5))
+    first = store.stream(KEYFRAME_STREAM, dict).order_by("ts").first()
+    assert first.data["model"], "a keyframe with no model is a keyframe nobody can place"
+    assert "member_specs" in first.data and "members" in first.data
+    assert first.tags["model"] == first.data["model"]
+    patch = store.stream(PATCH_STREAM, dict).order_by("ts").first()
+    assert patch.data["model"] == first.data["model"]
+
+
+def test_a_second_model_gets_its_own_index_instead_of_overwriting_the_first(
+    store: SqliteStore,
+) -> None:
+    """The point of keeping both is comparison; clobbering one would defeat it."""
+    one = ["google/siglip2-base-patch16-224"]
+    two = ["google/siglip2-base-patch16-384"]
+
+    assert cli.pick_index(store, one) == "", "the first model in takes the canonical streams"
+    fill(store, ring(2, 2.5))  # writes the canonical pair
+
+    # Same checkpoints again: the same index, so a re-ingest replaces rather than forks.
+    specs = store.stream(KEYFRAME_STREAM, dict).order_by("ts").first().data["member_specs"]
+    assert cli.pick_index(store, specs) == ""
+
+    # A different checkpoint: its own streams, named after it.
+    slug = cli.pick_index(store, two)
+    assert slug == cli.index_slug(two) != ""
+    keyframes, patches = cli.stream_names(slug)
+    assert keyframes == f"{KEYFRAME_STREAM}__{slug}"
+    assert patches == f"{PATCH_STREAM}__{slug}"
+
+
+def test_dropping_one_index_leaves_the_others_alone(store: SqliteStore) -> None:
+    fill(store, ring(2, 2.5))
+    other = cli.index_slug(["google/siglip2-base-patch16-384"])
+    other_keyframes, other_patches = cli.stream_names(other)
+    store.stream(other_keyframes, dict).append({"model": other}, ts=1.0)
+    store.stream(other_patches, dict).append({"model": other}, ts=1.0)
+
+    cli.drop_index(store, other)
+    assert other_keyframes not in store.list_streams()
+    assert cli.index_is_finished(store), "the canonical index must survive its neighbour"
+
+    cli.drop_index(store)
+    assert not cli.index_is_finished(store)

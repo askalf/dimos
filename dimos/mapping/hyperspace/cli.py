@@ -42,12 +42,15 @@ from dimos.mapping.hyperspace.embedder import DEFAULT_MEMBERS, PatchEnsemble
 from dimos.mapping.hyperspace.ingest import (
     COMPLETE_STREAM,
     KEYFRAME_STREAM,
-    PATCH_STREAM,
     IngestConfig,
     PatchIngestor,
+    index_slug,
+    index_specs,
+    indexes_in,
+    stream_names,
     transform_to_matrix,
 )
-from dimos.mapping.hyperspace.module import depth2depth_model_of, store_members
+from dimos.mapping.hyperspace.module import depth2depth_model_of
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import METHODS, refine_config_of
 from dimos.memory.tf import StreamTF
@@ -91,15 +94,30 @@ def memory_db_for(recording: Path) -> Path:
     return recording if recording.suffix == ".db" else recording.with_suffix(".hyperspace.db")
 
 
-def index_is_finished(memory: Store) -> bool:
-    """True when there are keyframes to reuse.
+def index_is_finished(memory: Store, slug: str = "") -> bool:
+    """True when this index has keyframes to reuse.
 
     Jeff's call (2026-09-12): no completeness marker. A half-written index therefore
     reads as a whole one, and the cost of that is a rerun with --no-reuse.
     """
-    if not {KEYFRAME_STREAM, PATCH_STREAM} <= set(memory.list_streams()):
+    keyframes, patches = stream_names(slug)
+    if not {keyframes, patches} <= set(memory.list_streams()):
         return False
-    return memory.stream(KEYFRAME_STREAM, dict).count() > 0
+    return memory.stream(keyframes, dict).count() > 0
+
+
+def pick_index(memory: Store, specs: Sequence[str]) -> str:
+    """Which index these checkpoints own: "" for the canonical one, else a slug.
+
+    One recording, several indexes. The first model to be ingested takes the bare
+    stream names; a different model later gets its own pair rather than overwriting
+    an index someone may still be comparing against.
+    """
+    wanted = index_slug(specs)
+    for slug in indexes_in(memory):
+        if index_slug(index_specs(memory, slug) or []) == wanted:
+            return slug
+    return "" if KEYFRAME_STREAM not in memory.list_streams() else wanted
 
 
 def refuse_unless_readable(recording: Store, names: Sequence[str]) -> None:
@@ -116,14 +134,18 @@ def refuse_unless_readable(recording: Store, names: Sequence[str]) -> None:
             raise typer.BadParameter(f"stream {name!r} is empty; nothing was changed")
 
 
-def drop_index(memory: Store) -> None:
-    """Clear the index so a rerun replaces it instead of appending a second copy.
+def drop_index(memory: Store, slug: str = "") -> None:
+    """Clear one index so a rerun replaces it instead of appending a second copy.
 
-    COMPLETE_STREAM is not written any more but is still dropped: a db indexed before
-    that changed carries one, and leaving it behind would vouch for keyframes that are
+    Only this model's streams: the other indexes in the recording are someone else's
+    answer to the same question and are what the comparison is for. COMPLETE_STREAM is
+    not written any more but is still dropped with the canonical index, since a db
+    indexed before that changed carries one and it would vouch for keyframes that are
     no longer there.
     """
-    for name in (COMPLETE_STREAM, KEYFRAME_STREAM, PATCH_STREAM):
+    keyframes, patches = stream_names(slug)
+    names = [keyframes, patches] + ([COMPLETE_STREAM] if not slug else [])
+    for name in names:
         if name in memory.list_streams():
             memory.delete_stream(name)
 
@@ -169,6 +191,7 @@ def ingest(
     hz: float,
     max_seconds: float,
     config: IngestConfig,
+    slug: str = "",
 ) -> dict[str, int]:
     """Run the live module's ingest over a recording. Returns its stats."""
     recorded_tf = StreamTF.from_store(recording, tf_stream)
@@ -179,7 +202,7 @@ def ingest(
         transform = recorded_tf.get(target, source, ts, warn=False)
         return None if transform is None else transform_to_matrix(transform)
 
-    ingestor = PatchIngestor(memory, model, config, lookup=lookup)
+    ingestor = PatchIngestor(memory, model, config, lookup=lookup, slug=slug)
     for name in (color_info_stream, depth_info_stream):
         first = next(iter(recording.streams[name].order_by(TIMELINE)), None)
         if first is None:
@@ -460,10 +483,15 @@ def main(
     memory_path = memory_db or memory_db_for(recording)
     in_place = memory_path == recording
     memory = source if in_place else open_store(memory_path, must_exist=False)
-    fresh = not (reuse and index_is_finished(memory))
     device = pick_device(device)
     stats: dict[str, int] = {}
     specs = [spec.strip() for spec in models.split(",") if spec.strip()]
+    slug = pick_index(memory, specs)
+    others = [name or "(canonical)" for name in indexes_in(memory) if name != slug]
+    if others:
+        typer.echo(f"indexes already here: {', '.join(sorted(others))}")
+    typer.echo(f"answering from {index_slug(specs)} in {stream_names(slug)[0]}")
+    fresh = not (reuse and index_is_finished(memory, slug))
     if fresh:
         # Everything that can fail is done before a single stream is dropped: a bad
         # stream, an empty one or a model that will not load must not cost the index
@@ -472,7 +500,7 @@ def main(
         model = PatchEnsemble(specs, device=device, towers="vision")
         model.start()
         typer.echo(f"embedding with {model.tags} on {device} -> {memory_path}")
-        drop_index(memory)
+        drop_index(memory, slug)
         finished = False
         try:
             stats = ingest(
@@ -491,17 +519,18 @@ def main(
                     max_depth_m=max_depth,
                     depth2depth_model=depth2depth_model_of(depth2depth),
                 ),
+                slug=slug,
             )
             finished = True
         finally:
             if not finished:
                 # Half an index must not read as a whole one on the next run.
-                drop_index(memory)
+                drop_index(memory, slug)
         typer.echo(f"ingest: {stats}")
         model.stop()
     else:
         typer.echo(f"reusing the index in {memory_path} (pass --no-reuse to re-embed)")
-        specs = store_members(memory) or specs
+        specs = index_specs(memory, slug) or specs
     text_model = PatchEnsemble(specs, device=device, towers="text")
     text_model.start()
     query_config = hs.QueryConfig(
@@ -514,6 +543,7 @@ def main(
         world_frame=frame,
         voxel_size=voxel_size,
         refine_config=refine_config_of(refine, query_config.refine, cutoff, min_frames),
+        slug=slug,
     )
     answers = []
     for index, text in enumerate(query, start=1):

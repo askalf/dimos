@@ -161,7 +161,7 @@ def test_pooling_rewards_more_frames_and_more_directions() -> None:
 
 def test_rolling_buffer_keeps_one_frame_per_distinct_view() -> None:
     config = KeyframeGateConfig(
-        buffer_len=11, min_interval=None, max_angular_velocity=None, max_dark_fraction=None
+        lookahead=2, min_interval=None, max_angular_velocity=None, max_dark_fraction=None
     )
     buffer = RollingBuffer(config)
     rng = np.random.default_rng(0)
@@ -183,20 +183,47 @@ def test_rolling_buffer_keeps_one_frame_per_distinct_view() -> None:
     assert kept == 2
 
 
-def test_rolling_buffer_prefers_the_sharpest_novel_frame() -> None:
-    config = KeyframeGateConfig(buffer_len=3, min_interval=None, patch_novelty_threshold=None)
+def test_rolling_buffer_skips_a_blurry_frame_for_the_sharp_one_behind_it() -> None:
+    config = KeyframeGateConfig(
+        lookahead=1, min_interval=None, patch_novelty_threshold=None, quality_margin=0.25
+    )
     buffer = RollingBuffer(config)
 
     def grid(angle: float) -> np.ndarray:
         return np.tile(np.array([[math.cos(angle), math.sin(angle)]], dtype=np.float16), (2, 1))
 
-    assert buffer.push(BufferedFrame(0.0, grid(0.0), 1.0, None)) is None
-    assert buffer.push(BufferedFrame(1.0, grid(1.0), 0.5, None)) is None
-    assert (
-        buffer.push(BufferedFrame(2.0, grid(2.0), 0.9, None)) is None
-    )  # middle loses to the sharper next frame
-    winner = buffer.push(BufferedFrame(3.0, grid(2.0), 0.1, None))
-    assert winner is not None and winner.ts == 2.0
+    assert buffer.push(BufferedFrame(0.0, grid(0.0), 0.5, None)) is None  # filling the lookahead
+    # 0.5 against 0.9 behind it: outclassed by more than the margin, so it waits.
+    assert buffer.push(BufferedFrame(1.0, grid(1.0), 0.9, None)) is None
+    winner = buffer.push(BufferedFrame(2.0, grid(2.0), 0.1, None))
+    assert winner is not None and winner.ts == 1.0
+
+
+def test_a_turning_camera_keeps_every_frame_and_a_parked_one_keeps_none() -> None:
+    """The rate follows the scene: this is the whole point of the gate.
+
+    The old buffer did the opposite on both counts -- it preferred the slowest frame in
+    its window, and a keep cost six frames, capping the rate at a sixth of the embed
+    rate however fast the view was changing.
+    """
+    config = KeyframeGateConfig(
+        lookahead=2, min_interval=None, max_angular_velocity=None, max_dark_fraction=None
+    )
+
+    def grid(angle: float) -> np.ndarray:
+        return np.tile(np.array([[math.cos(angle), math.sin(angle)]], dtype=np.float16), (8, 1))
+
+    turning = RollingBuffer(config)
+    kept = [turning.push(BufferedFrame(i * 0.2, grid(i * 0.4), 0.3, i)) for i in range(20)]
+    kept += turning.flush()
+    turned = [frame for frame in kept if frame is not None]
+    # Every frame is a new view, so every frame is a keyframe: no structural cap left.
+    assert len(turned) == 20, len(turned)
+
+    parked = RollingBuffer(config)
+    still = [parked.push(BufferedFrame(i * 0.2, grid(0.0), 1.0, i)) for i in range(20)]
+    still += parked.flush()
+    assert len([frame for frame in still if frame is not None]) == 1
 
 
 def test_grid_distance_and_gates() -> None:

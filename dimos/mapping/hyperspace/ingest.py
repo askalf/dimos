@@ -21,7 +21,9 @@ keep exactly the same frames and write exactly the same records.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +49,58 @@ logger = setup_logger()
 
 KEYFRAME_STREAM = "hyperspace_keyframes"
 PATCH_STREAM = "hyperspace_patches"
+
+
+def index_slug(specs: Sequence[str]) -> str:
+    """The name an index built from these checkpoints goes under.
+
+    ``["google/siglip2-base-patch16-224", "...-256"]`` ->
+    ``base_patch16_224__base_patch16_256``. Only letters, digits and underscores,
+    because the slug ends up in a stream name and those are SQL identifiers -- the
+    hyphens and the ``@``/``#`` of a member spec would be rejected.
+    """
+    from dimos.mapping.hyperspace.embedder import member_tag
+
+    return "__".join(re.sub(r"[^A-Za-z0-9]+", "_", member_tag(spec)).strip("_") for spec in specs)
+
+
+def stream_names(slug: str = "") -> tuple[str, str]:
+    """(keyframes, patches) for one index.
+
+    A recording holds as many indexes as you want to compare -- one per model or
+    ensemble, each in its own pair of streams, because a vec0 index has one fixed width
+    and two checkpoints rarely share it. The first index built keeps the bare names and
+    is the canonical one; the rest hang off their slug.
+    """
+    if not slug:
+        return KEYFRAME_STREAM, PATCH_STREAM
+    return f"{KEYFRAME_STREAM}__{slug}", f"{PATCH_STREAM}__{slug}"
+
+
+def indexes_in(store: Any) -> dict[str, str]:
+    """Every index in a store: slug -> its keyframe stream. "" is the canonical one.
+
+    The slug of the canonical index is read from its keyframes rather than its name,
+    so `indexes_in` never reports two names for one model.
+    """
+    found: dict[str, str] = {}
+    for name in store.list_streams():
+        if name == KEYFRAME_STREAM:
+            found[""] = name
+        elif name.startswith(f"{KEYFRAME_STREAM}__"):
+            found[name[len(KEYFRAME_STREAM) + 2 :]] = name
+    return found
+
+
+def index_specs(store: Any, slug: str = "") -> list[str]:
+    """The checkpoint specs one index was embedded with, or [] if it is not there."""
+    keyframes, _ = stream_names(slug)
+    if keyframes not in store.list_streams():
+        return []
+    first = next(iter(store.stream(keyframes, dict).order_by("ts")), None)
+    return [] if first is None else list(first.data.get("member_specs", []))
+
+
 # Written last by an ingest and dropped first, so a run killed outright reads as
 # unfinished: keyframes go into the recording one at a time, so their presence alone
 # cannot say the ingest finished. Same convention as memory_world's ingest.
@@ -135,6 +189,7 @@ class PatchIngestor:
         model: SigLIP2Patches,
         config: IngestConfig,
         lookup: Callable[[str, str, float], NDArray[np.float64] | None] | None = None,
+        slug: str = "",
     ) -> None:
         self.store = store
         self.model = model
@@ -154,8 +209,10 @@ class PatchIngestor:
         # Built on the first colour frame: loading the model costs seconds and
         # an ingest without depth2depth should never pay for it.
         self.fuser: Any = None
-        self.keyframes: Stream[Any] = store.stream(KEYFRAME_STREAM, dict)
-        self.patches: Stream[Any] = store.stream(PATCH_STREAM, dict)
+        keyframe_stream, patch_stream = stream_names(slug)
+        self.slug = slug
+        self.keyframes: Stream[Any] = store.stream(keyframe_stream, dict)
+        self.patches: Stream[Any] = store.stream(patch_stream, dict)
         self.tf_stream: Stream[TFMessage] = store.stream(TF_STREAM, TFMessage)
         self.last_embedded = -np.inf
         self.stats = {"images": 0, "gated": 0, "embedded": 0, "kept": 0, "kept_without_depth": 0}
@@ -325,22 +382,27 @@ class PatchIngestor:
             "thumbnail_stride": self.config.depth_thumbnail_stride,
         }
         shapes = [shape for _, shape in grids]
-        if self.member_specs:
-            payload["members"] = self.members
-            payload["member_specs"] = self.member_specs
+        # Provenance on EVERY keyframe, not only ensembles: a db can hold several
+        # indexes side by side and "which model wrote this" must never be a guess.
+        payload["members"] = self.members
+        payload["member_specs"] = self.member_specs
+        payload["model"] = self.slug or index_slug(self.member_specs or self.members) or "unnamed"
         if len(grids) > 1 or shapes[0] != (rows, cols):
             payload["grids"] = [grid.astype(np.float16) for grid, _ in grids]
             payload["grid_shapes"] = [list(shape) for shape in shapes]
             payload.setdefault("members", [f"member{i}" for i in range(len(grids))])
-        keyframe = self.keyframes.append(payload, ts=kept.ts, tags={"camera_frame": camera_frame})
+        model = payload["model"]
+        keyframe = self.keyframes.append(
+            payload, ts=kept.ts, tags={"camera_frame": camera_frame, "model": model}
+        )
         # The vector index holds the primary member only, indexed on its own
         # grid (``grid_shapes[0]``): a nearest-neighbour hook for single-grid
         # tools, not what the ensemble query reads.
         for index in range(len(kept.grid)):
             self.patches.append(
-                {"keyframe": keyframe.id, "patch": index},
+                {"keyframe": keyframe.id, "patch": index, "model": model},
                 ts=kept.ts,
-                tags={"keyframe": keyframe.id},
+                tags={"keyframe": keyframe.id, "model": model},
                 embedding=Embedding(vector=kept.grid[index].astype(np.float32), timestamp=kept.ts),
             )
         self.stats["kept"] += 1

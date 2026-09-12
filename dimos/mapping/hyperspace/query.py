@@ -28,9 +28,8 @@ import numpy as np
 
 from dimos.mapping.hyperspace import patches as hs
 from dimos.mapping.hyperspace.ingest import (
-    KEYFRAME_STREAM,
-    PATCH_STREAM,
     TF_STREAM,
+    stream_names,
     transform_to_matrix,
 )
 from dimos.mapping.hyperspace.refine import STRUCTURAL_LABELS, RefineConfig, refine
@@ -62,8 +61,13 @@ class HyperspaceQuery:
         world_frame: str = "odom",
         voxel_size: float = 0.1,
         refine_config: RefineConfig | None = None,
+        slug: str = "",
     ) -> None:
         self.store = store
+        # Which index in the recording to answer from: "" is the canonical one. A
+        # recording can hold several, one per model, to compare them on one question.
+        self.slug = slug
+        self.keyframe_stream, self.patch_stream = stream_names(slug)
         self.embed_text = embed_text
         self.config = config
         # None = raw map. Set (or pass) to get ranked clusters; see refine.py.
@@ -94,7 +98,7 @@ class HyperspaceQuery:
         one pass: grids are ~1.3 MB each and a per-id scan would unpickle all
         of them for every hit."""
         if keyframe_id not in self._keyframes:
-            for obs in self.store.stream(KEYFRAME_STREAM, dict).order_by("ts"):
+            for obs in self.store.stream(self.keyframe_stream, dict).order_by("ts"):
                 if obs.id in self._keyframes:
                     continue
                 payload = obs.data
@@ -162,7 +166,7 @@ class HyperspaceQuery:
         backgrounds = self._relevant_backgrounds(0, query)
         try:
             hits = (
-                self.store.stream(PATCH_STREAM, dict)
+                self.store.stream(self.patch_stream, dict)
                 .search(Embedding(vector=query), k=min(self.config.max_hot_patches, VEC0_MAX_K))
                 .to_list()
             )
@@ -443,7 +447,7 @@ class HyperspaceQuery:
 
     def scene_indices(self, frame: str) -> list[tuple[int, int, int]]:
         """Occupied voxel indices, kept until the keyframe count changes."""
-        count = self.store.stream(KEYFRAME_STREAM, dict).count()
+        count = self.store.stream(self.keyframe_stream, dict).count()
         if self._scene is None or self._scene[0] != count:
             self._scene = (count, [index for index, _ in self.scene_voxels(frame)])
         return self._scene[1]
@@ -455,7 +459,7 @@ class HyperspaceQuery:
         target = frame or self.world_frame
         place = self.placer(target)
         counts: dict[tuple[int, int, int], int] = {}
-        for obs in self.store.stream(KEYFRAME_STREAM, dict).order_by("ts"):
+        for obs in self.store.stream(self.keyframe_stream, dict).order_by("ts"):
             payload = obs.data
             thumbnail = np.asarray(payload["thumbnail_mm"])
             if thumbnail.size == 0:

@@ -100,7 +100,10 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
     min_frame_interval_s: float = 0.2
 
     # Keyframe gate. Negative turns a gate off.
-    buffer_len: int = 11
+    # Frames held after a candidate to swap a blurry one for a sharp one; the rate
+    # comes from novelty, not from this.
+    lookahead: int = 2
+    quality_margin: float = 0.25
     novelty_threshold: float = 0.05
     patch_novelty_threshold: float = 0.5
     max_angular_velocity: float = 1.5
@@ -189,7 +192,8 @@ class HyperspacePatches(MemoryModule):
         logger.info(f"hyperspace patches: model ready, opening {self.config.db_path}")
         open_store_with_retry(self)
         gate = hs.KeyframeGateConfig(
-            buffer_len=self.config.buffer_len,
+            lookahead=self.config.lookahead,
+            quality_margin=self.config.quality_margin,
             novelty_threshold=self.config.novelty_threshold,
             patch_novelty_threshold=_optional(self.config.patch_novelty_threshold),
             max_angular_velocity=_optional(self.config.max_angular_velocity),

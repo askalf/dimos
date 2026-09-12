@@ -53,9 +53,18 @@ class Intrinsics:
 class KeyframeGateConfig:
     """Every knob is per camera and individually off-able (``None``)."""
 
-    # Frames held before the middle one is judged; odd.
-    buffer_len: int = 11
+    # Frames looked at AFTER a candidate before judging it. The window exists to swap a
+    # blurry frame for a sharp one beside it, nothing more: it costs `lookahead` frames
+    # of latency and never any rate, because the buffer advances by one frame whether
+    # the candidate is kept or dropped.
+    lookahead: int = 2
+    # A neighbour has to be this much sharper to take a candidate's place. Without a
+    # margin the sharpest frame of every pair wins and half the keeps disappear into
+    # noise in the motion estimate.
+    quality_margin: float = 0.25
     # Mean per-patch (1 - cosine) against the last kept keyframe needed to keep one.
+    # This, not the window, is what sets the rate: a still camera repeats itself and
+    # keeps nothing, a moving one changes every frame and keeps at the embed rate.
     novelty_threshold: float = 0.05
     # Any single patch changing more than this keeps a frame (a new object in a static view).
     patch_novelty_threshold: float | None = 0.5
@@ -147,9 +156,22 @@ class BufferedFrame:
 
 
 class RollingBuffer:
-    """Hold ``buffer_len`` embedded frames; judge the middle one against the
-    frames before and after it. Keep it when it is novel versus the last kept
-    keyframe and the best-quality frame among the window's novel frames."""
+    """Judge each embedded frame in turn, holding ``lookahead`` frames after it.
+
+    Novelty sets the rate. A candidate is kept when the scene has moved on since the
+    last keyframe, so a parked camera keeps almost nothing and a camera swinging through
+    a turn keeps at the embed rate -- which is where the coverage has to come from,
+    because that is when the view changes fastest.
+
+    The window is a blur veto, not a competition. An earlier version kept the
+    HIGHEST-quality novel frame in a window of eleven and, on a keep, dropped the
+    candidate plus everything before it. Both halves worked against the goal: quality is
+    ``1/(1 + angular + linear/4)``, so "best in window" means "slowest in window" and the
+    frames taken during a turn were exactly the ones thrown away; and consuming
+    ``len//2 + 1`` frames per keep capped the rate at ``embed_rate / 6`` no matter what
+    the scene did. Measured on a 13-minute grocery recording: 0.39 Hz average against a
+    0.83 Hz ceiling, gaps up to 5.2 m of travel and 60 degrees of rotation.
+    """
 
     def __init__(self, config: KeyframeGateConfig) -> None:
         self.config = config
@@ -168,8 +190,19 @@ class RollingBuffer:
             return True
         return mean > self.config.novelty_threshold
 
-    def _judge(self, middle: int) -> bool:
-        candidate = self.frames[middle]
+    def _outclassed(self, candidate: BufferedFrame) -> bool:
+        """True when a frame right behind this one is enough sharper to prefer it.
+
+        Only frames that are themselves novel count: being outvoted by a frame that
+        would never be kept would lose the keyframe altogether.
+        """
+        floor = candidate.quality * (1.0 + self.config.quality_margin)
+        return any(
+            frame.quality > floor for frame in list(self.frames)[1:] if self._is_novel(frame.grid)
+        )
+
+    def _judge(self) -> bool:
+        candidate = self.frames[0]
         if (
             self.config.min_interval is not None
             and self.last_kept_ts is not None
@@ -178,39 +211,31 @@ class RollingBuffer:
             return False
         if not self._is_novel(candidate.grid):
             return False
-        return all(
-            frame.quality <= candidate.quality
-            for index, frame in enumerate(self.frames)
-            if index != middle and self._is_novel(frame.grid)
-        )
+        return not self._outclassed(candidate)
 
-    def _take(self, middle: int) -> BufferedFrame:
-        winner = self.frames[middle]
-        del self.frames[middle]
-        for _ in range(middle):
-            self.frames.popleft()
-        self.last_kept = winner.grid
-        self.last_kept_ts = winner.ts
-        return winner
+    def _advance(self) -> BufferedFrame | None:
+        """Judge the oldest frame and drop it either way: one frame in, one frame out."""
+        candidate = self.frames[0]
+        keep = self._judge()
+        self.frames.popleft()
+        if not keep:
+            return None
+        self.last_kept = candidate.grid
+        self.last_kept_ts = candidate.ts
+        return candidate
 
     def push(self, frame: BufferedFrame) -> BufferedFrame | None:
         self.frames.append(frame)
-        if len(self.frames) < max(self.config.buffer_len, 1):
+        if len(self.frames) <= max(self.config.lookahead, 0):
             return None
-        middle = len(self.frames) // 2
-        if self._judge(middle):
-            return self._take(middle)
-        self.frames.popleft()
-        return None
+        return self._advance()
 
     def flush(self) -> list[BufferedFrame]:
         kept = []
         while self.frames:
-            middle = len(self.frames) // 2
-            if self._judge(middle):
-                kept.append(self._take(middle))
-            else:
-                self.frames.popleft()
+            frame = self._advance()
+            if frame is not None:
+                kept.append(frame)
         return kept
 
 
