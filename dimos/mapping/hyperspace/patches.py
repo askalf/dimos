@@ -160,7 +160,10 @@ def pool_cells(contrasts: list[NDArray[np.float32]], pool: str) -> NDArray[np.fl
 class BufferedFrame:
     ts: float
     grid: NDArray[np.float16]
-    quality: float
+    # Sharpness proxy from camera motion, or None when there was no pose to measure it
+    # from. None is NOT 1.0: an unmeasured frame used to score the maximum, so a frame
+    # whose tf lookup had failed outranked every frame with a good pose.
+    quality: float | None
     payload: Any
 
 
@@ -203,11 +206,18 @@ class RollingBuffer:
         """True when a frame right behind this one is enough sharper to prefer it.
 
         Only frames that are themselves novel count: being outvoted by a frame that
-        would never be kept would lose the keyframe altogether.
+        would never be kept would lose the keyframe altogether. A frame of unknown
+        quality never outclasses anything and is never outclassed -- there is nothing
+        to compare, and treating "no pose" as "perfectly sharp" is how the old gate
+        let a failed tf lookup beat every properly measured frame.
         """
+        if candidate.quality is None:
+            return False
         floor = candidate.quality * (1.0 + self.config.quality_margin)
         return any(
-            frame.quality > floor for frame in list(self.frames)[1:] if self._is_novel(frame.grid)
+            frame.quality is not None and frame.quality > floor
+            for frame in list(self.frames)[1:]
+            if self._is_novel(frame.grid)
         )
 
     def _judge(self) -> bool:

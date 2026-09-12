@@ -294,3 +294,30 @@ def test_keyframe_viewpoint_is_the_camera_and_the_moment_not_the_id() -> None:
     # Two segment records of one photograph: different ids, same viewpoint.
     assert frame(-3).viewpoint == frame(-17).viewpoint
     assert frame(-3).id != frame(-17).id
+
+
+def test_a_frame_with_no_pose_cannot_outrank_a_measured_one() -> None:
+    """`quality` is None when the tf lookup failed, and None is not "perfectly sharp".
+
+    Found by memory_world in the old gate: quality defaulted to 1.0, its maximum, so a
+    frame nothing could be measured about beat every frame with a good pose and took
+    the keyframe slot.
+    """
+    config = KeyframeGateConfig(
+        lookahead=1, min_interval=None, patch_novelty_threshold=None, quality_margin=0.25
+    )
+
+    def grid(angle: float) -> np.ndarray:
+        return np.tile(np.array([[math.cos(angle), math.sin(angle)]], dtype=np.float16), (2, 1))
+
+    buffer = RollingBuffer(config)
+    assert buffer.push(BufferedFrame(0.0, grid(0.0), 0.5, "measured")) is None
+    # An unmeasured frame behind it must not displace the one we can vouch for.
+    winner = buffer.push(BufferedFrame(1.0, grid(1.0), None, "no pose"))
+    assert winner is not None and winner.payload == "measured"
+
+    # And an unmeasured candidate is judged on novelty alone, not thrown away.
+    buffer = RollingBuffer(config)
+    assert buffer.push(BufferedFrame(0.0, grid(0.0), None, "no pose")) is None
+    winner = buffer.push(BufferedFrame(1.0, grid(1.0), 1.0, "sharp"))
+    assert winner is not None and winner.payload == "no pose"

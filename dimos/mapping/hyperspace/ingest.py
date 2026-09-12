@@ -269,7 +269,9 @@ class PatchIngestor:
             logger.info(f"hyperspace ingest: first embed took {time.monotonic() - started:.2f}s")
         self.last_embedded = ts
         self.stats["embedded"] += 1
-        quality = 1.0 if speeds is None else 1.0 / (1.0 + speeds[0] + 0.25 * speeds[1])
+        # None, not 1.0: without a pose there is no motion to score, and scoring it
+        # the maximum made an unplaceable frame outrank every measured one.
+        quality = None if speeds is None else 1.0 / (1.0 + speeds[0] + 0.25 * speeds[1])
         # Pair depth now, while its frame is still in the short depth history:
         # the buffer judges this frame ~5 embedded frames later.
         depth = self._paired_depth(image.frame_id, ts)
