@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OpenYAM keyboard and Quest teleop blueprints."""
+"""OpenYAM keyboard and WebXR teleop blueprints."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ from dimos.robot.manipulators.openyam.config import (
 )
 from dimos.robot.manipulators.openyam.teleop_ik import OpenYamPinkPoseTargetSolver
 from dimos.teleop.keyboard.keyboard_teleop_module import KeyboardTeleopModule
-from dimos.teleop.quest.quest_extensions import ArmTeleopModule
+from dimos.teleop.webxr.extensions import ArmTeleopModule
 
 _openyam_keyboard_hw = openyam_hardware()
 _openyam_model = make_openyam_model_config()
@@ -86,9 +86,9 @@ keyboard_teleop_openyam = autoconnect(
     ),
 )
 
-OPENYAM_QUEST_TASK_NAME = "teleop_openyam"
+OPENYAM_WEBXR_TASK_NAME = "teleop_openyam"
 
-OPENYAM_QUEST_KINEMATICS = PinkKinematicsConfig(
+OPENYAM_WEBXR_KINEMATICS = PinkKinematicsConfig(
     dt=0.01,
     position_cost=8.0,
     orientation_cost=2.0,
@@ -97,12 +97,12 @@ OPENYAM_QUEST_KINEMATICS = PinkKinematicsConfig(
     lm_damping=0.01,
     gain=1.0,
 )
-OPENYAM_QUEST_HARDWARE = openyam_hardware()
-OPENYAM_QUEST_MODEL = make_openyam_model_config()
-_openyam_quest_task = teleop_ik_task(
-    OPENYAM_QUEST_HARDWARE,
-    robot_model=OPENYAM_QUEST_MODEL,
-    name=OPENYAM_QUEST_TASK_NAME,
+OPENYAM_WEBXR_HARDWARE = openyam_hardware()
+OPENYAM_WEBXR_MODEL = make_openyam_model_config()
+_openyam_webxr_task = teleop_ik_task(
+    OPENYAM_WEBXR_HARDWARE,
+    robot_model=OPENYAM_WEBXR_MODEL,
+    name=OPENYAM_WEBXR_TASK_NAME,
     joint_names=OPENYAM_ARM_JOINTS,
     priority=20,
     solver_type=OpenYamPinkPoseTargetSolver,
@@ -113,7 +113,7 @@ _openyam_quest_task = teleop_ik_task(
         }
     ],
     params={
-        "pink": OPENYAM_QUEST_KINEMATICS,
+        "pink": OPENYAM_WEBXR_KINEMATICS,
         "timeout": 0.5,
         "max_command_tracking_error_deg": 10.0,
         "max_joint_velocity_rad_s": 2.0,
@@ -122,10 +122,10 @@ _openyam_quest_task = teleop_ik_task(
 )
 
 
-def openyam_quest_tasks(*additional_tasks: TaskConfig) -> list[TaskConfig]:
+def openyam_webxr_tasks(*additional_tasks: TaskConfig) -> list[TaskConfig]:
     """Build the canonical Quest control tasks, optionally extended by a stack."""
     return [
-        _openyam_quest_task,
+        _openyam_webxr_task,
         TaskConfig(
             name="arm_gripper",
             type="gripper",
@@ -140,16 +140,16 @@ def openyam_quest_tasks(*additional_tasks: TaskConfig) -> list[TaskConfig]:
 
 
 # Single-arm Quest teleop: right controller -> OpenYAM arm
-teleop_quest_openyam = autoconnect(
+teleop_webxr_openyam = autoconnect(
     ArmTeleopModule.blueprint(),
     TeleopControlCoordinator.blueprint(
         instance_name="ControlCoordinator",
-        hardware=[OPENYAM_QUEST_HARDWARE],
-        tasks=openyam_quest_tasks(),
+        hardware=[OPENYAM_WEBXR_HARDWARE],
+        tasks=openyam_webxr_tasks(),
     ),
     ManipulationModule.blueprint(
-        model=OPENYAM_QUEST_MODEL,
-        kinematics=OPENYAM_QUEST_KINEMATICS,
+        model=OPENYAM_WEBXR_MODEL,
+        kinematics=OPENYAM_WEBXR_KINEMATICS,
         visualization={"backend": "viser"},
     ),
 ).remappings(

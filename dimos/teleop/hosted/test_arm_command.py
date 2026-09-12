@@ -36,14 +36,14 @@ from dimos.core.module import Module
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.teleop.hosted.arm_command import ArmCommandModule
-from dimos.teleop.quest.quest_types import Hand, QuestControllerState
+from dimos.teleop.webxr.controller_types import Hand, WebXRControllerState
 from dimos.utils.testing.waiting import wait_until
 
 
 @pytest.fixture
 def module(monkeypatch: pytest.MonkeyPatch) -> Iterator[ArmCommandModule]:
     """A real ArmCommandModule with only the framework ``Module.__init__``
-    skipped — the quest-layer and command-plane inits (engage state, decoder
+    skipped — the WebXR base-class and command-plane inits (engage state, decoder
     table, estop/twist gates) run for real. Ports / coordinator ref / config
     are mocked; config is seeded by the patched init."""
 
@@ -102,7 +102,7 @@ def _sent_acks(module: ArmCommandModule) -> list[dict[str, Any]]:
 
 def _publish_right(module: ArmCommandModule) -> None:
     module._on_cmd_raw(_pose_bytes("right"))
-    module._controllers[Hand.RIGHT] = QuestControllerState(is_left=False)
+    module._controllers[Hand.RIGHT] = WebXRControllerState(is_left=False)
     _tick(module)
 
 
@@ -250,7 +250,7 @@ def test_controller_pose_publishes_on_hand_port(module: ArmCommandModule) -> Non
 def test_face_button_release_does_not_gate_raw_pose(module: ArmCommandModule) -> None:
     _publish_right(module)
     module.right_controller_output.publish.reset_mock()
-    module._controllers[Hand.RIGHT] = QuestControllerState(is_left=False, primary=False)
+    module._controllers[Hand.RIGHT] = WebXRControllerState(is_left=False, primary=False)
     _tick(module)
     assert not module._is_engaged[Hand.RIGHT]
     module.right_controller_output.publish.assert_called_once()

@@ -28,7 +28,7 @@ from dimos.robot.manipulators.openyam.blueprints.learning_rollout import (
 )
 from dimos.robot.manipulators.openyam.config import OPENYAM_JOINTS
 from dimos.robot.manipulators.openyam.learning import OPENYAM_CAMERA_SHAPE, OPENYAM_FPS
-from dimos.teleop.quest.quest_extensions import ArmTeleopModule
+from dimos.teleop.webxr.extensions import ArmTeleopModule
 
 
 def _module_kwargs(blueprint: Blueprint, module_type: type) -> dict[str, Any]:

@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Quest teleop module extensions and subclasses.
+"""WebXR teleop module extensions and subclasses.
 
 Available subclasses:
     - ArmTeleopModule: Raw arm poses with middle-finger grip deadman buttons
     - HandTeleopModule: Pinch-to-toggle arm teleop using WebXR hand tracking
     - TwistTeleopModule: Outputs Twist instead of PoseStamped
-    - VideoArmTeleopModule: ArmTeleopModule + JPEG frames pushed to the Quest over /ws
+    - VideoArmTeleopModule: ArmTeleopModule + JPEG frames pushed to the headset over /ws
     - Go2TeleopModule: Thumbstick → Twist velocity for the Go2 + camera over /ws
 """
 
@@ -35,8 +35,8 @@ from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.std_msgs.Float32 import Float32
-from dimos.teleop.quest.quest_teleop_module import QuestTeleopConfig, QuestTeleopModule
-from dimos.teleop.quest.quest_types import Buttons, Hand, QuestControllerState
+from dimos.teleop.webxr.controller_types import Buttons, Hand, WebXRControllerState
+from dimos.teleop.webxr.module import WebXRTeleopConfig, WebXRTeleopModule
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -51,11 +51,11 @@ async def _ws_send_jpeg(ws: WebSocket, data: bytes) -> None:
         pass
 
 
-def _push_jpeg(module: QuestTeleopModule, msg: Image, quality: int) -> None:
+def _push_jpeg(module: WebXRTeleopModule, msg: Image, quality: int) -> None:
     """JPEG-encode an Image and push it to all of module's connected /ws clients.
 
     Runs on the RX thread; sends are scheduled on the asyncio loop captured by
-    QuestTeleopModule when the first client connected.
+    WebXRTeleopModule when the first client connected.
     """
     # Snapshot clients under the lock to avoid concurrent set mutation from
     # the uvicorn thread. Skip the encode entirely if nobody is listening.
@@ -77,16 +77,16 @@ def _push_jpeg(module: QuestTeleopModule, msg: Image, quality: int) -> None:
         asyncio.run_coroutine_threadsafe(_ws_send_jpeg(ws, jpeg), loop)
 
 
-class TwistTeleopConfig(QuestTeleopConfig):
+class TwistTeleopConfig(WebXRTeleopConfig):
     """Configuration for TwistTeleopModule."""
 
     linear_scale: float = 1.0
     angular_scale: float = 1.0
 
 
-# Example implementation to show how to extend QuestTeleopModule for different teleop behaviors and outputs.
-class TwistTeleopModule(QuestTeleopModule):
-    """Quest teleop that outputs TwistStamped instead of PoseStamped.
+# Example implementation to show how to extend WebXRTeleopModule for different teleop behaviors and outputs.
+class TwistTeleopModule(WebXRTeleopModule):
+    """WebXR teleop that outputs TwistStamped instead of PoseStamped.
 
     Config:
         - linear_scale: Scale factor for linear (position) values. Default 1.0.
@@ -125,7 +125,7 @@ class TwistTeleopModule(QuestTeleopModule):
             self.right_twist.publish(twist)
 
 
-class ArmTeleopModule(QuestTeleopModule):
+class ArmTeleopModule(WebXRTeleopModule):
     """Quest arm input that leaves engagement to the coordinator task.
 
     Controller poses and buttons are published as raw operator input. The
@@ -168,8 +168,8 @@ class ArmTeleopModule(QuestTeleopModule):
 
     def _publish_button_state(
         self,
-        left: QuestControllerState | None,
-        right: QuestControllerState | None,
+        left: WebXRControllerState | None,
+        right: WebXRControllerState | None,
     ) -> None:
         """Publish Buttons with analog triggers packed into bits 16-29."""
         buttons = Buttons.from_controllers(left, right)
@@ -182,8 +182,8 @@ class ArmTeleopModule(QuestTeleopModule):
 
     def _publish_gripper_commands(
         self,
-        left: QuestControllerState | None,
-        right: QuestControllerState | None,
+        left: WebXRControllerState | None,
+        right: WebXRControllerState | None,
         buttons: Buttons,
     ) -> None:
         """Publish normalized opening while the classified deadman is held."""
@@ -234,8 +234,8 @@ class HandTeleopModule(ArmTeleopModule):
 
     def _publish_button_state(
         self,
-        left: QuestControllerState | None,
-        right: QuestControllerState | None,
+        left: WebXRControllerState | None,
+        right: WebXRControllerState | None,
     ) -> None:
         """Keep downstream press-and-hold teleop tasks engaged between pinches."""
         buttons = Buttons.from_controllers(left, right)
@@ -249,14 +249,14 @@ class HandTeleopModule(ArmTeleopModule):
         self._publish_gripper_commands(left, right, buttons)
 
 
-class VideoArmTeleopConfig(QuestTeleopConfig):
+class VideoArmTeleopConfig(WebXRTeleopConfig):
     """Configuration for VideoArmTeleopModule."""
 
     video_jpeg_quality: int = 70
 
 
 class VideoArmTeleopModule(ArmTeleopModule):
-    """ArmTeleopModule + camera frames pushed to the Quest as JPEG over /ws.
+    """ArmTeleopModule + camera frames pushed to the headset as JPEG over /ws.
 
     Subscribes to color_image, JPEG-encodes each frame, and broadcasts raw
     JPEG bytes to every connected /ws client as a binary message. The client
@@ -279,7 +279,7 @@ class VideoArmTeleopModule(ArmTeleopModule):
         _push_jpeg(self, msg, self.config.video_jpeg_quality)
 
 
-class Go2TeleopConfig(QuestTeleopConfig):
+class Go2TeleopConfig(WebXRTeleopConfig):
     """Configuration for Go2TeleopModule."""
 
     linear_speed: float = 0.5  # m/s at full stick deflection
@@ -288,8 +288,8 @@ class Go2TeleopConfig(QuestTeleopConfig):
     video_jpeg_quality: int = 70
 
 
-class Go2TeleopModule(QuestTeleopModule):
-    """Quest teleop for the Unitree Go2: thumbstick driving + camera in the headset.
+class Go2TeleopModule(WebXRTeleopModule):
+    """WebXR teleop for the Unitree Go2: thumbstick driving + camera in the headset.
 
     Velocity is derived from the controller thumbsticks as each Joy message
     arrives (left stick → forward/strafe, right stick → yaw) and published on

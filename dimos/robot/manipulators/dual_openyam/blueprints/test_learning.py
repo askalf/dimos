@@ -20,7 +20,7 @@ from dimos.hardware.sensors.camera.module import CameraModule
 from dimos.imitation.policy.abc.module import DualOpenYamAbcPolicy
 from dimos.imitation.policy.module import POLICY_ROLLOUT_INSTANCE_NAME, POLICY_ROLLOUT_TASK_NAME
 from dimos.robot.manipulators.dual_openyam.blueprints.learning_collection import (
-    build_dual_openyam_quest_collection,
+    build_dual_openyam_webxr_collection,
 )
 from dimos.robot.manipulators.dual_openyam.blueprints.learning_rollout import (
     build_dual_openyam_abc_rollout,
@@ -29,7 +29,7 @@ from dimos.robot.manipulators.dual_openyam.learning import ABC_JOINTS, DualOpenY
 
 
 def test_dual_collection_declares_two_distinct_camera_sources(tmp_path: Path) -> None:
-    blueprint = build_dual_openyam_quest_collection(
+    blueprint = build_dual_openyam_webxr_collection(
         recording=tmp_path / "dual.mcap",
         task="fold towel",
         cameras={"left_wrist_image": 0, "right_wrist_image": 1},

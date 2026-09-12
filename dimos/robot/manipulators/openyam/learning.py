@@ -18,14 +18,14 @@ from dimos.imitation.collection.native_recorder import declare_recorder
 from dimos.robot.manipulators.openyam.learning_profile import (
     OPENYAM_CAMERA_SHAPE as OPENYAM_CAMERA_SHAPE,
     OPENYAM_FPS as OPENYAM_FPS,
-    OPENYAM_QUEST_IO as OPENYAM_QUEST_IO,
     OPENYAM_TEACH_IO as OPENYAM_TEACH_IO,
+    OPENYAM_WEBXR_IO as OPENYAM_WEBXR_IO,
 )
 
 OpenYamQuestRecorder = declare_recorder(
     "OpenYamQuestRecorder",
     __name__,
-    OPENYAM_QUEST_IO,
+    OPENYAM_WEBXR_IO,
 )
 
 OpenYamTeachRecorder = declare_recorder(

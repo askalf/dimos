@@ -15,13 +15,13 @@
 from dimos.imitation.dataprep.core import OutputConfig
 from dimos.robot.manipulators.openyam.config import OPENYAM_JOINTS
 from dimos.robot.manipulators.openyam.learning import (
-    OPENYAM_QUEST_IO,
     OPENYAM_TEACH_IO,
+    OPENYAM_WEBXR_IO,
 )
 
 
 def test_openyam_profile_builds_matching_observation_and_action_schema() -> None:
-    profile = OPENYAM_QUEST_IO
+    profile = OPENYAM_WEBXR_IO
 
     config = profile.dataprep_config(output=OutputConfig(path="dataset"))
 

@@ -30,17 +30,17 @@ from dimos.imitation.policy.module import (
 from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.robot.manipulators.openyam.blueprints.teleop import (
-    OPENYAM_QUEST_HARDWARE,
-    OPENYAM_QUEST_KINEMATICS,
-    OPENYAM_QUEST_MODEL,
-    openyam_quest_tasks,
+    OPENYAM_WEBXR_HARDWARE,
+    OPENYAM_WEBXR_KINEMATICS,
+    OPENYAM_WEBXR_MODEL,
+    openyam_webxr_tasks,
 )
 from dimos.robot.manipulators.openyam.config import (
     OPENYAM_JOINTS,
     openyam_hardware,
 )
-from dimos.robot.manipulators.openyam.learning import OPENYAM_QUEST_IO
-from dimos.teleop.quest.quest_extensions import ArmTeleopModule
+from dimos.robot.manipulators.openyam.learning import OPENYAM_WEBXR_IO
+from dimos.teleop.webxr.extensions import ArmTeleopModule
 
 
 def build_openyam_rollout(
@@ -64,7 +64,7 @@ def build_openyam_rollout(
         device=device,
         trajectory_task_name=POLICY_ROLLOUT_TASK_NAME,
     )
-    camera_blueprints, camera_remappings = profile_cameras(OPENYAM_QUEST_IO, cameras)
+    camera_blueprints, camera_remappings = profile_cameras(OPENYAM_WEBXR_IO, cameras)
 
     if quest_control:
         blueprint = autoconnect(
@@ -72,13 +72,13 @@ def build_openyam_rollout(
             ArmTeleopModule.blueprint(),
             TeleopControlCoordinator.blueprint(
                 instance_name="ControlCoordinator",
-                hardware=[OPENYAM_QUEST_HARDWARE],
-                tasks=openyam_quest_tasks(policy_task),
+                hardware=[OPENYAM_WEBXR_HARDWARE],
+                tasks=openyam_webxr_tasks(policy_task),
             ),
             *camera_blueprints,
             ManipulationModule.blueprint(
-                model=OPENYAM_QUEST_MODEL,
-                kinematics=OPENYAM_QUEST_KINEMATICS,
+                model=OPENYAM_WEBXR_MODEL,
+                kinematics=OPENYAM_WEBXR_KINEMATICS,
                 visualization={"backend": "viser"},
             ),
         ).remappings(

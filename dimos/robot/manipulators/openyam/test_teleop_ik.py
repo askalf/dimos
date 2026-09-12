@@ -21,17 +21,17 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.robot.manipulators.openyam.blueprints.teleop import _openyam_quest_task
+from dimos.robot.manipulators.openyam.blueprints.teleop import _openyam_webxr_task
 from dimos.robot.manipulators.openyam.config import OPENYAM_ARM_JOINTS, OPENYAM_HOME_JOINTS
 from dimos.robot.manipulators.openyam.teleop_ik import OpenYamPinkPoseTargetSolver
 
-_TARGET_FRAME = _openyam_quest_task.params["robot_model"].planning_groups[0].tip_link
+_TARGET_FRAME = _openyam_webxr_task.params["robot_model"].planning_groups[0].tip_link
 
 
 def _solver(
     solver_type: type[PinkPoseTargetSolver] = OpenYamPinkPoseTargetSolver,
 ) -> PinkPoseTargetSolver:
-    task = _openyam_quest_task
+    task = _openyam_webxr_task
     config = PoseTargetIKTaskConfig(
         joint_names=tuple(task.joint_names),
         robot_model=task.params["robot_model"],

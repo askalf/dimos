@@ -24,7 +24,7 @@ import torch
 
 from dimos.experimental.isolated_python.bootstrap import validate_runtime
 from dimos.imitation.policy.lerobot.module import OpenYamLeRobotPolicy
-from dimos.robot.manipulators.openyam.learning_profile import OPENYAM_QUEST_IO
+from dimos.robot.manipulators.openyam.learning_profile import OPENYAM_WEBXR_IO
 
 
 class FakeFeature:
@@ -58,7 +58,7 @@ def test_generated_runtime_implements_the_host_contract() -> None:
 
 
 def test_lerobot_feature_validation_uses_profile_keys_and_shapes() -> None:
-    _validate_features(FakeConfig(), OPENYAM_QUEST_IO)  # type: ignore[arg-type]
+    _validate_features(FakeConfig(), OPENYAM_WEBXR_IO)  # type: ignore[arg-type]
 
 
 def test_lerobot_feature_validation_rejects_missing_profile_key() -> None:
@@ -66,7 +66,7 @@ def test_lerobot_feature_validation_rejects_missing_profile_key() -> None:
     config.input_features = {"observation.state": FakeFeature((7,))}
 
     with pytest.raises(ValueError, match="observation.images.wrist"):
-        _validate_features(config, OPENYAM_QUEST_IO)  # type: ignore[arg-type]
+        _validate_features(config, OPENYAM_WEBXR_IO)  # type: ignore[arg-type]
 
 
 def test_lerobot_action_bounds_are_extracted_for_common_safety_loop() -> None:

@@ -33,7 +33,7 @@ import pytest_mock
 from dimos.imitation.collection.episode_monitor import EpisodeMonitorModule
 from dimos.msgs.imitation_msgs.EpisodeStatus import EpisodeStatus
 from dimos.protocol.rpc.pubsubrpc import LCMRPC
-from dimos.teleop.quest.quest_types import BUTTON_ALIASES, Buttons
+from dimos.teleop.webxr.controller_types import BUTTON_ALIASES, Buttons
 
 
 @pytest.fixture
@@ -204,14 +204,14 @@ def test_shutdown_leaves_recording_incomplete(
 def test_invalid_button_mapping_fails_at_startup(
     make_monitor: Callable[..., EpisodeMonitorModule],
 ) -> None:
-    with pytest.raises(ValidationError, match="unknown Quest button mappings"):
+    with pytest.raises(ValidationError, match="unknown WebXR button mappings"):
         make_monitor(button_map={"toggle": "not_a_button"})
 
 
 def test_duplicate_button_mapping_fails_at_startup(
     make_monitor: Callable[..., EpisodeMonitorModule],
 ) -> None:
-    with pytest.raises(ValidationError, match="distinct Quest button"):
+    with pytest.raises(ValidationError, match="distinct WebXR button"):
         make_monitor(button_map={"toggle": "B", "discard": "right_secondary"})
 
 

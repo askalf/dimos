@@ -32,29 +32,10 @@ from dimos.robot.manipulators.xarm.config import (
 )
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
 from dimos.simulation.perception.blueprints import sim_scene_registration
-from dimos.utils.data import LfsPath
 from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 _xarm7_sim_model = make_xarm7_sim_robot_config()
 _xarm7_sim_hw = make_xarm7_sim_hardware(XARM7_SIM_PATH)
-XARM_ROOM_SCENE_PATH = LfsPath("xarm_grasp_sim/scene.xml")
-# The stock xArm home points the narrow wrist-camera frustum between the six
-# widely spaced targets. This collision-free top-down pose raises the camera
-# enough to put every mesh in one frame, without changing the configured base
-# pose or introducing coordinate offsets.
-XARM_ROOM_SCAN_JOINTS = [0.0, -0.04609, 0.0, 1.83940, 0.0, 1.87106, 0.0]
-_xarm_room_sim_hw = make_xarm7_sim_hardware(XARM_ROOM_SCENE_PATH, home_joints=XARM_ROOM_SCAN_JOINTS)
-XARM_ROOM_PROMPTS = [
-    "black bottle",
-    "gray can",
-    "red cup",
-    "green tape roll",
-    "blue marker",
-    "brown box",
-    # The wrist camera sees the tape almost directly from above, where it reads
-    # as a ring instead of a roll. Keep a shape-word fallback for that view.
-    "green ring",
-]
 
 xarm_perception_sim = autoconnect(
     ManipulationModule.blueprint(

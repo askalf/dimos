@@ -21,7 +21,7 @@ from dimos.experimental.memory.rust_recorder import RustMcapStoreConfig
 from dimos.imitation.cameras import CameraDevice, profile_cameras
 from dimos.imitation.collection.episode_monitor import EpisodeMonitorModule
 from dimos.robot.manipulators.dual_openyam.blueprints.teleop import (
-    build_dual_openyam_quest_teleop,
+    build_dual_openyam_webxr_teleop,
 )
 from dimos.robot.manipulators.dual_openyam.learning import (
     DUAL_OPENYAM_TWO_WRIST_IO,
@@ -29,7 +29,7 @@ from dimos.robot.manipulators.dual_openyam.learning import (
 )
 
 
-def build_dual_openyam_quest_collection(
+def build_dual_openyam_webxr_collection(
     *,
     recording: Path,
     task: str,
@@ -48,7 +48,7 @@ def build_dual_openyam_quest_collection(
             record_tf=False,
         ),
         EpisodeMonitorModule.blueprint(task=task),
-        build_dual_openyam_quest_teleop(
+        build_dual_openyam_webxr_teleop(
             left_can_port=left_can_port,
             right_can_port=right_can_port,
         ),
