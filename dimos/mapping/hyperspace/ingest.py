@@ -49,6 +49,10 @@ logger = setup_logger()
 
 KEYFRAME_STREAM = "hyperspace_keyframes"
 PATCH_STREAM = "hyperspace_patches"
+# One row per embedding frame, holding only what the occupancy check needs: a small
+# point cloud in the CAMERA'S OWN frame. Its world pose is applied at query time, so a
+# loop closure moves it; baking the pose in would leave it silently wrong.
+THUMBNAIL_STREAM = "hyperspace_depth_thumbnails"
 
 
 def index_slug(specs: Sequence[str]) -> str:
@@ -79,6 +83,11 @@ def patch_stream_for(slug: str, member: str) -> str:
     """
     _, patches = stream_names(slug)
     return f"{patches}__m_{sql_safe(member)}"
+
+
+def thumbnail_stream_for(slug: str = "") -> str:
+    """The depth-thumbnail stream of one index."""
+    return THUMBNAIL_STREAM if not slug else f"{THUMBNAIL_STREAM}__{slug}"
 
 
 def stream_names(slug: str = "") -> tuple[str, str]:
@@ -155,6 +164,19 @@ class IngestConfig:
     # query can ask each its own nearest-neighbour question instead of loading every
     # keyframe's grids into memory. Costs one insert per patch per model at ingest.
     patch_vectors: bool = True
+    # The flat layout: a patch row carries everything needed to place it -- camera
+    # frame, timestamp, its own ray and its own depth -- and the per-frame row holds
+    # only the depth thumbnail. No keyframe blob, so reading one patch does not
+    # unpickle a frame's worth of embeddings.
+    #
+    # There is deliberately NO shared cell grid across models. Embeddings cannot be
+    # resampled onto one without averaging them, and once agreement between models is
+    # geometric -- do their boxes overlap -- the cells never need to line up. Each
+    # model keeps its own native grid, so patch counts per frame differ between them.
+    #
+    # Default False until the query side reads it: writing a layout nothing can answer
+    # from would break every existing recording. Pass --flat to build one.
+    flat: bool = False
     # Depth beyond this (m) is a hole: RealSense 65535 mm sentinels and glitches.
     max_depth_m: float = 10.0
     depth_max_dt: float = 0.05
@@ -231,17 +253,31 @@ class PatchIngestor:
         # Built on the first colour frame: loading the model costs seconds and
         # an ingest without depth2depth should never pay for it.
         self.fuser: Any = None
-        keyframe_stream, _ = stream_names(slug)
         self.slug = slug
         # False when the store IS the recording: see add_tf.
         self.copy_tf = copy_tf
-        self.keyframes: Stream[Any] = store.stream(keyframe_stream, dict)
-        # One vec0 stream per model, opened when its first keyframe is written: the
-        # member list is only certain once the model has run.
+        # Every stream is opened on first write, not here: naming one creates it, and
+        # an empty stream is a name pretending to be an index. The flat layout has no
+        # keyframe stream at all, so opening one eagerly would leave that lie behind.
+        self._keyframes: Stream[Any] | None = None
+        self._thumbnails: Stream[Any] | None = None
+        # One vec0 stream per model; the member list is only certain once it has run.
         self.patches_by_member: dict[str, Stream[Any]] = {}
         self.tf_stream: Stream[TFMessage] = store.stream(TF_STREAM, TFMessage)
         self.last_embedded = -np.inf
         self.stats = {"images": 0, "gated": 0, "embedded": 0, "kept": 0, "kept_without_depth": 0}
+
+    @property
+    def keyframes(self) -> Stream[Any]:
+        if self._keyframes is None:
+            self._keyframes = self.store.stream(stream_names(self.slug)[0], dict)
+        return self._keyframes
+
+    @property
+    def thumbnails(self) -> Stream[Any]:
+        if self._thumbnails is None:
+            self._thumbnails = self.store.stream(thumbnail_stream_for(self.slug), dict)
+        return self._thumbnails
 
     def patch_stream(self, member: str) -> Stream[Any]:
         """This model's vec0 stream, opened once."""
@@ -420,7 +456,73 @@ class PatchIngestor:
             max(24, max(shape[1] for _, shape in grids)),
         )
 
+    def _write_flat(self, kept: hs.BufferedFrame) -> None:
+        """One row per patch that stands on its own, plus one depth thumbnail."""
+        camera_frame, depth, grids = kept.payload
+        color = self.intrinsics.get(camera_frame)
+        if color is None:
+            logger.warning(f"hyperspace: no camera_info for {camera_frame!r} yet; frame dropped")
+            return
+        model = self.slug or index_slug(self.member_specs or self.members) or "unnamed"
+        tags = {"camera_frame": camera_frame, "model": model}
+
+        if depth is None:
+            self.stats["kept_without_depth"] += 1
+        else:
+            stride = max(self.config.depth_thumbnail_stride, 1)
+            thinned = depth[::stride, ::stride]
+            rows, cols = np.nonzero(np.isfinite(thinned) & (thinned > 0))
+            metres = thinned[rows, cols]
+            # Camera-frame points, millimetres as int16: the query needs no intrinsics
+            # to use them, and the world pose stays outside so a correction can move it.
+            us = (cols * stride + 0.5 - color.cx) / color.fx
+            vs = (rows * stride + 0.5 - color.cy) / color.fy
+            points = np.stack([us * metres, vs * metres, metres], axis=1) * 1000.0
+            self.thumbnails.append(
+                {
+                    "camera_frame": camera_frame,
+                    "ts": kept.ts,
+                    "points_mm": np.clip(points, -32768, 32767).astype(np.int16),
+                },
+                ts=kept.ts,
+                tags=tags,
+            )
+
+        for position, (grid, shape) in enumerate(grids):
+            member = self.members[position] if position < len(self.members) else f"member{position}"
+            rows_n, cols_n = shape
+            patch_depth = (
+                np.full(rows_n * cols_n, np.nan, dtype=np.float32)
+                if depth is None
+                else hs.per_patch_depth(depth, rows_n, cols_n)
+            )
+            # The ray through each cell's centre at z = 1, so a patch places itself.
+            row_index, col_index = np.divmod(np.arange(rows_n * cols_n), cols_n)
+            us = ((col_index + 0.5) * color.width / cols_n - color.cx) / color.fx
+            vs = ((row_index + 0.5) * color.height / rows_n - color.cy) / color.fy
+            stream = self.patch_stream(member)
+            member_tags = {**tags, "member": member}
+            for index in range(len(grid)):
+                stream.append(
+                    {
+                        "camera_frame": camera_frame,
+                        "ts": kept.ts,
+                        "cell": index,
+                        "grid": [rows_n, cols_n],
+                        "ray": [float(us[index]), float(vs[index])],
+                        "depth": float(patch_depth[index]),
+                        "member": member,
+                    },
+                    ts=kept.ts,
+                    tags=member_tags,
+                    embedding=Embedding(vector=grid[index].astype(np.float32), timestamp=kept.ts),
+                )
+        self.stats["kept"] += 1
+
     def _write_keyframe(self, kept: hs.BufferedFrame) -> None:
+        if self.config.flat:
+            self._write_flat(kept)
+            return
         camera_frame, depth, grids = kept.payload
         color = self.intrinsics.get(camera_frame)
         if color is None:

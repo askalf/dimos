@@ -124,6 +124,7 @@ def fill(
     *,
     with_depth: bool = True,
     copy_tf: bool = True,
+    flat: bool = False,
 ) -> PatchIngestor:
     model = StubModel()
     config = IngestConfig(
@@ -138,6 +139,7 @@ def fill(
             min_interval=None,
         ),
         min_frame_interval_s=0.0,
+        flat=flat,
     )
     ingestor = PatchIngestor(store, model, config, copy_tf=copy_tf)  # type: ignore[arg-type]
     ingestor.add_camera_info(camera_info())
@@ -756,3 +758,40 @@ def test_indexing_a_recording_in_place_does_not_copy_its_tf_into_itself(
     ingestor = fill(store, ring(2, 2.5), copy_tf=False)  # store IS the recording
     assert ingestor.stats["kept"] == 2
     assert store.stream("tf", TFMessage).count() == before, "the ingest duplicated tf"
+
+
+def test_the_flat_layout_writes_patches_that_place_themselves(store: SqliteStore) -> None:
+    """A patch row carries its own camera, time, ray and depth.
+
+    That is what lets a query turn a search hit into a point in the world without
+    opening a per-frame row -- the thing that made it load every frame into memory.
+    """
+    fill(store, ring(2, 2.5), flat=True)
+
+    assert KEYFRAME_STREAM not in store.list_streams(), "the flat layout has no keyframe blob"
+
+    patches = store.stream(cli.patch_stream_for("", "stub"), dict)
+    assert patches.count() == 2 * SIDE * SIDE
+    row = patches.order_by("ts").first().data
+    assert row["camera_frame"] == CAMERA
+    assert row["grid"] == [SIDE, SIDE]
+    assert len(row["ray"]) == 2
+    assert np.isfinite(row["depth"]) and row["depth"] > 0
+    assert set(row) >= {"camera_frame", "ts", "cell", "grid", "ray", "depth", "member"}
+
+    # the thumbnail is a point cloud in the CAMERA's frame, not a depth picture
+    thumbnails = store.stream(cli.thumbnail_stream_for(""), dict)
+    assert thumbnails.count() == 2
+    cloud = np.asarray(thumbnails.order_by("ts").first().data["points_mm"])
+    assert cloud.ndim == 2 and cloud.shape[1] == 3
+    assert cloud.dtype == np.int16
+    # z forward and positive: these are camera-frame points, so no pose is baked in
+    assert (cloud[:, 2] > 0).all()
+
+
+def test_dropping_a_flat_index_takes_its_thumbnails_too(store: SqliteStore) -> None:
+    fill(store, ring(2, 2.5), flat=True)
+    assert cli.index_is_finished(store), "patch rows alone make an index answerable"
+    cli.drop_index(store)
+    assert not cli.index_is_finished(store)
+    assert cli.thumbnail_stream_for("") not in store.list_streams()

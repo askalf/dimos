@@ -49,6 +49,7 @@ from dimos.mapping.hyperspace.ingest import (
     indexes_in,
     patch_stream_for,
     stream_names,
+    thumbnail_stream_for,
     transform_to_matrix,
 )
 from dimos.mapping.hyperspace.module import depth2depth_model_of
@@ -103,10 +104,14 @@ def index_is_finished(memory: Store, slug: str = "") -> bool:
     """
     # Keyframes only: an ensemble index has no patch stream at all, because nothing
     # would read it (see PatchIngestor.write_patch_vectors).
-    keyframes, _ = stream_names(slug)
-    if keyframes not in memory.list_streams():
-        return False
-    return memory.stream(keyframes, dict).count() > 0
+    # The flat layout has no keyframe stream: a per-model patch stream with rows in it
+    # is what makes an index answerable.
+    names = set(memory.list_streams())
+    keyframes, patches = stream_names(slug)
+    if keyframes in names and memory.stream(keyframes, dict).count() > 0:
+        return True
+    prefix = patch_stream_for(slug, "x").rsplit("_x", 1)[0]
+    return any(memory.stream(name, dict).count() > 0 for name in names if name.startswith(prefix))
 
 
 def pick_index(memory: Store, specs: Sequence[str]) -> str:
@@ -151,7 +156,9 @@ def drop_index(memory: Store, slug: str = "") -> None:
     # append a second copy of every vector into indexes the drop had missed.
     prefix = patch_stream_for(slug, "x").rsplit("_x", 1)[0]
     members = [name for name in memory.list_streams() if name.startswith(prefix)]
-    names = [keyframes, patches, *members] + ([COMPLETE_STREAM] if not slug else [])
+    names = [keyframes, patches, thumbnail_stream_for(slug), *members] + (
+        [COMPLETE_STREAM] if not slug else []
+    )
     for name in names:
         if name in memory.list_streams():
             memory.delete_stream(name)
@@ -471,6 +478,11 @@ def main(
         "One = the classic single model; several = an ensemble pooled per cell. "
         "When reusing a db its own members are used.",
     ),
+    flat: bool = typer.Option(
+        False,
+        help="Write the flat layout: self-contained patch rows plus a depth-thumbnail "
+        "stream, no keyframe blob. The query side does not read it yet.",
+    ),
     index_name: str = typer.Option(
         "",
         help="Name this index instead of deriving it from the checkpoints. Use it to "
@@ -554,6 +566,7 @@ def main(
                     ),
                     max_depth_m=max_depth,
                     depth2depth_model=depth2depth_model_of(depth2depth),
+                    flat=flat,
                 ),
                 slug=slug,
             )
