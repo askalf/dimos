@@ -302,3 +302,13 @@ measured base routing, then ACT placement into the tray on seed 352002. Both
 actions report success without recovery. Matched-seed offline comparison is
 still running. This verifies the integrated route and actual DimOS trajectory
 validation, not just an offline geometric plan.
+
+Saved the fix as eb2246f66f and fast-forwarded the original R1Pro worktree to it;
+commit hooks passed and no co-author trailer was added. The two matched checks
+starting at seed 352002 each passed 2/2, but that evaluator chooses table/tray
+tasks by the layout's index in the run, so this shortened run tested table
+placement, not the original index-2 tray task. A full matched comparison is now
+detached as `jobs/primitive-matched-eval-v1`, parent PID 1689153: baseline and
+refined policies, both arms, seeds 352000..352003 in their original task order,
+30 actions, updated collision routing. Check its status.json and each result.json.
+No new training is running and no model was promoted.
