@@ -12,23 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unitree G1 GR00T WBC + Quest teleop + manipulation + recording.
+"""Unitree G1 GR00T WBC + WebXR teleop + manipulation + recording.
 
 The GR00T locomotion/control core (without navigation, mapping, or the legacy
-viewer) plus the Quest WebXR retargeting module, upper-body manipulation, and
-the dimos.imitation data-collection stack. ``--simulation mujoco`` and
-``--scene-package`` remain supported. Put on the headset, open
+viewer) plus the WebXR retargeting module, collision-aware arm
+manipulation, and the dimos.imitation data-collection stack. ``--simulation
+mujoco`` and ``--scene-package`` remain supported. Put on the headset, open
 ``https://<host>:8443/teleop``, and:
 
-    left stick        walk forward/back (+ yaw in strafe mode)
-    right stick       yaw (press = zero-Twist e-stop)
     X + A             hold to track both arms from a shared reference
     B                 start / save an episode
     Y                 discard the in-progress episode
 
 Controller poses route to the shared ``teleop_g1`` coordinator task declared
-in the groot blueprint. With no autonomous navigation in this stack, Quest
-locomotion connects directly to the GR00T WBC task.
+in the groot blueprint. WebXR thumbstick locomotion is intentionally deferred;
+this module does not route controller axes to the GR00T WBC task.
 
 Recording runs continuously into a timestamped session DB under
 ``~/.local/state/dimos/recordings/``; B/Y only place episode markers
@@ -66,8 +64,8 @@ from dimos.robot.unitree.g1.blueprints.basic.unitree_g1_groot_wbc import (
     _G1GrootCoordinator,
     _unitree_g1_groot_wbc_core,
 )
-from dimos.robot.unitree.g1.manip_config import g1_upper_body_model_config
-from dimos.teleop.webxr.extensions import MobileVideoArmTeleopModule
+from dimos.robot.unitree.g1.manip_config import g1_manipulation_model_config
+from dimos.teleop.webxr.extensions import VideoArmTeleopModule
 
 
 class G1CollectionRecorder(CollectionRecorder):
@@ -109,16 +107,16 @@ def _camera_if_real() -> tuple[Blueprint, ...]:
 
 
 class G1ManipulationModule(ManipulationModule):
-    """Own the fixed, stationary-only G1 upper-body planning model."""
+    """Plan arm motion against the live full-body G1 collision model."""
 
 
 unitree_g1_teleop = (
     autoconnect(
         _unitree_g1_groot_wbc_core,
-        MobileVideoArmTeleopModule.blueprint(),
+        VideoArmTeleopModule.blueprint(),
         G1ManipulationModule.blueprint(
             instance_name="G1Manipulation",
-            robots=[g1_upper_body_model_config()],
+            model=g1_manipulation_model_config(),
             visualization=ViserVisualizationConfig(host="0.0.0.0"),
         ),
         *_camera_if_real(),
@@ -140,13 +138,12 @@ unitree_g1_teleop = (
     )
     .remappings(
         [
-            (MobileVideoArmTeleopModule, "left_controller_output", "left_cartesian_command"),
-            (MobileVideoArmTeleopModule, "right_controller_output", "right_cartesian_command"),
-            (MobileVideoArmTeleopModule, "cmd_vel", "cmd_vel"),
+            (VideoArmTeleopModule, "left_controller_output", "left_cartesian_command"),
+            (VideoArmTeleopModule, "right_controller_output", "right_cartesian_command"),
             (G1ManipulationModule, "_control_coordinator", _G1GrootCoordinator),
         ]
     )
-    # Camera frames stay off the LCM bus: both consumers (quest module and
+    # Camera frames stay off the LCM bus: both consumers (WebXR module and
     # recorder) are on-box, and raw images multicast over LCM make each
     # subscribing process pay receive+decode per frame — measured at ~31 MB/s
     # and a starved coordinator tick loop on the Orin. SHM is zero-copy; an

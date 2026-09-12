@@ -26,11 +26,7 @@ from dimos.control.tasks.trajectory_task.trajectory_task import JOINT_TRAJECTORY
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.porcelain.dimos import Dimos
 from dimos.porcelain.module_handle import ModuleHandle
-from dimos.robot.unitree.g1.manip_config import (
-    G1_READY_JOINTS,
-    G1_READY_SPEED_SCALE,
-    G1_UPPER_BODY_NAME,
-)
+from dimos.robot.unitree.g1.ready_pose import G1_READY_JOINTS, G1_READY_SPEED_SCALE
 
 app = typer.Typer(help="Operate a running Unitree G1 stack safely")
 
@@ -175,9 +171,19 @@ def _enable_motor_output(
     if not _fully_armed(current):
         _abort("G1 is not fully armed; run `dimos hardware g1 arm` first")
     coordinator.set_dry_run(False)
-    enabled = _policy_state(coordinator, task_name)
-    if enabled.get("dry_run"):
-        _abort("G1 remained in dry-run after the enable request")
+    try:
+        enabled = _policy_state(coordinator, task_name)
+        if enabled.get("dry_run"):
+            _abort("G1 remained in dry-run after the enable request")
+    except BaseException as enable_error:
+        try:
+            coordinator.set_dry_run(True)
+        except BaseException as restore_error:
+            raise RuntimeError(
+                f"enable verification failed ({enable_error}); "
+                f"failed to restore dry-run ({restore_error})"
+            ) from restore_error
+        raise
     return enabled
 
 
@@ -194,8 +200,7 @@ def _execute_ready_pose(
     _require_armed_and_enabled(coordinator, task_name)
     _require_teleop_disengaged(coordinator)
     targets = {
-        f"{G1_UPPER_BODY_NAME}/{group}": JointState(position=list(positions))
-        for group, positions in G1_READY_JOINTS.items()
+        group: JointState(position=list(positions)) for group, positions in G1_READY_JOINTS.items()
     }
     planned = manipulation.plan_to_joints(targets, speed_scale=G1_READY_SPEED_SCALE)
     if not planned.succeeded:

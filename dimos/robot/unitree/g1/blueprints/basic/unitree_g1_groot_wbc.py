@@ -83,10 +83,7 @@ from dimos.robot.unitree.g1.g1_rerun import (
     g1_urdf_joint_state,
     g1_urdf_static_robot,
 )
-from dimos.robot.unitree.g1.manip_config import (
-    G1_TELEOP_ARM_MODEL,
-    G1_UPPER_BODY_JOINT_NAME_MAPPING,
-)
+from dimos.robot.unitree.g1.manip_config import G1_TELEOP_ARM_MODEL
 from dimos.robot.unitree.g1.teleop_ik import G1PinkPoseTargetSolver
 from dimos.simulation.scene_assets.spec import ScenePackage
 from dimos.utils.data import LfsPath
@@ -286,12 +283,6 @@ if global_config.simulation == "mujoco":
     _default_ramp_seconds = 0.0
     _decimation: int | None = 1
     _n_workers = 2  # sim: keep the default worker count
-    _arm_holder = joint_trajectory_task(
-        g1_arms,
-        priority=10,
-        velocity_limits={name: 1.0 for name in g1_arms},
-        hold_position_when_idle=True,
-    )
     _mapper = VoxelGridMapper.blueprint(emit_every=1)
     _nav_stack = autoconnect(
         _mapper,
@@ -316,7 +307,7 @@ else:
     from dimos.robot.unitree.g1.wholebody_connection import G1WholeBodyConnection
 
     # Real-hw backend: DDS connection module + transport_lcm adapter.
-    _backend = G1WholeBodyConnection.blueprint()
+    _backend = G1WholeBodyConnection.blueprint(release_sport_mode=True)
     _adapter_type = "transport_lcm"
     _adapter_address = ""
     # The onboard Jetson can't sustain a 500 Hz tick; it collapses to ~90 Hz
@@ -330,12 +321,6 @@ else:
     _decimation = 2  # 100 Hz tick / 2 = 50 Hz policy (training + sim rate).
     # One process per heavy module; fewer workers starve the Rerun bridge.
     _n_workers = 10
-    _arm_holder = joint_trajectory_task(
-        g1_arms,
-        priority=10,
-        velocity_limits={name: 1.0 for name in g1_arms},
-        hold_position_when_idle=True,
-    )
     # Same nav middle as unitree-g1-nav-simple, fed by Point-LIO from the
     # MID-360, executed through the coordinator's twist_command.
     _nav_stack = autoconnect(
@@ -365,6 +350,13 @@ else:
     _nav_remappings = []
 
 
+_arm_trajectory_task = joint_trajectory_task(
+    g1_arms,
+    priority=10,
+    velocity_limits={name: 1.0 for name in g1_arms},
+)
+
+
 def _g1_groot_rerun_blueprint() -> Any:
     import rerun as rr
     import rerun.blueprint as rrb
@@ -391,15 +383,10 @@ def _g1_nav_path(path: NavPath) -> Any:
 _G1_ROOT = G1_RERUN_ROOT if global_config.simulation == "mujoco" else "world/odometry/g1"
 
 _G1_URDF_PATH = Path(__file__).resolve().parents[2] / "g1.urdf"
-_G1_ARM_JOINT_NAME_MAPPING = {
-    joint_name: G1_UPPER_BODY_JOINT_NAME_MAPPING[joint_name] for joint_name in g1_arms
-}
 _G1_TELEOP_MODEL = RobotModelConfig(
-    name="g1_arms",
     model=G1_TELEOP_ARM_MODEL,
-    joint_names=list(_G1_ARM_JOINT_NAME_MAPPING.values()),
+    joint_names=list(g1_arms),
     base_link="pelvis",
-    joint_name_mapping=_G1_ARM_JOINT_NAME_MAPPING,
 )
 _G1_TELEOP_PINK = PinkKinematicsConfig(
     dt=0.01,
@@ -536,8 +523,8 @@ _coordinator = _G1GrootCoordinator.blueprint(
                 "decimation": _decimation,
             },
         ),
-        _arm_holder,
-        # Shared bimanual Quest task with G1-only model and objective tuning.
+        _arm_trajectory_task,
+        # Shared bimanual WebXR task with G1-only model and objective tuning.
         TaskConfig(
             name="teleop_g1",
             type="teleop_ik",

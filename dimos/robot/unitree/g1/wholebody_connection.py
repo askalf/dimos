@@ -84,6 +84,7 @@ def _imu_from_unitree_wxyz(
 
 class G1WholeBodyConnectionConfig(ModuleConfig):
     network_interface: str = Field(default="")
+    release_sport_mode: bool = True
     publish_rate_hz: float = 500.0
     frame_id: str = "g1_pelvis"
     mode_machine: int = _MODE_MACHINE_G1
@@ -498,7 +499,8 @@ class G1WholeBodyConnection(Module):
                 return True
             try:
                 logger.info("First prepared command received; releasing sport mode...")
-                self._release_sport_mode()
+                if self.config.release_sport_mode:
+                    self._release_sport_mode()
             except Exception:
                 logger.exception("Failed to release sport mode; dropping motor command")
                 return False

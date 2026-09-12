@@ -23,7 +23,7 @@ from dimos.control.tasks.g1_sonic_wbc_task.sonic_diagnostics import (
     SonicDiagnosticCheck,
     SonicDiagnosticReport,
 )
-from dimos.robot.unitree.g1.manip_config import G1_READY_JOINTS, G1_READY_SPEED_SCALE
+from dimos.robot.unitree.g1.ready_pose import G1_READY_JOINTS, G1_READY_SPEED_SCALE
 
 runner = CliRunner()
 
@@ -435,9 +435,9 @@ def test_ready_plans_both_arms_at_conservative_speed(mocker) -> None:
 
     assert result.exit_code == 0, result.output
     targets = manipulation.plan_to_joints.call_args.args[0]
-    assert set(targets) == {"g1_upper_body/left_arm", "g1_upper_body/right_arm"}
-    assert tuple(targets["g1_upper_body/left_arm"].position) == G1_READY_JOINTS["left_arm"]
-    assert tuple(targets["g1_upper_body/right_arm"].position) == G1_READY_JOINTS["right_arm"]
+    assert set(targets) == {"left_arm", "right_arm"}
+    assert tuple(targets["left_arm"].position) == G1_READY_JOINTS["left_arm"]
+    assert tuple(targets["right_arm"].position) == G1_READY_JOINTS["right_arm"]
     assert manipulation.plan_to_joints.call_args.kwargs == {"speed_scale": G1_READY_SPEED_SCALE}
     manipulation.execute.assert_called_once_with(blocking=True)
 
@@ -528,3 +528,56 @@ def test_disable_attempts_every_safety_action(mocker) -> None:
     coordinator.cancel_trajectory.assert_called_once_with()
     coordinator.set_dry_run.assert_called_once_with(True)
     coordinator.set_activated.assert_called_once_with(False)
+
+
+def test_enable_snapshot_failure_restores_dry_run(mocker) -> None:
+    coordinator = _coordinator()
+    coordinator.task_invoke.side_effect = [
+        _state(armed=True, dry_run=True),
+        RuntimeError("state snapshot timed out"),
+    ]
+    client = _Client(coordinator)
+    mocker.patch.object(g1_cli.Dimos, "connect", return_value=client)
+
+    result = runner.invoke(g1_cli.app, ["enable"])
+
+    assert result.exit_code == 1
+    assert "state snapshot timed out" in result.output
+    assert coordinator.set_dry_run.call_args_list == [mocker.call(False), mocker.call(True)]
+    assert client.stopped
+
+
+def test_enable_reports_snapshot_and_dry_run_restore_failures(mocker) -> None:
+    coordinator = _coordinator()
+    coordinator.task_invoke.side_effect = [
+        _state(armed=True, dry_run=True),
+        RuntimeError("state snapshot timed out"),
+    ]
+    coordinator.set_dry_run.side_effect = [None, RuntimeError("restore failed")]
+    client = _Client(coordinator)
+    mocker.patch.object(g1_cli.Dimos, "connect", return_value=client)
+
+    result = runner.invoke(g1_cli.app, ["enable"])
+
+    assert result.exit_code == 1
+    assert "state snapshot timed out" in result.output
+    assert "restore failed" in result.output
+    assert coordinator.set_dry_run.call_args_list == [mocker.call(False), mocker.call(True)]
+    assert client.stopped
+
+
+def test_enable_failed_verification_reasserts_dry_run(mocker) -> None:
+    coordinator = _coordinator()
+    coordinator.task_invoke.side_effect = [
+        _state(armed=True, dry_run=True),
+        _state(armed=True, dry_run=True),
+    ]
+    client = _Client(coordinator)
+    mocker.patch.object(g1_cli.Dimos, "connect", return_value=client)
+
+    result = runner.invoke(g1_cli.app, ["enable"])
+
+    assert result.exit_code == 1
+    assert "remained in dry-run" in result.output
+    assert coordinator.set_dry_run.call_args_list == [mocker.call(False), mocker.call(True)]
+    assert client.stopped

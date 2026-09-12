@@ -481,11 +481,9 @@ robot asset cache. Use `LfsPath` only when the description is intentionally
 vendored, locally modified, or has no suitable upstream source.
 
 If the planning blueprint selects the RoboPlan TOPP-RA trajectory
-parametrizer, dimOS currently pins RoboPlan to `0.5.1`. Every movable joint in
-each selected planning group must provide finite, positive velocity limits.
-Authored extended acceleration limits take precedence; when absent, dimOS
-temporarily inserts a global `2.0 rad/s²` acceleration fallback during RoboPlan
-model composition:
+parametrizer, dimOS requires RoboPlan `0.6.x`. Every movable joint in
+each selected planning group must provide finite, positive velocity and
+acceleration limits. An authored extended acceleration limit is accepted:
 
 ```xml
 <joint name="joint1" type="revolute">
@@ -500,11 +498,17 @@ model composition:
 </joint>
 ```
 
-RoboPlan loads both limits from its scene model. If either is absent, zero,
-negative, or non-finite, plan materialization fails before preview or execution
-and identifies the affected joint. dimOS does not substitute
-`RobotModelConfig.max_velocity`, `velocity_limits`, or `max_acceleration` for
-this backend. Formal per-joint dimOS overrides will be added separately.
+Standard URDF has no acceleration attribute. When the source omits it, apply
+an explicit robot-level default before building `RobotModelConfig`:
+
+```python skip
+model = RobotModel.from_file(urdf_path).with_default_joint_acceleration_limit(2.0)
+```
+
+The model is materialized and validated once. All planning backends then use
+the same compiled position, velocity, and acceleration semantics. Missing,
+zero, negative, or non-finite limits fail startup and identify the affected
+joint.
 
 ```python skip
 from dimos.manipulation.manipulation_module import manipulation_module
@@ -515,7 +519,6 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.robot.assets.model import RobotModel
 from dimos.robot.assets.source import RobotDescriptionSource
-from dimos.robot.manipulators._modeling import coordinator_joint_mapping
 
 _YOURARM_REPO = RobotDescriptionSource(
     url="https://github.com/example/yourarm_description",
@@ -536,25 +539,20 @@ def _make_base_pose(x=0.0, y=0.0, z=0.0) -> PoseStamped:
 ### 4b. Create a robot model config helper
 
 ```python skip
-def _make_yourarm_config(
-    name: str = "arm",
-    y_offset: float = 0.0,
-) -> RobotModelConfig:
+def _make_yourarm_config(y_offset: float = 0.0) -> RobotModelConfig:
     """Create YourArm robot config for planning.
 
     Args:
-        name: Robot name in the Drake planning world.
-        y_offset: Y-axis offset for multi-arm setups.
+        y_offset: Y-axis offset for model placement.
     """
     # These must match the joint names in your URDF
-    joint_names = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+    joint_names = [f"arm/joint{i}" for i in range(1, 7)]
 
     return RobotModelConfig(
-        name=name,
         model=RobotModel.from_file(
             _YOURARM_URDF_PATH,
             package_paths=_YOURARM_PACKAGE_PATHS,
-        ),
+        ).with_default_joint_acceleration_limit(2.0),
         joint_names=joint_names,
         planning_groups=[
             PlanningGroupDefinition(
@@ -568,9 +566,6 @@ def _make_yourarm_config(
         base_link="base_link",                 # Robot-scoped placement/weld/strip link
         collision_exclusion_pairs=[],   # Pairs of links that can touch (e.g., gripper fingers)
         auto_convert_meshes=True,       # Convert DAE/STL meshes for Drake
-        joint_name_mapping=coordinator_joint_mapping(name, 6),
-        max_velocity=1.0,               # Max velocity scaling factor
-        max_acceleration=2.0,           # Max acceleration scaling factor
     )
 ```
 
@@ -581,7 +576,7 @@ Add this to your `dimos/robot/yourarm/blueprints.py` alongside the coordinator b
 ```python skip
 
 yourarm_planner = manipulation_module(
-    robots=[_make_yourarm_config("arm")],
+    model=_make_yourarm_config(),
     planning_timeout=10.0,
     visualization={"backend": "meshcat"},
     trajectory_parametrization={"backend": "simple_trapezoid"},
@@ -600,7 +595,7 @@ parametrizer after adding the URDF limits described above:
 
 ```python skip
 yourarm_planner = manipulation_module(
-    robots=[_make_yourarm_config("arm")],
+    model=_make_yourarm_config(),
     world_backend="roboplan",
     trajectory_parametrization={
         "backend": "roboplan_toppra",
@@ -616,16 +611,14 @@ yourarm_planner = manipulation_module(
 | Field | Description |
 |-------|-------------|
 | `model` | Lazy `RobotModel` created from a `.urdf` or `.xacro` source |
-| `joint_names` | Ordered controllable local model joint set (must match URDF); not itself a planning group |
+| `joint_names` | Ordered canonical model joint set (must match the URDF and coordinator); not itself a planning group |
 | `planning_groups` / `srdf_path` | Explicit planning groups or SRDF source; direct `RobotModelConfig(...)` helpers should pass explicit groups, while shared config helpers can discover groups from SRDF/fallback |
 | `base_pose` / `base_link` | Optional robot placement: `base_pose` places `base_link` in the world for weld/strip behavior |
 | `collision_exclusion_pairs` | List of `(link_a, link_b)` tuples for links that may legitimately touch (e.g., gripper fingers) |
-| `joint_name_mapping` | Maps coordinator names such as `arm/joint1` to local URDF names such as `joint1` |
 
-Coordinator-facing joint states and trajectories use global joint names derived
-mechanically as `{robot_name}/{local_joint_name}` (for example, `arm/joint1`).
-Keep hardware-native name translation inside the hardware adapter; manipulation
-planning config uses local model joint names.
+Coordinator-facing joint states and trajectories use the model's canonical
+joint names unchanged. Keep hardware-native name translation inside the
+hardware adapter.
 
 Planning-group `base_link`/`tip_link` values define kinematic chains and pose
 target frames. `base_link` is only the robot-scoped link placed by

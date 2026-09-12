@@ -19,7 +19,7 @@ from dimos.robot.all_blueprints import all_blueprints
 from dimos.robot.get_all_blueprints import get_blueprint_by_name
 
 # Optional dependencies that are allowed to be missing
-OPTIONAL_DEPENDENCIES = {"pyrealsense2", "pyzed", "geometry_msgs", "turbojpeg", "unitree_sdk2py"}
+OPTIONAL_DEPENDENCIES = {"pyzed", "geometry_msgs", "turbojpeg", "unitree_sdk2py"}
 OPTIONAL_ERROR_SUBSTRINGS = {
     "Unable to locate turbojpeg library automatically",
     "ZED SDK not installed",
@@ -67,8 +67,10 @@ SELF_HOSTED_BLUEPRINTS = frozenset(
         "teleop-webxr-xarm7-video",
         "unitree-g1-sonic-wbc",
         "unitree-g1-sonic-webxr-teleop",
-        "xarm-perception",
-        "xarm-perception-agent",
+        "xarm-grasp",
+        "xarm-grasp-agent",
+        "xarm-grasp-graspgenx",
+        "xarm-grasp-graspgenx-agent",
         "xarm-perception-sim",
         "xarm-perception-sim-agent",
         "xarm7-planner-coordinator",

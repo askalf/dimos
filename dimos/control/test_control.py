@@ -61,6 +61,7 @@ from dimos.control.tasks.trajectory_task.trajectory_task import (
 from dimos.control.tick_loop import TickLoop
 from dimos.core.stream import In
 from dimos.hardware.manipulators.spec import ManipulatorAdapter
+from dimos.hardware.spec import JointLimits
 from dimos.hardware.whole_body.spec import MotorState, WholeBodyAdapter
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.TwistStamped import TwistStamped
@@ -202,6 +203,34 @@ class TestJointStateSnapshot:
 
 
 class TestConnectedHardware:
+    def test_configured_limits_override_adapter_limits(self, mock_adapter):
+        configured = JointLimits(
+            position_lower=[0.0],
+            position_upper=[1.0],
+            velocity_max=[2.0],
+        )
+        component = HardwareComponent(
+            hardware_id="gripper",
+            hardware_type=HardwareType.MANIPULATOR,
+            joints=["gripper/finger"],
+            limits=configured,
+        )
+        hardware = ConnectedHardware(mock_adapter, component)
+
+        assert hardware.get_limits() is configured
+        mock_adapter.get_limits.assert_not_called()
+
+    def test_adapter_limits_are_used_when_not_configured(self, connected_hardware, mock_adapter):
+        reported = JointLimits(
+            position_lower=[-1.0] * 6,
+            position_upper=[1.0] * 6,
+            velocity_max=[2.0] * 6,
+        )
+        mock_adapter.get_limits.return_value = reported
+
+        assert connected_hardware.get_limits() is reported
+        mock_adapter.get_limits.assert_called_once_with()
+
     def test_gripper_rides_the_one_array_without_conversion(self, mock_adapter):
         mock_adapter.read_joint_positions.return_value = [0.0] * 6 + [0.035]
         mock_adapter.read_joint_velocities.return_value = [0.0] * 7
@@ -424,42 +453,20 @@ class TestControlCoordinatorLifecycle:
                 super().disconnect()
 
         adapter_registry.register("lifecycle_test", LifecycleAdapter)
-
-        class OrderedCoordinator(ControlCoordinator):
-            def _create_task_from_config(self, config: TaskConfig):
-                LifecycleAdapter.events.append("task_created")
-                return super()._create_task_from_config(config)
-
         component = HardwareComponent(
             hardware_id="arm",
             hardware_type=HardwareType.MANIPULATOR,
             joints=make_joints("arm", 6),
             adapter_type="lifecycle_test",
         )
-        task = TaskConfig(
-            name=JOINT_TRAJECTORY_TASK_NAME,
-            type="trajectory",
-            joint_names=make_joints("arm", 6),
-        )
-        coordinator = OrderedCoordinator(
-            publish_joint_state=False,
-            hardware=[component],
-            tasks=[task],
-        )
+        coordinator = ControlCoordinator(publish_joint_state=False, hardware=[component])
 
         try:
             coordinator.start()
         finally:
             coordinator.stop()
-            coordinator.stop()
 
-        assert LifecycleAdapter.events == [
-            "connect",
-            "task_created",
-            "activate",
-            "deactivate",
-            "disconnect",
-        ]
+        assert LifecycleAdapter.events == ["connect", "activate", "deactivate", "disconnect"]
 
     def test_start_stop_with_adapter_without_lifecycle_methods(self):
         """Adapters without activate/deactivate (e.g. twist bases) start and stop cleanly."""
@@ -571,55 +578,6 @@ class TestJointTrajectoryTask:
         assert not trajectory_task.is_active()
         assert trajectory_task.get_state() == TrajectoryState.IDLE
 
-    def test_idle_hold_latches_measured_positions(self):
-        task = JointTrajectoryTask(
-            JointTrajectoryTaskConfig(
-                joint_names=["arm/joint1", "arm/joint2"],
-                hold_position_when_idle=True,
-            )
-        )
-        state = JointStateSnapshot(joint_positions={"arm/joint1": 0.25, "arm/joint2": -0.5})
-
-        output = task.compute(CoordinatorState(joints=state, t_now=1.0, dt=0.1))
-
-        assert task.is_active()
-        assert output is not None
-        assert output.joint_names == ["arm/joint1", "arm/joint2"]
-        assert output.positions == [0.25, -0.5]
-
-    def test_idle_hold_retains_final_target_after_trajectory(self):
-        task = JointTrajectoryTask(
-            JointTrajectoryTaskConfig(
-                joint_names=["arm/joint1", "arm/joint2"],
-                start_position_tolerance=2.0,
-                velocity_limits={"arm/joint1": 10.0, "arm/joint2": 10.0},
-                hold_position_when_idle=True,
-            )
-        )
-        trajectory = JointTrajectory(
-            joint_names=["arm/joint1"],
-            points=[
-                TrajectoryPoint(
-                    positions=[1.0],
-                    velocities=[0.0],
-                    time_from_start=0.0,
-                )
-            ],
-        )
-        state = JointStateSnapshot(joint_positions={"arm/joint1": 0.0, "arm/joint2": -0.5})
-        assert (
-            task.execute(trajectory, {"arm/joint1": 0.0}).status
-            is TrajectoryExecutionStatus.ACCEPTED
-        )
-
-        completed = task.compute(CoordinatorState(joints=state, t_now=1.0, dt=0.1))
-        held = task.compute(CoordinatorState(joints=state, t_now=1.1, dt=0.1))
-
-        assert completed is not None
-        assert completed.positions == [1.0, -0.5]
-        assert held is not None
-        assert held.positions == [1.0, -0.5]
-
     def test_claim(self, trajectory_task):
         claim = trajectory_task.claim()
         assert claim.priority == 10
@@ -634,6 +592,32 @@ class TestJointTrajectoryTask:
         assert result.status is TrajectoryExecutionStatus.ACCEPTED
         assert trajectory_task.is_active()
         assert trajectory_task.get_state() == TrajectoryState.EXECUTING
+
+    def test_joint_command_handler_converts_claimed_positions(self, trajectory_task):
+        accepted = trajectory_task.on_joint_command(
+            JointState(
+                name=["arm/joint2", "other/joint"],
+                position=[0.25, 9.0],
+            ),
+            t_now=1.0,
+        )
+
+        assert accepted
+        assert trajectory_task._trajectory is not None
+        assert trajectory_task._trajectory.joint_names == ["arm/joint2"]
+        assert trajectory_task._trajectory.points[-1].positions == [0.25]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            JointState(name=["arm/joint1"], velocity=[0.5]),
+            JointState(name=["arm/joint1", "arm/joint2"], position=[0.5]),
+            JointState(name=["other/joint"], position=[0.5]),
+        ],
+    )
+    def test_joint_command_handler_ignores_non_position_commands(self, trajectory_task, command):
+        assert not trajectory_task.on_joint_command(command, t_now=1.0)
+        assert trajectory_task._trajectory is None
 
     def test_status_snapshot_is_non_destructive(self, trajectory_task, simple_trajectory):
         trajectory_task.execute(simple_trajectory, trajectory_start_positions(simple_trajectory))
@@ -939,6 +923,50 @@ class TestJointTrajectoryTask:
         after = task.compute(CoordinatorState(joints=state, t_now=1.1, dt=0.1))
         assert after is not None
         assert after.positions == [pytest.approx(0.0), pytest.approx(-0.2)]
+
+    def test_partial_replacement_status_includes_untouched_joint_run(self):
+        task = JointTrajectoryTask(
+            JointTrajectoryTaskConfig(
+                joint_names=["arm/joint1", "arm/joint2"],
+                velocity_limits={"arm/joint1": 1000.0, "arm/joint2": 1000.0},
+            )
+        )
+        state = JointStateSnapshot(joint_positions={"arm/joint1": 0.0, "arm/joint2": 0.0})
+        long_trajectory = JointTrajectory(
+            joint_names=["arm/joint1", "arm/joint2"],
+            points=[
+                TrajectoryPoint(positions=[0.0, 0.0], velocities=[0.0, 0.0]),
+                TrajectoryPoint(
+                    positions=[10.0, 10.0],
+                    velocities=[0.0, 0.0],
+                    time_from_start=10.0,
+                ),
+            ],
+        )
+        replacement = JointTrajectory(
+            joint_names=["arm/joint1"],
+            points=[
+                TrajectoryPoint(positions=[2.5], velocities=[0.0]),
+                TrajectoryPoint(positions=[3.5], velocities=[0.0], time_from_start=1.0),
+            ],
+        )
+
+        assert (
+            task.execute(long_trajectory, state.joint_positions).status
+            is TrajectoryExecutionStatus.ACCEPTED
+        )
+        task.compute(CoordinatorState(joints=state, t_now=10.0, dt=0.1))
+        task.compute(CoordinatorState(joints=state, t_now=12.5, dt=0.1))
+        assert task.execute(replacement, {}).status is TrajectoryExecutionStatus.ACCEPTED
+        task.compute(CoordinatorState(joints=state, t_now=12.5, dt=0.1))
+        task.compute(CoordinatorState(joints=state, t_now=13.5, dt=0.1))
+
+        status = task.get_status(13.5)
+
+        assert status.state is TrajectoryState.EXECUTING
+        assert status.progress == pytest.approx(0.35)
+        assert status.time_elapsed == pytest.approx(3.5)
+        assert status.time_remaining == pytest.approx(6.5)
 
     def test_cancel_trajectory(self, trajectory_task, simple_trajectory):
         trajectory_task.execute(simple_trajectory, trajectory_start_positions(simple_trajectory))

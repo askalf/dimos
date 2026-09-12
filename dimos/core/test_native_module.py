@@ -25,7 +25,7 @@ from pathlib import Path
 import time
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pydantic import ValidationError
 import pytest
@@ -39,11 +39,13 @@ from dimos.core.module import Module
 from dimos.core.native_module import LogFormat, NativeModule, NativeModuleConfig
 from dimos.core.stream import IO, In, Out
 from dimos.core.transport import LCMTransport, ZenohTransport
+from dimos.core.transport_factory import make_transport, rpc_backend, transport_topic
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.protocol.pubsub.impl.zenohpubsub import QOS_NEVER_DROP, Topic as ZenohTopic
+from dimos.protocol.service import zenohservice
 from dimos.protocol.service.zenohservice import ZenohConfig
 
 _ECHO = str(Path(__file__).parent / "demos" / "native_echo.py")
@@ -236,7 +238,7 @@ def test_autoconnect(args_file: str) -> None:
         StubProducer.blueprint(),
     ).transports(
         {
-            ("pointcloud", PointCloud2): LCMTransport("/my/custom/lidar", PointCloud2),
+            ("pointcloud", PointCloud2): make_transport("/my/custom/lidar", PointCloud2),
         },
     )
 
@@ -256,7 +258,7 @@ def test_autoconnect(args_file: str) -> None:
         assert producer.cmd_vel.transport.topic == native.cmd_vel.transport.topic
 
         # Custom transport was applied
-        assert native.pointcloud.transport.topic.topic == "/my/custom/lidar"
+        assert native.pointcloud.transport.topic.topic == transport_topic("/my/custom/lidar")
 
         # Wait for the native subprocess to write the output file
         for _ in range(50):
@@ -266,10 +268,12 @@ def test_autoconnect(args_file: str) -> None:
     finally:
         coordinator.stop()
 
+    # A native module is handed each stream's wire channel, which the two
+    # backends spell differently -- ask the factory rather than pinning one.
     assert read_json_file(args_file) == {
-        "cmd_vel": "/cmd_vel#geometry_msgs.Twist",
-        "pointcloud": "/my/custom/lidar#sensor_msgs.PointCloud2",
-        "imu": "/imu#sensor_msgs.Imu",
+        "cmd_vel": make_transport("/cmd_vel", Twist).channel,
+        "pointcloud": make_transport("/my/custom/lidar", PointCloud2).channel,
+        "imu": make_transport("/imu", Imu).channel,
         "output_file": args_file,
         "some_param": "2.5",
     }
@@ -302,6 +306,11 @@ def test_build_native_forces_build(tmp_path: Path) -> None:
 
 def _launch(monkeypatch, transport: TransportBackend, **config_kwargs: Any) -> dict[str, Any]:
     """The launch line the native subprocess would get, without spawning it."""
+
+    def unexpected_open(*args, **kwargs):
+        raise AssertionError("Serializing native configuration must not open a Zenoh session")
+
+    monkeypatch.setattr(zenohservice.zenoh, "open", unexpected_open)
     monkeypatch.setattr(native_module_mod.global_config, "transport", transport)
     monkeypatch.setattr(native_module_mod.global_config, "robot_ip", "192.0.2.10")
     monkeypatch.setattr(native_module_mod.global_config, "robot_ips", None)
@@ -309,7 +318,12 @@ def _launch(monkeypatch, transport: TransportBackend, **config_kwargs: Any) -> d
     monkeypatch.setattr(native_module_mod.global_config, "zenoh_scouting", False)
     monkeypatch.setattr(native_module_mod.global_config, "zenoh_mode", "peer")
     monkeypatch.setattr(native_module_mod.global_config, "zenoh_connect", "")
-    # A port-less module: constructing one with ports opens its transports.
+    # Construction starts RPC even without ports. Serialization needs neither
+    # a live RPC server nor a session retained in the process-default pool.
+    backend = rpc_backend()
+    monkeypatch.setattr(backend, "start", Mock())
+    monkeypatch.setattr(backend, "serve_module_rpc", Mock())
+    monkeypatch.setattr(backend, "stop", Mock())
     module = StubBuildModule(executable=_ECHO, stdin_config=True, **config_kwargs)
     try:
         return json.loads(module._stdin_blob({}))
