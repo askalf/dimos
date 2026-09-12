@@ -210,3 +210,16 @@ Remaining: inspect refinement and queued native outcomes; improve the remaining
 failures, validate arbitrary supported regions and both-hand contexts, then
 promote explicitly. House delivery/general support heights remain outside the
 new primitive bench's validated scope. The original interactive demo is retained.
+
+Supplement finished successfully: seven additional left-arm examples were
+accepted, bringing correction counts to right 9 / left 14, each alongside the
+30 original placement demonstrations. The initial seven-example left manifest is
+retained as `manifest-before-supplement.json`; supplemental arrays are referenced
+by absolute path and not copied or rewritten. Right fine-tuning is running;
+left fine-tuning and automatic DimOS/MCP validation are queued.
+
+The user asked what "SDK" / "native" meant. Clarified that all commands use DimOS:
+ManipulationModule, ACT runtimes, ControlCoordinator, and the blueprint/MCP
+interface. RoboPlan is a dependency inside DimOS; only the demo planner selection
+changed to DimOS RRTConnectPlanner with the existing RoboPlanWorld. Use specific
+DimOS module names in further explanations to avoid implying another robot stack.
