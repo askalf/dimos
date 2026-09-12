@@ -237,3 +237,33 @@ def test_transform_matrix_is_a_proper_pose() -> None:
     )
     moved = matrix @ np.array([1.0, 0.0, 0.0, 1.0])
     assert np.allclose(moved[:3], [1.0, 3.0, 3.0], atol=1e-9)
+
+
+def test_one_photograph_counts_once_however_many_records_it_arrives_as() -> None:
+    """The segment channel mints a Keyframe per segment RECORD, so one frame can
+    arrive as a dozen. Evidence keys on (camera_frame, ts), so it still counts once."""
+    config = QueryConfig()
+    one = [(("cam", 10.0), 0.1, 0)]
+    one_photo_twelve_records = one * 12
+    two_photos = [(("cam", 10.0), 0.1, 0), (("cam", 10.5), 0.1, 0)]
+    assert pool(one_photo_twelve_records, config) == pool(one, config)
+    assert pool(two_photos, config) > pool(one_photo_twelve_records, config)
+
+
+def test_keyframe_viewpoint_is_the_camera_and_the_moment_not_the_id() -> None:
+    depth = np.ones(4, dtype=np.float32)
+
+    def frame(id_: int) -> Keyframe:
+        return Keyframe(
+            id=id_,
+            camera_frame="cam",
+            ts=10.0,
+            rows=2,
+            cols=2,
+            intrinsics=CAMERA,
+            patch_depth=depth,
+        )
+
+    # Two segment records of one photograph: different ids, same viewpoint.
+    assert frame(-3).viewpoint == frame(-17).viewpoint
+    assert frame(-3).id != frame(-17).id

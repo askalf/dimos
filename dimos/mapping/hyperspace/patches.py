@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Hashable, Iterable
 
     from numpy.typing import NDArray
 
@@ -277,6 +277,19 @@ class Keyframe:
     intrinsics: Intrinsics
     patch_depth: NDArray[np.float32]
 
+    @property
+    def viewpoint(self) -> tuple[str, float]:
+        """The camera and the moment, which is what "seen from N frames" means.
+
+        Not ``id``: the segment channel mints one Keyframe per segment RECORD
+        (``HyperspaceQuery.segment_keyframe``), so a single photograph carries
+        many ids -- a median of 15 and a tail of 49 on sf_office_drive1. Keying
+        evidence on ``id`` counted one photograph as that many independent
+        views. Every keyframe and segment stamp is an exact stamp of the colour
+        stream it was cut from, so this pair names one real frame.
+        """
+        return (self.camera_frame, self.ts)
+
 
 @dataclass
 class QueryConfig:
@@ -401,12 +414,17 @@ def rasterize_pyramid(
     ]
 
 
-def pool(evidence: Iterable[tuple[int, float, int]], config: QueryConfig) -> float:
-    """max per frame -> log-sum-exp across frames -> x sqrt(hot yaw bins)."""
-    best: dict[int, tuple[float, int]] = {}
-    for keyframe_id, score, yaw_bin in evidence:
-        if keyframe_id not in best or score > best[keyframe_id][0]:
-            best[keyframe_id] = (score, yaw_bin)
+def pool(evidence: Iterable[tuple[Hashable, float, int]], config: QueryConfig) -> float:
+    """max per frame -> log-sum-exp across frames -> x sqrt(hot yaw bins).
+
+    The first element of each tuple is a *viewpoint* (see ``Keyframe.viewpoint``),
+    so two patches cut from the same photograph count once however many records
+    they arrived as.
+    """
+    best: dict[Hashable, tuple[float, int]] = {}
+    for viewpoint, score, yaw_bin in evidence:
+        if viewpoint not in best or score > best[viewpoint][0]:
+            best[viewpoint] = (score, yaw_bin)
     scores = np.array([s for s, _ in best.values()], dtype=np.float64)
     t = max(config.lse_temperature, 1e-6)
     top = scores.max()
@@ -461,8 +479,11 @@ def heatmap(
 ) -> Heatmap:
     """Place every hot patch's pyramid through ``place`` (keyframe -> 4x4
     target_from_camera, or None when tf cannot), rasterize, pool, normalize."""
+    # Poses cache by keyframe id (cheap and exact: every record of one
+    # photograph resolves to the same pose). Evidence keys by viewpoint,
+    # because that is what "seen from N frames" has to mean.
     poses: dict[int, NDArray[np.floating] | None] = {}
-    evidence: dict[tuple[int, int, int], list[tuple[int, float, int]]] = {}
+    evidence: dict[tuple[int, int, int], list[tuple[Hashable, float, int]]] = {}
     without_depth = 0
     for hot in hot_patches:
         if hot.keyframe.id not in poses:
@@ -475,10 +496,10 @@ def heatmap(
             without_depth += 1
             continue
         for index, yaw_bin in rasterize_pyramid(hot, pose, voxel_size, config):
-            evidence.setdefault(index, []).append((hot.keyframe.id, hot.score, yaw_bin))
+            evidence.setdefault(index, []).append((hot.keyframe.viewpoint, hot.score, yaw_bin))
     scored = normalize([(index, pool(hits, config)) for index, hits in evidence.items()], config)
     support = {
-        index: (len({f for f, _, _ in hits}), len({b for _, _, b in hits}))
+        index: (len({v for v, _, _ in hits}), len({b for _, _, b in hits}))
         for index, hits in evidence.items()
     }
     return Heatmap(
@@ -489,7 +510,13 @@ def heatmap(
         stats={
             "hot_patches": len(hot_patches),
             "hot_patches_without_depth": without_depth,
-            "keyframes_placed": sum(1 for p in poses.values() if p is not None),
+            "keyframes_placed": len(
+                {
+                    hot.keyframe.viewpoint
+                    for hot in hot_patches
+                    if poses.get(hot.keyframe.id) is not None
+                }
+            ),
             "keyframes_seen": len(poses),
             "voxels_touched": len(evidence),
         },
@@ -522,10 +549,17 @@ def combine(patches: Heatmap, segments: Heatmap, config: QueryConfig) -> Heatmap
     stats = dict(patches.stats)
     stats.update({f"segment_{k}": v for k, v in segments.stats.items()})
     stats["voxels_in_both"] = sum(1 for e, s in channels.values() if e > 0 and s > 0)
+    # Frame counts are unioned, not added: a photograph that supports a voxel in
+    # both channels is one frame, and the channels do share viewpoints (22 of
+    # sf_office_drive1's 755 segment stamps are also keyframe stamps). Taking the
+    # larger is a lower bound on that union -- it can only drop a voxel the
+    # filter would have kept, where the sum admits ones it exists to remove. The
+    # exact union needs viewpoint sets carried through here, which is computable
+    # (every stamp names one real colour frame) but not what anything needs yet.
     support = dict(patches.support)
     for index, (frames, bins) in segments.support.items():
         had = support.get(index, (0, 0))
-        support[index] = (had[0] + frames, max(had[1], bins))
+        support[index] = (max(had[0], frames), max(had[1], bins))
     return Heatmap(
         frame=patches.frame,
         voxel_size=patches.voxel_size,
