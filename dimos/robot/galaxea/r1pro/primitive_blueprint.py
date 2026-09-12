@@ -25,6 +25,7 @@ from dimos.control.coordinator import TaskConfig
 from dimos.core.coordination.blueprints import Blueprint, autoconnect
 from dimos.imitation.policy.skills import PolicySkills
 from dimos.manipulation.manipulation_module import ManipulationModule
+from dimos.manipulation.planning.planners.config import RRTConnectPlannerConfig
 from dimos.robot.assets.model import PlanarBaseDefinition
 from dimos.robot.galaxea.r1pro.config import (
     R1PRO_MODEL,
@@ -145,6 +146,10 @@ def build_primitive_blueprint(policies: Path, *, agent: bool = False) -> Bluepri
         McpServer.blueprint(),
         ManipulationModule.blueprint(
             model=model,
+            # The native RRT rejects a recorded collision-free single-arm recovery
+            # start on this planar model. The SDK's shared planner preserves the
+            # full measured state and validates the same path successfully.
+            planner=RRTConnectPlannerConfig(),
             joint_state_aliases=dict(zip(base_joints, R1PRO_PLANAR_BASE.joint_names, strict=True)),
             base_trajectory_task=PRIMITIVE_BASE_TASK,
             visualization={"backend": "none"},

@@ -186,3 +186,49 @@ blueprint over the previously validated object demo. The new native test runner 
 `demo_primitive_interactive`; it accepts explicit `pick:arm:object_id` and
 `place:arm:region` actions and records each real MCP outcome. Long evaluations are
 launched as detached jobs with a `pid`, `command.json`, `run.log` and `result.json`.
+
+## Current training and verification
+
+The first four independent policies have completed 2,000 updates each. On the
+same eight held-out arm/layout cases, executing 20 actions from each chunk passed
+1/8 complete sequences. Executing all 30 actions passed 8/8 picks and 7/8 complete
+pick/place sequences. This changed inference configuration only. One right-arm
+placement still failed; these eight cases are a small validation set, not a
+reliability estimate for arbitrary objects or two-hand operation.
+
+`jobs/primitive-place-refine-v1` now fine-tunes the existing placement policies
+with original demonstration rehearsal and new placements starting from actual
+ACT-held poses. Pick weights are preserved. The same-profile initializer was
+checked against the saved checkpoint: every model tensor and normalization
+mean/std tensor was unchanged before optimizer updates. New exports use 30-action
+chunks and are evaluated on fresh seeds beginning at 352000.
+
+The first correction batch accepted nine right-arm and seven left-arm examples;
+rejected grasps and disturbed-object episodes are excluded. A separate left-arm
+supplement adds verified examples before left placement conversion. Its original
+manifest and all source arrays are retained, with supplement provenance recorded.
+
+Monitor the active work from any terminal:
+
+```bash
+watch -n 10 cat /home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/primitive-place-refine-v1/status.json
+```
+
+The independent native verification job waits for refinement, then tests a
+right-arm tray cycle, a left-arm tray cycle, and two objects held simultaneously:
+
+```bash
+watch -n 10 cat /home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/primitive-place-refine-native-v1/validation/status.json
+```
+
+Both jobs run detached; closing the terminal or stopping `watch` leaves them
+running. They save failures and never automatically replace the working demo.
+The native verification uses local MCP without an external LLM request.
+
+Recovery test `jobs/primitive-native-recovery-02` passed: a deliberately interrupted
+left pick returned only that arm home, preserved all object placements and the
+other hand, and cleared the recovery requirement. The preceding failed test is
+retained. The primitive blueprint explicitly selects the SDK's shared RRT-Connect
+planner over the same RoboPlan collision world: the native RoboPlan RRT rejected
+the recorded, collision-free, in-range arm state while the shared planner found
+and executed a valid path. Normal pick and place commands still use ACT.

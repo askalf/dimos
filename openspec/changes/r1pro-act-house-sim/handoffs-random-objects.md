@@ -162,3 +162,51 @@ promote only checkpoints passing those checks. The long pipeline remains
 `jobs/independent-primitives-act-v1` (parent PID 1436126), with `status.json` and
 per-stage logs. Do not start another learner against its isolated project while
 it is training. The integration checkout has its own isolated learner project.
+
+### September 12: chunk comparison, placement refinement, native recovery
+
+Continue in `/tmp/dimos-r1pro-primitives`. The first native integration was
+committed as `dfde4e567`. Original four-policy training finished. Its automatic
+evaluation failed on a missing optional `roboplan` dependency, not on training.
+The original failure status and partial output were archived; resuming from the
+integration runner skipped completed stages and evaluated the intact exports.
+Baseline 20-action chunks: 1/8 full sequences, right pick 4/4. Comparison in
+`jobs/primitive-baseline-steps30`: 8/8 picks, 7/8 complete sequences at 30 actions,
+with unchanged model weights. One right placement still failed. Existing native
+30-action testing also has a table-release stall. No new checkpoint is promoted.
+
+Active detached refinement: `jobs/primitive-place-refine-v1`, parent PID 1551849.
+It preserves the four original exports, rehearses original place data, initializes
+from each existing eight-action place checkpoint without changing model tensors or
+normalization coordinates, and fine-tunes place only for another 2,000 updates.
+The tensor/normalization preservation smoke passed. Correction collection starts
+from an actual ACT grasp, then records SDK placement; no failed grasp is replaced
+by a teacher grasp. First batch: right 9 accepted/3 rejected; left 7/5.
+`jobs/primitive-place-left-supplement-v1` (PID 1576929) collects eight more left
+attempts, preserves the initial manifest, and supplements it before left
+conversion, with an explicit stage guard against changing consumed training data.
+Check its status and `collection/supplements.json` before reporting final counts.
+
+`jobs/primitive-place-refine-native-v1` (PID 1577650) waits for refinement and then
+runs local MCP right, left, and simultaneous-held-object sequences. Its status is
+`validation/status.json`. Results stay separate and no external LLM is called.
+Refinement evaluates unseen seeds 352000..352003; native checks use seed 340000.
+Do not equate successful training, teacher examples, or an accepted tool call
+with physical ACT success. Other-hand-held RGB training remains absent; the queued
+mixed-hand check determines whether additional data is needed.
+
+Recovery now passed physically in `jobs/primitive-native-recovery-02`: forced
+one-second left-pick timeout, explicit recover, only the failed arm returned home,
+objects/other hand preserved, recovery latch cleared. The first test's SDK native
+RRT threw "Invalid start configuration". Offline diagnostics verified no model
+collision or joint limit violation; the SDK shared RRT planned the same state.
+The primitive blueprint now explicitly selects RRTConnectPlannerConfig with the
+same RoboPlan world and SDK execution. No global planner behavior was changed.
+
+Focused refinement/skill tests passed 21 cases, and model/normalizer warm-start
+smoke passed. Native/refinement typing checks passed; subsequent commit hooks
+provide the final source checks. Run status commands are in OBJECT_PRIMITIVES.md.
+Remaining: inspect refinement and queued native outcomes; improve the remaining
+failures, validate arbitrary supported regions and both-hand contexts, then
+promote explicitly. House delivery/general support heights remain outside the
+new primitive bench's validated scope. The original interactive demo is retained.

@@ -19,13 +19,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
-import subprocess
 import sys
-import time
 
 from dimos.robot.galaxea.r1pro.demo_collect_objects import save_manifest
 from dimos.robot.galaxea.r1pro.object_primitives import ARMS, PRIMITIVES
+from dimos.robot.galaxea.r1pro.primitive_training_job import TrainingStages
 
 
 def run(args: argparse.Namespace) -> None:
@@ -45,81 +43,8 @@ def run(args: argparse.Namespace) -> None:
     if settings.exists() and json.loads(settings.read_text()) != contract:
         raise ValueError("Resume settings differ from the original job")
     save_manifest(settings, contract)
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(root),
-        "MUJOCO_GL": "egl",
-        "OPENBLAS_NUM_THREADS": "1",
-        "OMP_NUM_THREADS": "4",
-        "MKL_NUM_THREADS": "4",
-        "HF_HUB_OFFLINE": "1",
-        "WANDB_MODE": "disabled",
-    }
-    env.pop("DISPLAY", None)
-    # One isolated learner process at a time avoids changing its environment
-    # underneath another conversion/train/evaluation process.
-    learned = [
-        "uv",
-        "run",
-        "--offline",
-        "--frozen",
-        "--project",
-        str(root / "dimos/imitation/policy/lerobot/python"),
-        "--with-editable",
-        str(root),
-        "--with",
-        "mujoco==3.10.0",
-        "--with",
-        "roboplan==0.6.0",
-        "python",
-    ]
-
-    def stage(name: str, command: list[str]) -> None:
-        if (job / f"{name}.done").exists():
-            return
-        if shutil.disk_usage(job).free < 12 * 1024**3:
-            raise RuntimeError(
-                "Less than 12 GiB free; preserving all existing data and stopping this job"
-            )
-        began = time.time()
-        status = dict(
-            stage=name,
-            state="running",
-            pid=os.getpid(),
-            started=began,
-            log=str(job / f"{name}.log"),
-        )
-        save_manifest(job / "status.json", status)
-        with (job / f"{name}.log").open("a") as log:
-            process = subprocess.Popen(
-                command,
-                cwd=root,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
-            save_manifest(job / "status.json", {**status, "child_pid": process.pid})
-            last = began
-            while process.poll() is None:
-                time.sleep(30)
-                if time.time() - last >= 300:
-                    last = time.time()
-                    save_manifest(
-                        job / "status.json",
-                        {
-                            **status,
-                            "child_pid": process.pid,
-                            "elapsed_seconds": round(last - began),
-                        },
-                    )
-                    print(f"{name}: {round(last - began)} seconds", flush=True)
-            if process.returncode:
-                raise RuntimeError(
-                    f"Stage {name} exited {process.returncode}; inspect {job / (name + '.log')}"
-                )
-        (job / f"{name}.done").write_text("completed\n")
-        print(f"Completed {name}", flush=True)
+    stage = TrainingStages(root, job)
+    learned = stage.learned
 
     try:
         stage(
