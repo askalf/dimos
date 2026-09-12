@@ -40,6 +40,41 @@ store grows it cubically while the useful data does not move.
 inside one pickled blob per embedding frame, so reading one patch means unpickling the
 whole row -- 6.3 GB of them.
 
+## Building the index costs too, and it was mostly SQLite
+
+Measured 2026-09-12 while rebuilding grocery.db with four models.
+
+| | |
+|---|---|
+| the ingest, before the write-ahead log was fixed | 16.4 images/s decaying to 0.67 |
+| the ingest, after | ~3.3 images/s loaded, 4.4x realtime, and steady |
+| one patch row through `Stream.append` | 815 rows/s |
+| one patch row in bulk | 3,677 rows/s |
+| so400m-naflex@1024 on an RTX 5070 Laptop | 0.97 frames/s |
+
+**The write-ahead log was 92% of the wall time.** Sampling a live pass put almost all
+of it inside `sqlite3_wal_checkpoint_v2`: SQLite checkpoints on every commit once the
+log passes a thousand pages, and a passive checkpoint never *shrinks* the file, so the
+log grew all run and every commit rescanned all of it. The fix turns the automatic
+checkpoint off and folds the log deliberately, from inside the writing process, with the
+read iterator closed -- a fold from anywhere else, or with a read open, waits on a lock
+someone already holds and stops the pass dead. Any second writer or long reader on the
+database while a pass runs brings that back, so a query and an ingest cannot share it.
+
+**Writing is one commit per patch.** `Backend.append` commits after every observation
+and hands sqlite-vec its vector as `json.dumps` of a list of floats -- fifteen kilobytes
+of text per NaFlex patch to parse back into the floats we already had. One transaction
+per frame, `executemany`, and the vector as a raw float32 blob is 4.5x faster, and the
+rows are indistinguishable from the store's own: same payload, same tags, same width,
+same similarity to 6e-08.
+
+**A second machine needs no copy of the recording.** The database is far too big to ship
+and SQLite locks are not safe over a network mount, but the GPU only ever needs the
+image. Serving the stored WebP bytes untouched over HTTP and taking grids back keeps the
+recording on one machine, and asking the database every minute which frames the local
+pass has kept lets the remote model run *beside* that pass rather than after it. Two
+models shared one laptop GPU at 0.78 and 0.96 frames/s without slowing each other.
+
 ## The layout
 
 Three kinds of thing, three streams.
