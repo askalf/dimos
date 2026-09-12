@@ -87,6 +87,61 @@ def open_store(path: Path, *, must_exist: bool = True) -> Store:
     return store
 
 
+# Folding the log back takes the database exclusively for as long as the copy
+# runs, which on a sixty gigabyte file is tens of seconds. Five seconds is the
+# default patience and it is not enough: a fold from the janitor killed a pass
+# with "database is locked".
+WAL_PRAGMAS = ("PRAGMA wal_autocheckpoint=0", "PRAGMA busy_timeout=600000")
+
+
+def hold_the_wal(store: Store) -> None:
+    """Stop every commit from re-walking the write-ahead log.
+
+    SQLite checkpoints the WAL on commit once it passes a thousand pages, and a
+    checkpoint in passive mode never shrinks the file, so the log kept growing
+    and every commit rescanned all of it: at four gigabytes that was 92% of the
+    wall time and the rate had fallen from 16 to 0.7 images a second. Folding is
+    left to :func:`fold_the_wal` at the end of the run, and to whatever watches
+    the file size in between.
+    """
+    open_connection = store._open_connection  # type: ignore[attr-defined]
+
+    def without_autocheckpoint() -> Any:
+        conn = open_connection()
+        for pragma in WAL_PRAGMAS:
+            conn.execute(pragma)
+        return conn
+
+    store._open_connection = without_autocheckpoint  # type: ignore[attr-defined]
+    for pragma in WAL_PRAGMAS:
+        store._registry_conn.execute(pragma)  # type: ignore[attr-defined]
+
+
+WAL_CAP_BYTES = 8_000_000_000
+
+
+def wal_bytes(store: Store) -> int:
+    log = Path(f"{getattr(store.config, 'path', '')}-wal")
+    return log.stat().st_size if log.exists() else 0
+
+
+def fold_the_wal(store: Store) -> None:
+    """Copy the write-ahead log back into the database and truncate it.
+
+    Only the process doing the writing may call this. A fold from outside waits
+    for the writer's transaction while the writer waits for the fold, and the
+    pair sit there until one of them gives up -- which cost a pass, twice.
+    """
+    started = time.monotonic()
+    conn = store._registry_conn  # type: ignore[attr-defined]
+    busy, copied, checkpointed = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    took = time.monotonic() - started
+    if busy:
+        typer.echo(f"wal: still held open, {copied} of {checkpointed} pages folded ({took:.0f}s)")
+    else:
+        typer.echo(f"wal: folded {checkpointed} pages back ({took:.0f}s)")
+
+
 def memory_db_for(recording: Path) -> Path:
     """Where a recording's keyframes and patches live: the recording itself.
 
@@ -250,6 +305,7 @@ def ingest(
     ingestor.buffer.config.min_interval = min(
         ingestor.buffer.config.min_interval or 0.0, ingestor.config.min_frame_interval_s
     )
+    hold_the_wal(memory)
     first_ts: float | None = None
     started = time.monotonic()
     for pair in colors.align(depths, tolerance=config.depth_max_dt):
@@ -262,11 +318,18 @@ def ingest(
         ingestor.add_depth(depth_obs.data)
         ingestor.add_image(color_obs.data)
         if ingestor.stats["images"] % 200 == 0:
+            # Nothing checkpoints on commit any more, so fold the log here instead,
+            # between two frames, where this process holds no transaction open.
+            size = wal_bytes(memory)
             typer.echo(
                 f"{stamp - first_ts:.0f}s: {ingestor.stats['embedded']} embedded, "
-                f"{ingestor.stats['kept']} kept ({time.monotonic() - started:.0f}s)"
+                f"{ingestor.stats['kept']} kept ({time.monotonic() - started:.0f}s, "
+                f"wal {size / 1e9:.1f} GB)"
             )
+            if size > WAL_CAP_BYTES:
+                fold_the_wal(memory)
     ingestor.flush()
+    fold_the_wal(memory)
     return dict(ingestor.stats)
 
 
@@ -483,6 +546,11 @@ def main(
         help="Write the flat layout: self-contained patch rows plus a depth-thumbnail "
         "stream, no keyframe blob. The query side does not read it yet.",
     ),
+    thumbnails: bool = typer.Option(
+        True,
+        help="Write the depth thumbnails. Off for a second model's pass, which "
+        "would otherwise duplicate them.",
+    ),
     index_name: str = typer.Option(
         "",
         help="Name this index instead of deriving it from the checkpoints. Use it to "
@@ -567,6 +635,7 @@ def main(
                     max_depth_m=max_depth,
                     depth2depth_model=depth2depth_model_of(depth2depth),
                     flat=flat,
+                    thumbnails=thumbnails,
                 ),
                 slug=slug,
             )

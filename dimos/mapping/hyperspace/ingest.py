@@ -177,6 +177,10 @@ class IngestConfig:
     # Default False until the query side reads it: writing a layout nothing can answer
     # from would break every existing recording. Pass --flat to build one.
     flat: bool = False
+    # One model per pass writes its own patch stream, so the fast ones land first and a
+    # slow one finishing hours later costs nothing. Only the first pass needs to write
+    # the depth thumbnails; the rest would duplicate them.
+    thumbnails: bool = True
     # Depth beyond this (m) is a hole: RealSense 65535 mm sentinels and glitches.
     max_depth_m: float = 10.0
     depth_max_dt: float = 0.05
@@ -468,7 +472,7 @@ class PatchIngestor:
 
         if depth is None:
             self.stats["kept_without_depth"] += 1
-        else:
+        elif self.config.thumbnails:
             stride = max(self.config.depth_thumbnail_stride, 1)
             thinned = depth[::stride, ::stride]
             rows, cols = np.nonzero(np.isfinite(thinned) & (thinned > 0))
