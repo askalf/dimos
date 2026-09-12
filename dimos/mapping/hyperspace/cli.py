@@ -458,7 +458,18 @@ def main(
         "One = the classic single model; several = an ensemble pooled per cell. "
         "When reusing a db its own members are used.",
     ),
+    index_name: str = typer.Option(
+        "",
+        help="Name this index instead of deriving it from the checkpoints. Use it to "
+        "keep two indexes of the SAME model side by side -- a precomputed one over "
+        "every frame against a gated one, say.",
+    ),
     pool: str = typer.Option("min", help="Ensemble pooling: min, 2nd (second lowest) or mean"),
+    novelty: float = typer.Option(
+        -1.0,
+        help="Mean patch change needed to keep a keyframe; 0 keeps every embedded frame "
+        "(a precompute), -1 uses the tuned default",
+    ),
     min_frames: int = typer.Option(
         1,
         help="Keyframes a voxel must be seen from (refine 'support'); 2 was the single-model setting",
@@ -495,11 +506,11 @@ def main(
     device = pick_device(device)
     stats: dict[str, int] = {}
     specs = [spec.strip() for spec in models.split(",") if spec.strip()]
-    slug = pick_index(memory, specs)
+    slug = index_name or pick_index(memory, specs)
     others = [name or "(canonical)" for name in indexes_in(memory) if name != slug]
     if others:
         typer.echo(f"indexes already here: {', '.join(sorted(others))}")
-    typer.echo(f"answering from {index_slug(specs)} in {stream_names(slug)[0]}")
+    typer.echo(f"answering from {index_name or index_slug(specs)} in {stream_names(slug)[0]}")
     fresh = not (reuse and index_is_finished(memory, slug))
     if fresh:
         # Everything that can fail is done before a single stream is dropped: a bad
@@ -524,7 +535,10 @@ def main(
                 hz=hz,
                 max_seconds=max_seconds,
                 config=IngestConfig(
-                    gate=hs.KeyframeGateConfig(max_angular_velocity=None),
+                    gate=hs.KeyframeGateConfig(
+                        max_angular_velocity=None,
+                        **({} if novelty < 0 else {"novelty_threshold": novelty}),
+                    ),
                     max_depth_m=max_depth,
                     depth2depth_model=depth2depth_model_of(depth2depth),
                 ),
