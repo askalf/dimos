@@ -181,6 +181,73 @@ def migrate_weights(
     return target
 
 
+def prepare_existing_primitive(
+    source: Path, dataset: Path, output: Path, primitive: Primitive, arm: Arm
+) -> None:
+    """Warm-start the same primitive on additional data without changing learned coordinates."""
+    profile = primitive_profile(primitive, arm)
+    metadata = json.loads((source / "deployment.json").read_text())
+    if metadata["profile"] != profile.name:
+        raise ValueError("Cannot warm-start a different primitive or arm")
+    config = PreTrainedConfig.from_pretrained(source)
+    if not isinstance(config, ACTConfig):
+        raise ValueError("Expected an ACT primitive checkpoint")
+    goal_spec = profile.observations["observation.environment_state"]
+    assert isinstance(goal_spec, VectorSource)
+    expected = {
+        "observation.state": (8,),
+        "observation.environment_state": (len(goal_spec.features),),
+    }
+    if any(
+        tuple(config.input_features[key].shape) != shape for key, shape in expected.items()
+    ) or tuple(config.output_features["action"].shape) != (8,):
+        raise ValueError("Primitive checkpoint dimensions do not match")
+    config.device = "cpu"
+    config.pretrained_path = None
+    config.pretrained_backbone_weights = None
+    policy = ACTPolicy(config)
+    policy.load_state_dict(load_file(source / "model.safetensors"))
+    normalizers = list(source.glob("policy_preprocessor_step_*_normalizer_processor.safetensors"))
+    if len(normalizers) != 1:
+        raise ValueError("Expected one saved source normalizer")
+    saved = load_file(normalizers[0])
+    stats_path = dataset / "meta/stats.json"
+    stats = json.loads(stats_path.read_text())
+    (dataset / "normalization-before-warm-start.json").write_text(
+        json.dumps(stats, indent=2) + "\n"
+    )
+    for key in (*profile.observations, "action"):
+        for stat in ("mean", "std"):
+            stats[key][stat] = saved[f"{key}.{stat}"].tolist()
+    stats_path.write_text(json.dumps(stats, indent=2) + "\n")
+    tensors = {
+        key: {name: torch.tensor(value) for name, value in values.items()}
+        for key, values in stats.items()
+    }
+    pre, post = make_pre_post_processors(config, dataset_stats=tensors)
+    policy.save_pretrained(output)
+    pre.save_pretrained(output)
+    post.save_pretrained(output)
+    (output / "initialization.json").write_text(
+        json.dumps(
+            dict(
+                source=str(source.resolve()),
+                source_sha256=hashlib.sha256(
+                    (source / "model.safetensors").read_bytes()
+                ).hexdigest(),
+                profile=profile.name,
+                primitive=primitive,
+                arm=arm,
+                same_profile_warm_start=True,
+                compatible_normalization_preserved=True,
+                fine_tuning_pending=True,
+            ),
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 def prepare(source: Path, dataset: Path, output: Path, primitive: Primitive, arm: Arm) -> None:
     if output.exists():
         raise FileExistsError(output)
@@ -189,6 +256,9 @@ def prepare(source: Path, dataset: Path, output: Path, primitive: Primitive, arm
     if manifest["profile"] != profile.name or source.resolve() == dataset.resolve():
         raise ValueError("Dataset must be a new derivative with the exact primitive profile")
     config = PreTrainedConfig.from_pretrained(source)
+    if config.output_features and tuple(config.output_features["action"].shape) == (8,):
+        prepare_existing_primitive(source, dataset, output, primitive, arm)
+        return
     if (
         not isinstance(config, ACTConfig)
         or tuple(config.input_features["observation.state"].shape) != (20,)

@@ -12,40 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Native policy bindings with disjoint left/right arm coordinator resources."""
+"""R1Pro primitive policy exports; isolated runtime projects live beside the declarations."""
 
-from dimos.imitation.policy.lerobot.module import LeRobotPolicyConfig
-from dimos.imitation.policy.module import declare_policy_module
-from dimos.robot.galaxea.r1pro.object_primitives import primitive_profile
-
-R1ProRightPickPolicy = declare_policy_module(
-    "R1ProRightPickPolicy",
-    __name__,
-    primitive_profile("pick", "right"),
-    LeRobotPolicyConfig,
-    "dimos_lerobot.primitive_runtime:R1ProRightPickPolicyRuntime",
-)
-
-R1ProRightPlacePolicy = declare_policy_module(
-    "R1ProRightPlacePolicy",
-    __name__,
-    primitive_profile("place", "right"),
-    LeRobotPolicyConfig,
-    "dimos_lerobot.primitive_runtime:R1ProRightPlacePolicyRuntime",
-)
-
-R1ProLeftPickPolicy = declare_policy_module(
-    "R1ProLeftPickPolicy",
-    __name__,
-    primitive_profile("pick", "left"),
-    LeRobotPolicyConfig,
-    "dimos_lerobot.primitive_runtime:R1ProLeftPickPolicyRuntime",
-)
-
-R1ProLeftPlacePolicy = declare_policy_module(
-    "R1ProLeftPlacePolicy",
-    __name__,
-    primitive_profile("place", "left"),
-    LeRobotPolicyConfig,
-    "dimos_lerobot.primitive_runtime:R1ProLeftPlacePolicyRuntime",
+from dimos.imitation.policy.lerobot.primitive_module import (
+    R1ProLeftPickPolicy as R1ProLeftPickPolicy,
+    R1ProLeftPlacePolicy as R1ProLeftPlacePolicy,
+    R1ProRightPickPolicy as R1ProRightPickPolicy,
+    R1ProRightPlacePolicy as R1ProRightPlacePolicy,
 )

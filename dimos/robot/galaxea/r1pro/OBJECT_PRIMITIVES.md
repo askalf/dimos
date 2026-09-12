@@ -139,3 +139,50 @@ base and joint tasks, with coupled cancellation. The bench teacher currently use
 its own physical prepositioning for collection. Native integration must use the
 SDK execution boundary, retain the plan ID, and verify completion before ACT.
 The PR is still open and its API may change; it has not been merged into this branch.
+
+## Native integration under validation
+
+Development is currently in `/tmp/dimos-r1pro-primitives` on
+`feat/r1pro-primitives-integration`. It includes main `9314c76543` and the five
+commits from PR #4096. The original training checkout is unchanged while its
+job runs. The existing `r1pro-objects-sim-agent` remains the earlier working demo.
+
+The new `r1pro-primitives-sim` and `r1pro-primitives-sim-agent` compose four
+independent ACT runtimes. Each arm's trajectory task claims only its seven joints
+and gripper. Source selection includes tray contents. `pick_object` stops after
+current grasp/lift verification and a five-second hold; `place_object` requires an
+explicit region. The SDK plans base prepositioning and executes the retained plan
+ID through PR #4096's feedback base task. The simulator measures the final pose
+before allowing ACT to start. No teacher grasp is called by these commands.
+
+`define_placement_region` registers a rectangle contained within the measured
+physical worktable. Placement checks space for the object and open fingers and
+chooses the nearest available point to that region's center. This provides new
+placement regions without new policy IDs. Other support heights and arbitrary
+house surfaces remain outside this first primitive bench validation.
+
+`recover_action` preserves a confirmed hold or opens only supported contacts and
+uses the SDK to restore the empty failed arm. It keeps a failed recovery latched;
+only a verified recovery or explicit scene reset clears that requirement. An ACT
+failure remains a failure even when a later recovery succeeds.
+
+Evidence as of this integration checkpoint:
+
+- Main merge: 121 focused tests passed. PR #4096: 53 tests passed.
+- Primitive selection, ownership, runtime discovery and recovery: 30 tests passed.
+- Seven native implementation files passed mypy.
+- `/tmp/r1pro-primitive-native-base-04`: SDK base execution completed within 3 mm.
+- `/tmp/r1pro-primitive-native-act-02`: MCP right-hand pick of object_2 passed,
+  including the five-second hold with no placement.
+- `jobs/primitive-native-interactive-01`: pick passed; 20-step ACT placement
+  reached the tray upright but kept its gripper closed and timed out.
+- `jobs/primitive-native-interactive-steps30`: using separate checkpoint copies,
+  pick, tray placement and ACT tray unloading passed. Subsequent table placement
+  still timed out with the hand closed near the support. This is not an accepted
+  end-to-end result; placement tuning and mixed-hand ACT evaluation remain open.
+
+All checkpoint originals are preserved. These results do not promote the new
+blueprint over the previously validated object demo. The new native test runner is
+`demo_primitive_interactive`; it accepts explicit `pick:arm:object_id` and
+`place:arm:region` actions and records each real MCP outcome. Long evaluations are
+launched as detached jobs with a `pid`, `command.json`, `run.log` and `result.json`.
