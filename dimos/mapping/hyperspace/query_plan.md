@@ -114,7 +114,51 @@ And the win from searching in the db is not that the search is clever -- it is t
 reading 2M vectors sequentially inside sqlite is far cheaper than unpickling 3,462 blobs
 into our own memory.
 
-## tf
+## tf: FlexTf
+
+Built and measured (`flextf.py`, commits fe0639e49 and 98fcc13a4). Each edge is one
+growing `(N, 8)` array -- timestamp, translation, quaternion -- so a batch of moments is
+answered by one `searchsorted` and one vectorised interpolation per edge, whatever the
+batch size.
+
+The costs that matter, per event rather than per run:
+
+| | FlexTf | MultiTBuffer |
+|---|---|---|
+| per tf update (one message, 16 edges) | 19 us | 17 us |
+| per lookup | 2.0 us | 112 us |
+
+`batch_get` is ~0.4 ms fixed per call plus 1.95 us per lookup, so the fixed part stops
+mattering above a few hundred. Receiving costs 2 us more per message; each lookup costs
+110 us less.
+
+Two things it does that `MultiTBuffer` does not. `batch_get` fails PER ENTRY rather than
+all-or-nothing, because a stamp outside one edge's range must not cost its neighbours
+their answers, and it takes a list of sources for a rig with more than one camera.
+`reform_edge` overwrites the transforms at given timestamps rather than appending
+corrections, so a loop closure changes answers already being given -- which is why the
+values live in a mutable array at all. It fixes memory only: the correction still has to
+reach the recording separately, or a restart reads the old value back.
+
+One deliberate behaviour change. `TBuffer.get` calls `find_closest`, so today's answers
+SNAP to the nearest recorded transform -- at 20 Hz that is up to 25 ms of stale pose for
+a camera that did not fire on a tf tick. FlexTf interpolates, lerp and slerp, which is
+the choice made over zero-order hold in the June design.
+
+### What made a first attempt slower than what it replaces
+
+Worth keeping, because the wrong explanation survived two rounds. Receiving all 16,048
+messages took 1,243 ms, five times the buffer it replaces, and the reason was not the
+write: a row is 64 bytes and the write costs 0.35 us. Per edge per message the code did
+FIVE numpy operations -- `asarray` 0.38 us, the slice write 0.73 us, two scalar reads,
+and `np.diff(...) >= 0` to check the block arrived in order at 3.42 us. A message fans
+out to all 16 edges, so that ran 257,000 times: 1.1 s of the 1.24 s, in the order check
+alone. Comparing two floats in Python answers the same question in 0.04 us.
+
+The deferred-flush design that followed was a workaround for the wrong diagnosis, and it
+is gone.
+
+## tf, the earlier plan
 
 Building the buffer costs 4.1 s and holding it is the load-everything approach that
 Jeff's June work (`cfe1d7115`, long task BottomReptile) replaced -- and it cannot stay,
@@ -160,6 +204,7 @@ in hyperspace instead, so `self.tf.get` goes away either way.
 | patch carries frame, ts, depth, ray | yes, re-ingest | no |
 | photos stream, point-cloud thumbnail | yes, re-ingest | no |
 | fixed model-independent cell grid | yes, re-ingest | no |
+| FlexTf batched lookups | no | no |
 | tf tree of row ids | yes | **yes** -- `fetch_by_ids` |
 | sparse refine | no | no |
 
