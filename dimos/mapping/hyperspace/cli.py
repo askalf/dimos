@@ -146,7 +146,10 @@ def drop_index(memory: Store, slug: str = "") -> None:
     no longer there.
     """
     keyframes, patches = stream_names(slug)
-    names = [keyframes, patches] + ([COMPLETE_STREAM] if not slug else [])
+    # Every per-model vec0 stream too (`<patches>__m_<member>`), or a re-ingest would
+    # append a second copy of every vector into indexes the drop had missed.
+    members = [name for name in memory.list_streams() if name.startswith(f"{patches}__m_")]
+    names = [keyframes, patches, *members] + ([COMPLETE_STREAM] if not slug else [])
     for name in names:
         if name in memory.list_streams():
             memory.delete_stream(name)

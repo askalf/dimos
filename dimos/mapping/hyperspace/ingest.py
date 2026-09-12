@@ -61,7 +61,24 @@ def index_slug(specs: Sequence[str]) -> str:
     """
     from dimos.mapping.hyperspace.embedder import member_tag
 
-    return "__".join(re.sub(r"[^A-Za-z0-9]+", "_", member_tag(spec)).strip("_") for spec in specs)
+    return "__".join(sql_safe(member_tag(spec)) for spec in specs)
+
+
+def sql_safe(text: str) -> str:
+    """Letters, digits and underscores only: these end up in stream names."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")
+
+
+def patch_stream_for(slug: str = "", member: str = "") -> str:
+    """The vec0 stream holding ONE model's patch vectors.
+
+    Every member of an ensemble gets its own, because a vec0 table has one fixed
+    width and two checkpoints need not share it -- and because the query asks each
+    model its own nearest-neighbour question. A single-member index keeps the bare
+    name, so stores written before ensembles existed still read.
+    """
+    _, patches = stream_names(slug)
+    return patches if not member else f"{patches}__m_{sql_safe(member)}"
 
 
 def stream_names(slug: str = "") -> tuple[str, str]:
@@ -134,9 +151,10 @@ class IngestConfig:
     motion_reference_frame: str = "odom"
     # Never embed frames closer together than this (s). 0.2 = 5 Hz.
     min_frame_interval_s: float = 1.0 / hs.MAX_KEYFRAME_HZ
-    # None = write the vec0 patch index only when the query needs it (a single-grid
-    # store). True forces it, False never writes it.
-    patch_vectors: bool | None = None
+    # Write a searchable vec0 index for EVERY model, not just the primary one, so a
+    # query can ask each its own nearest-neighbour question instead of loading every
+    # keyframe's grids into memory. Costs one insert per patch per model at ingest.
+    patch_vectors: bool = True
     # Depth beyond this (m) is a hole: RealSense 65535 mm sentinels and glitches.
     max_depth_m: float = 10.0
     depth_max_dt: float = 0.05
@@ -212,36 +230,46 @@ class PatchIngestor:
         # Built on the first colour frame: loading the model costs seconds and
         # an ingest without depth2depth should never pay for it.
         self.fuser: Any = None
-        keyframe_stream, patch_stream = stream_names(slug)
+        keyframe_stream, _ = stream_names(slug)
         self.slug = slug
         self.keyframes: Stream[Any] = store.stream(keyframe_stream, dict)
-        self.patches: Stream[Any] = store.stream(patch_stream, dict)
+        # One vec0 stream per model, opened when its first keyframe is written: the
+        # member list is only certain once the model has run.
+        self.patches_by_member: dict[str, Stream[Any]] = {}
         self.tf_stream: Stream[TFMessage] = store.stream(TF_STREAM, TFMessage)
         self.last_embedded = -np.inf
         self.stats = {"images": 0, "gated": 0, "embedded": 0, "kept": 0, "kept_without_depth": 0}
 
-    def write_patch_vectors(self, has_grids: bool) -> bool:
-        """Whether this keyframe's patches also go into the vec0 index.
-
-        `None` (the default) means "only when the query would read them", which is only
-        a single-grid store. Set it True to keep the nearest-neighbour hook for an
-        outside tool, at roughly a tenfold ingest cost and a second copy of every
-        embedding.
-        """
-        if self.config.patch_vectors is None:
-            return not has_grids
-        return self.config.patch_vectors
+    def patch_stream(self, member: str) -> Stream[Any]:
+        """This model's vec0 stream, opened once."""
+        if member not in self.patches_by_member:
+            name = patch_stream_for(self.slug, member if len(self.members) > 1 else "")
+            self.patches_by_member[member] = self.store.stream(name, dict)
+        return self.patches_by_member[member]
 
     def _write_patch_vectors(
-        self, keyframe_id: int, grid: NDArray[np.float16], ts: float, model: str
+        self,
+        keyframe_id: int,
+        grids: Sequence[tuple[NDArray[np.float16], tuple[int, int]]],
+        ts: float,
+        model: str,
     ) -> None:
-        for index in range(len(grid)):
-            self.patches.append(
-                {"keyframe": keyframe_id, "patch": index, "model": model},
-                ts=ts,
-                tags={"keyframe": keyframe_id, "model": model},
-                embedding=Embedding(vector=grid[index].astype(np.float32), timestamp=ts),
-            )
+        """Every model's patches, each in its own searchable index.
+
+        One index per model rather than one for the primary: the query asks each model
+        its own nearest-neighbour question and keeps the cells both agree on, which it
+        cannot do against a single table. Costs one vec0 insert per patch per model.
+        """
+        for position, (grid, _) in enumerate(grids):
+            member = self.members[position] if position < len(self.members) else f"member{position}"
+            stream = self.patch_stream(member)
+            for index in range(len(grid)):
+                stream.append(
+                    {"keyframe": keyframe_id, "patch": index, "model": model, "member": member},
+                    ts=ts,
+                    tags={"keyframe": keyframe_id, "model": model, "member": member},
+                    embedding=Embedding(vector=grid[index].astype(np.float32), timestamp=ts),
+                )
 
     def add_camera_info(self, info: CameraInfo) -> None:
         self.intrinsics[info.frame_id] = intrinsics_of(info)
@@ -424,16 +452,15 @@ class PatchIngestor:
         keyframe = self.keyframes.append(
             payload, ts=kept.ts, tags={"camera_frame": camera_frame, "model": model}
         )
-        # The vector index holds the primary member only, indexed on its own grid
-        # (``grid_shapes[0]``). The query reads it ONLY for a single-grid store: when
-        # the keyframe carries `grids`, `pooled_hot_patches` scores those directly and
-        # never touches this stream, so writing it stores every embedding twice for
-        # nobody. It is also a third of an ingest's cost and a third of its size: one
-        # vec0 insert per patch per keyframe, a couple of hundred each. Measured on
-        # 30 s of a grocery recording, 345 keyframes either way -- 59.8 s and 386 MB
-        # without, 96.9 s and 615 MB with.
-        if self.write_patch_vectors(has_grids):
-            self._write_patch_vectors(keyframe.id, kept.grid, kept.ts, model)
+        # EVERY model gets a searchable index, one stream each. It duplicates what the
+        # keyframe's `grids` blob already holds, deliberately: reading one patch out of
+        # that blob means unpickling the whole keyframe, which is why a query loads all
+        # of them into memory. Two k-NN queries against two indexes replace that.
+        # Not free -- measured on 30 s of grocery, 345 keyframes: 59.8 s and 386 MB
+        # with no index against 96.9 s and 615 MB with one, and this writes one PER
+        # MODEL.
+        if self.config.patch_vectors:
+            self._write_patch_vectors(keyframe.id, grids, kept.ts, model)
         self.stats["kept"] += 1
         logger.info(
             f"hyperspace keyframe {keyframe.id} at {kept.ts:.2f} "

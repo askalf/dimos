@@ -488,9 +488,10 @@ def test_ensemble_keyframes_carry_every_member_and_pool_with_a_minimum(store: Sq
     assert first["grid_shapes"] == [[8, 8], [4, 4]]
     assert (first["rows"], first["cols"]) == (24, 24)
     assert len(first["patch_depth"]) == 24 * 24
-    # No vec0 rows: an ensemble query scores `grids` directly, so writing the vector
-    # index would store every embedding a second time for a reader that does not exist.
-    assert PATCH_STREAM not in store.list_streams() or store.stream(PATCH_STREAM, dict).count() == 0
+    # One searchable index PER MODEL, each holding that model's own cells.
+    assert cli.patch_stream_for("", "stub-a") == f"{PATCH_STREAM}__m_stub_a"
+    assert store.stream(f"{PATCH_STREAM}__m_stub_a", dict).count() == 3 * 8 * 8
+    assert store.stream(f"{PATCH_STREAM}__m_stub_b_16", dict).count() == 3 * 4 * 4
 
     config = hs.QueryConfig(
         structural_gate=False, segment_weight=0.0, pool="min", pooled_hot_threshold=0.005
@@ -699,25 +700,29 @@ def test_dropping_one_index_leaves_the_others_alone(store: SqliteStore) -> None:
     assert not cli.index_is_finished(store)
 
 
-def test_the_vector_index_is_written_only_for_the_store_that_reads_it(
-    store: SqliteStore, tmp_path: Path
-) -> None:
-    """One vec0 insert per patch per keyframe is most of an ingest's wall time.
+def test_every_model_gets_its_own_searchable_index(store: SqliteStore, tmp_path: Path) -> None:
+    """A query asks each model its own nearest-neighbour question.
 
-    A single-grid store answers through that index, so it earns its cost. An ensemble
-    scores the keyframes' own `grids` and never opens it.
+    It cannot do that against one table holding only the primary model, and reading a
+    patch out of a keyframe's `grids` blob means unpickling the whole keyframe -- which
+    is why a query used to load every one of them into memory.
     """
-    fill(store, ring(2, 2.5))  # single grid: the query needs the vectors
+    # One model keeps the bare name, so stores written before ensembles still read.
+    fill(store, ring(2, 2.5))
     assert store.stream(PATCH_STREAM, dict).count() == 2 * SIDE * SIDE
 
     other = SqliteStore(path=str(tmp_path / "ensemble.db"))
     other.start()
     try:
         fill_ensemble(other, ring(2, 2.5))
-        assert other.stream(KEYFRAME_STREAM, dict).count() == 2
-        written = (
-            other.stream(PATCH_STREAM, dict).count() if PATCH_STREAM in other.list_streams() else 0
-        )
-        assert written == 0, f"{written} vectors nothing will read"
+        names = set(other.list_streams())
+        assert f"{PATCH_STREAM}__m_stub_a" in names, sorted(names)
+        assert f"{PATCH_STREAM}__m_stub_b_16" in names, sorted(names)
+        # Each index holds ITS OWN model's cells, not a copy of the primary's.
+        assert other.stream(f"{PATCH_STREAM}__m_stub_a", dict).count() == 2 * 8 * 8
+        assert other.stream(f"{PATCH_STREAM}__m_stub_b_16", dict).count() == 2 * 4 * 4
+        # A re-ingest must replace them, not append a second copy of every vector.
+        cli.drop_index(other)
+        assert f"{PATCH_STREAM}__m_stub_a" not in set(other.list_streams())
     finally:
         other.stop()
