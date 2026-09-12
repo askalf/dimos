@@ -100,8 +100,10 @@ def index_is_finished(memory: Store, slug: str = "") -> bool:
     Jeff's call (2026-09-12): no completeness marker. A half-written index therefore
     reads as a whole one, and the cost of that is a rerun with --no-reuse.
     """
-    keyframes, patches = stream_names(slug)
-    if not {keyframes, patches} <= set(memory.list_streams()):
+    # Keyframes only: an ensemble index has no patch stream at all, because nothing
+    # would read it (see PatchIngestor.write_patch_vectors).
+    keyframes, _ = stream_names(slug)
+    if keyframes not in memory.list_streams():
         return False
     return memory.stream(keyframes, dict).count() > 0
 

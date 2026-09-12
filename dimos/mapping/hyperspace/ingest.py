@@ -134,6 +134,9 @@ class IngestConfig:
     motion_reference_frame: str = "odom"
     # Never embed frames closer together than this (s). 0.2 = 5 Hz.
     min_frame_interval_s: float = 1.0 / hs.MAX_KEYFRAME_HZ
+    # None = write the vec0 patch index only when the query needs it (a single-grid
+    # store). True forces it, False never writes it.
+    patch_vectors: bool | None = None
     # Depth beyond this (m) is a hole: RealSense 65535 mm sentinels and glitches.
     max_depth_m: float = 10.0
     depth_max_dt: float = 0.05
@@ -216,6 +219,29 @@ class PatchIngestor:
         self.tf_stream: Stream[TFMessage] = store.stream(TF_STREAM, TFMessage)
         self.last_embedded = -np.inf
         self.stats = {"images": 0, "gated": 0, "embedded": 0, "kept": 0, "kept_without_depth": 0}
+
+    def write_patch_vectors(self, has_grids: bool) -> bool:
+        """Whether this keyframe's patches also go into the vec0 index.
+
+        `None` (the default) means "only when the query would read them", which is only
+        a single-grid store. Set it True to keep the nearest-neighbour hook for an
+        outside tool, at roughly a tenfold ingest cost and a second copy of every
+        embedding.
+        """
+        if self.config.patch_vectors is None:
+            return not has_grids
+        return self.config.patch_vectors
+
+    def _write_patch_vectors(
+        self, keyframe_id: int, grid: NDArray[np.float16], ts: float, model: str
+    ) -> None:
+        for index in range(len(grid)):
+            self.patches.append(
+                {"keyframe": keyframe_id, "patch": index, "model": model},
+                ts=ts,
+                tags={"keyframe": keyframe_id, "model": model},
+                embedding=Embedding(vector=grid[index].astype(np.float32), timestamp=ts),
+            )
 
     def add_camera_info(self, info: CameraInfo) -> None:
         self.intrinsics[info.frame_id] = intrinsics_of(info)
@@ -389,7 +415,8 @@ class PatchIngestor:
         payload["members"] = self.members
         payload["member_specs"] = self.member_specs
         payload["model"] = self.slug or index_slug(self.member_specs or self.members) or "unnamed"
-        if len(grids) > 1 or shapes[0] != (rows, cols):
+        has_grids = len(grids) > 1 or shapes[0] != (rows, cols)
+        if has_grids:
             payload["grids"] = [grid.astype(np.float16) for grid, _ in grids]
             payload["grid_shapes"] = [list(shape) for shape in shapes]
             payload.setdefault("members", [f"member{i}" for i in range(len(grids))])
@@ -397,16 +424,16 @@ class PatchIngestor:
         keyframe = self.keyframes.append(
             payload, ts=kept.ts, tags={"camera_frame": camera_frame, "model": model}
         )
-        # The vector index holds the primary member only, indexed on its own
-        # grid (``grid_shapes[0]``): a nearest-neighbour hook for single-grid
-        # tools, not what the ensemble query reads.
-        for index in range(len(kept.grid)):
-            self.patches.append(
-                {"keyframe": keyframe.id, "patch": index, "model": model},
-                ts=kept.ts,
-                tags={"keyframe": keyframe.id, "model": model},
-                embedding=Embedding(vector=kept.grid[index].astype(np.float32), timestamp=kept.ts),
-            )
+        # The vector index holds the primary member only, indexed on its own grid
+        # (``grid_shapes[0]``). The query reads it ONLY for a single-grid store: when
+        # the keyframe carries `grids`, `pooled_hot_patches` scores those directly and
+        # never touches this stream, so writing it stores every embedding twice for
+        # nobody. It is also a third of an ingest's cost and a third of its size: one
+        # vec0 insert per patch per keyframe, a couple of hundred each. Measured on
+        # 30 s of a grocery recording, 345 keyframes either way -- 59.8 s and 386 MB
+        # without, 96.9 s and 615 MB with.
+        if self.write_patch_vectors(has_grids):
+            self._write_patch_vectors(keyframe.id, kept.grid, kept.ts, model)
         self.stats["kept"] += 1
         logger.info(
             f"hyperspace keyframe {keyframe.id} at {kept.ts:.2f} "

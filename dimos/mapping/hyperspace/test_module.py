@@ -474,8 +474,9 @@ def test_ensemble_keyframes_carry_every_member_and_pool_with_a_minimum(store: Sq
     assert first["grid_shapes"] == [[8, 8], [4, 4]]
     assert (first["rows"], first["cols"]) == (24, 24)
     assert len(first["patch_depth"]) == 24 * 24
-    # the vector index holds the primary member only, on its own 8x8 grid
-    assert store.stream(PATCH_STREAM, dict).count() == 3 * 64
+    # No vec0 rows: an ensemble query scores `grids` directly, so writing the vector
+    # index would store every embedding a second time for a reader that does not exist.
+    assert PATCH_STREAM not in store.list_streams() or store.stream(PATCH_STREAM, dict).count() == 0
 
     config = hs.QueryConfig(
         structural_gate=False, segment_weight=0.0, pool="min", pooled_hot_threshold=0.005
@@ -682,3 +683,27 @@ def test_dropping_one_index_leaves_the_others_alone(store: SqliteStore) -> None:
 
     cli.drop_index(store)
     assert not cli.index_is_finished(store)
+
+
+def test_the_vector_index_is_written_only_for_the_store_that_reads_it(
+    store: SqliteStore, tmp_path: Path
+) -> None:
+    """One vec0 insert per patch per keyframe is most of an ingest's wall time.
+
+    A single-grid store answers through that index, so it earns its cost. An ensemble
+    scores the keyframes' own `grids` and never opens it.
+    """
+    fill(store, ring(2, 2.5))  # single grid: the query needs the vectors
+    assert store.stream(PATCH_STREAM, dict).count() == 2 * SIDE * SIDE
+
+    other = SqliteStore(path=str(tmp_path / "ensemble.db"))
+    other.start()
+    try:
+        fill_ensemble(other, ring(2, 2.5))
+        assert other.stream(KEYFRAME_STREAM, dict).count() == 2
+        written = (
+            other.stream(PATCH_STREAM, dict).count() if PATCH_STREAM in other.list_streams() else 0
+        )
+        assert written == 0, f"{written} vectors nothing will read"
+    finally:
+        other.stop()
