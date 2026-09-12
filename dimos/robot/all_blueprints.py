@@ -109,6 +109,8 @@ all_blueprints = {
     "r1pro-objects-sim": "dimos.robot.galaxea.r1pro.object_agent_blueprint:r1pro_objects_sim",
     "r1pro-objects-sim-agent": "dimos.robot.galaxea.r1pro.object_agent_blueprint:r1pro_objects_sim_agent",
     "r1pro-planar-preview": "dimos.robot.galaxea.r1pro.blueprints.manipulation.r1pro_planar_preview:r1pro_planar_preview",
+    "r1pro-primitives-sim": "dimos.robot.galaxea.r1pro.primitive_blueprint:r1pro_primitives_sim",
+    "r1pro-primitives-sim-agent": "dimos.robot.galaxea.r1pro.primitive_blueprint:r1pro_primitives_sim_agent",
     "r1pro-teleop": "dimos.robot.galaxea.r1pro.blueprints.basic.r1pro_teleop:r1pro_teleop",
     "real-sense-camera-vis": "dimos.hardware.sensors.camera.realsense.blueprints:real_sense_camera_vis",
     "relocalize-mid360": "dimos.mapping.relocalization.blueprints:relocalize_mid360",

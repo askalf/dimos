@@ -208,9 +208,10 @@ the physical table and tray. A full region refuses placement without rearranging
 objects, unvalidated support heights, or room navigation. Grasp and place are ACT; base prepositioning
 is classical SDK execution. Keep replies brief."""
 
+# The registry scanner recognizes terminal blueprint methods on factory results.
 r1pro_primitives_sim = build_primitive_blueprint(
     RECORDINGS_DIR / "r1pro-act-task/policy-primitives-preview"
-)
+).global_config()
 r1pro_primitives_sim_agent = build_primitive_blueprint(
     RECORDINGS_DIR / "r1pro-act-task/policy-primitives-preview", agent=True
-)
+).global_config()
