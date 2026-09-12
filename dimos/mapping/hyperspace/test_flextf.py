@@ -70,8 +70,6 @@ def test_the_array_doubles_and_only_the_written_rows_count() -> None:
     assert len(edge.rows) == 16 and edge.count == 0
     for step in range(10):
         edge.extend([[float(step * 7 + i)] + [0.0] * (WIDTH - 1) for i in range(7)])
-    assert edge.count == 0, "arrivals are parked until something reads them"
-    edge.flush()
     assert edge.count == 70
     assert len(edge.rows) >= 70, "the buffer has to grow"
     assert len(edge.rows) == 128, "and grow by doubling, not by exactly enough"

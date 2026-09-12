@@ -65,42 +65,19 @@ class Edge:
     def __init__(self) -> None:
         self.rows: NDArray[np.float64] = np.empty((FIRST, WIDTH), dtype=np.float64)
         self.count = 0
-        # Arrivals land here first and move into `rows` in one block. A tf message
-        # carries a dozen transforms but they sit on a dozen DIFFERENT edges, so
-        # "a slice per message" is a one-row slice per edge -- and a numpy write per
-        # row costs several times a list append. Measured on 16,048 messages across
-        # 16 edges: 1243 ms writing straight to numpy, 248 ms for the buffer it
-        # replaces, 261 ms once arrivals are parked in a list and flushed in bulk.
-        self.pending: list[list[float]] = []
         # Transforms normally arrive in order; one that does not forces a re-sort.
         self.sorted = True
+        self.last = -np.inf
 
     @property
     def mask(self) -> NDArray[np.bool_]:
         """Which rows hold a transform rather than reserved space."""
-        self.flush()
         flags = np.zeros(len(self.rows), dtype=bool)
         flags[: self.count] = True
         return flags
 
-    def flush(self) -> None:
-        """Move parked arrivals into the array, in one write."""
-        if not self.pending:
-            return
-        block = np.asarray(self.pending, dtype=np.float64)
-        self.pending = []
-        self.reserve(len(block))
-        self.rows[self.count : self.count + len(block)] = block
-        if self.sorted and self.count and len(block):
-            first, last = block[0, 0], self.rows[self.count - 1, 0]
-            self.sorted = bool(first >= last) and bool(np.all(np.diff(block[:, 0]) >= 0))
-        elif self.sorted:
-            self.sorted = bool(np.all(np.diff(block[:, 0]) >= 0))
-        self.count += len(block)
-
     @property
     def used(self) -> NDArray[np.float64]:
-        self.flush()
         if not self.sorted:
             self.rows[: self.count] = self.rows[: self.count][
                 np.argsort(self.rows[: self.count, 0], kind="stable")
@@ -119,13 +96,28 @@ class Edge:
         grown[: self.count] = self.rows[: self.count]
         self.rows = grown
 
-    def extend(self, block: Iterable[list[float]]) -> None:
-        """Take a slice of transforms. They reach the array on the next read."""
-        self.pending.extend(block)
+    def extend(self, block: Sequence[list[float]]) -> None:
+        """Write a slice of transforms straight into the array.
+
+        A row is 64 bytes and the write costs a third of a microsecond, so there is
+        nothing to defer. What made a first attempt at this five times slower than the
+        buffer it replaces was the ORDER CHECK: `np.diff(...)` on a one-row block costs
+        3.4 us against 0.35 us for the write, and it ran once per edge per message --
+        257,000 times over grocery's 16,048 messages, which is 1.1 s of the 1.24 s.
+        Comparing two floats in Python does the same job for 0.04 us.
+        """
+        self.reserve(len(block))
+        for row in block:
+            stamp = row[0]
+            if stamp < self.last:
+                self.sorted = False
+            self.last = stamp
+            self.rows[self.count] = row
+            self.count += 1
 
     def rewrite(self, stamp: float, row: NDArray[np.float64], tolerance: float) -> bool:
         """Overwrite the transform at ``stamp``. True when one was there to overwrite."""
-        used = self.used  # flushes, so a correction can reach a just-arrived transform
+        used = self.used
         if not len(used):
             return False
         where = int(np.abs(used[:, 0] - stamp).argmin())
