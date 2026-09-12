@@ -117,7 +117,7 @@ def hold_the_wal(store: Store) -> None:
         store._registry_conn.execute(pragma)  # type: ignore[attr-defined]
 
 
-WAL_CAP_BYTES = 8_000_000_000
+WAL_CAP_BYTES = 4_000_000_000
 
 
 def wal_bytes(store: Store) -> int:
@@ -308,26 +308,46 @@ def ingest(
     hold_the_wal(memory)
     first_ts: float | None = None
     started = time.monotonic()
-    for pair in colors.align(depths, tolerance=config.depth_max_dt):
-        color_obs, depth_obs = pair.data[0], pair.data[1]
-        stamp = float(color_obs.ts)
-        if first_ts is None:
-            first_ts = stamp
-        if stamp - first_ts > max_seconds:
+    resume_from: float | None = None
+    while True:
+        # Read in windows. The log can only be folded while no read is open, and the
+        # pairing iterator holds one for as long as it lives -- with it open the fold
+        # waits on a lock this same process holds and the pass stops dead. So the
+        # window ends, the iterator is closed, the log is folded, and the next window
+        # picks up from the stamp we stopped at.
+        source = colors if resume_from is None else colors.after(resume_from)
+        other = depths if resume_from is None else depths.after(resume_from - config.depth_max_dt)
+        pairs = iter(source.align(other, tolerance=config.depth_max_dt))
+        stop_at: float | None = None
+        for pair in pairs:
+            color_obs, depth_obs = pair.data[0], pair.data[1]
+            stamp = float(color_obs.ts)
+            if first_ts is None:
+                first_ts = stamp
+            if stamp - first_ts > max_seconds:
+                stop_at = None
+                break
+            ingestor.add_depth(depth_obs.data)
+            ingestor.add_image(color_obs.data)
+            if ingestor.stats["images"] % 200 == 0:
+                size = wal_bytes(memory)
+                typer.echo(
+                    f"{stamp - first_ts:.0f}s: {ingestor.stats['embedded']} embedded, "
+                    f"{ingestor.stats['kept']} kept ({time.monotonic() - started:.0f}s, "
+                    f"wal {size / 1e9:.1f} GB)"
+                )
+                if size > WAL_CAP_BYTES:
+                    stop_at = stamp
+                    break
+        else:
+            pairs.close()
             break
-        ingestor.add_depth(depth_obs.data)
-        ingestor.add_image(color_obs.data)
-        if ingestor.stats["images"] % 200 == 0:
-            # Nothing checkpoints on commit any more, so fold the log here instead,
-            # between two frames, where this process holds no transaction open.
-            size = wal_bytes(memory)
-            typer.echo(
-                f"{stamp - first_ts:.0f}s: {ingestor.stats['embedded']} embedded, "
-                f"{ingestor.stats['kept']} kept ({time.monotonic() - started:.0f}s, "
-                f"wal {size / 1e9:.1f} GB)"
-            )
-            if size > WAL_CAP_BYTES:
-                fold_the_wal(memory)
+        pairs.close()
+        del pairs
+        if stop_at is None:
+            break
+        fold_the_wal(memory)
+        resume_from = stop_at
     ingestor.flush()
     fold_the_wal(memory)
     return dict(ingestor.stats)
