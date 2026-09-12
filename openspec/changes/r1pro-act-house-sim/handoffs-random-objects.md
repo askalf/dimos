@@ -364,3 +364,31 @@ running at this note. Far-table DimOS ACT test is `/tmp/primitive-far-table-dimo
 Regression tests passed 37 cases and changed-source typing checks passed.
 Extended validation now covers both arm orders, cross-table requested-arm picks,
 tray unloading and a custom far-table region. Model promotion remains pending.
+
+Committed this work locally as edd1b099d5 with all hooks passing and no co-author
+trailers. The full DimOS far-table test PASSED both ACT actions: right pick of
+object_2 then placement in the explicit region centered at (0.60, 0.48), width
+and depth 0.12 m. It used the existing refined policies, with no new training or
+classical arm fallback. This verifies the positioning fix for that actual user
+case. Final wider teacher smoke: right 4/4 picks and places, left 2/4 picks and
+places; two left cases could not establish the other hand's setup hold because
+its base workspace was obstructed. Those failures remain rejected, not training
+examples. Broader collection must satisfy its minimum other-hand-held count.
+
+Detached job is now `jobs/primitive-interactive-refine-v1`, parent PID 1799748.
+It collects RGB on 24 new layouts 360100..360123, then fine-tunes all four
+existing policies for 2,000 updates each, using original pick demonstrations
+and the previous refined place demonstrations as rehearsal. Rehearsal manifests
+only reference original arrays; nothing was erased or restarted from scratch.
+Initial source model is `primitive-place-refine-v1/policies`; fresh offline
+evaluation uses 361000..361003. Keep the source/model files stable while it runs.
+Its `command.json`, `source_commit`, `rehearsal_sources.json` and `status.json`
+record exact provenance. Normalization coordinates are preserved on warm-start.
+
+Detached extended DimOS validation is `jobs/primitive-interactive-refine-native-v1`,
+parent PID 1799749, waiting on that job. Its status is `validation/status.json`;
+it uses MCP 10016 and Zenoh discovery 19479, seven cases including both arm
+orders, requested cross-table hands, unloading, and the far-table region.
+No external LLM is called and no checkpoint is automatically promoted.
+The source integration branch has advanced locally; origin/feat/r1pro-act-sim
+remains at 389632263b. Do not claim the new policies are ready until evaluated.
