@@ -15,12 +15,11 @@
 """Resumeable collection of separate ACT pick and place demonstrations for both arms."""
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import asdict
 import json
 from pathlib import Path
 import time
 from typing import Any
-import xml.etree.ElementTree as ET
 
 import numpy as np
 from numpy.typing import NDArray
@@ -28,11 +27,8 @@ from numpy.typing import NDArray
 from dimos.robot.galaxea.r1pro.demo_collect_objects import save_manifest
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_FPS
 from dimos.robot.galaxea.r1pro.object_packing_scene import (
-    ObjectLayout,
-    prepare_object_scene,
     sample_layout,
 )
-from dimos.robot.galaxea.r1pro.object_packing_state import object_extent
 from dimos.robot.galaxea.r1pro.object_primitive_task import ObjectPrimitiveTask
 from dimos.robot.galaxea.r1pro.object_primitives import (
     ARMS,
@@ -41,90 +37,7 @@ from dimos.robot.galaxea.r1pro.object_primitives import (
     Primitive,
     primitive_profile,
 )
-from dimos.robot.galaxea.r1pro.placement_regions import (
-    PlacementObstacle,
-    PlacementRegion,
-    placement_candidates,
-)
-
-
-def prepare_primitive_scene(
-    output: Path, layout: ObjectLayout, arm: Arm
-) -> tuple[Path, ObjectLayout]:
-    """A symmetric physical bench overlay; only initial scene generation mirrors objects."""
-    if arm == "left":
-        layout = ObjectLayout(
-            layout.seed,
-            tuple(
-                replace(o, position=(o.position[0], -o.position[1], o.position[2]), yaw=-o.yaw)
-                for o in layout.objects
-            ),
-        )
-    scene = prepare_object_scene(output, layout)
-    tree = ET.parse(scene)
-    root = tree.getroot()
-    table = root.find('.//body[@name="task_table"]')
-    tray = root.find('.//body[@name="task_bin"]')
-    if table is None or tray is None or (top := table.find("geom")) is None:
-        raise ValueError("Primitive bench requires a physical source table and tray")
-    table.set("pos", "0.49 0 0.675")
-    top.set("size", "0.31 0.65 0.025")
-    if arm == "left":
-        tray.set("pos", "0.34 0.04 0.701")
-    tree.write(scene, encoding="unicode")
-    scene.with_suffix(".objects.json").write_text(json.dumps(layout.to_dict()) + "\n")
-    return scene, layout
-
-
-def choose_placement(
-    task: ObjectPrimitiveTask, destination: str, seed: int
-) -> tuple[NDArray[np.float64], PlacementRegion]:
-    """Geometric placement, then prepositioning; no extra ACT command is inferred."""
-    if destination == "tray":
-        tray = task.data.body("task_bin")
-        region = PlacementRegion(
-            "tray", tuple(tray.xpos + np.array([0, 0, 0.015])), (0.145, 0.105), ("bin_floor",)
-        )
-    elif destination == "table":
-        sign = -1 if task.arm == "right" else 1
-        top = next(
-            task.model.geom(i).name
-            for i in range(task.model.ngeom)
-            if task.model.geom_bodyid[i] == task.model.body("task_table").id
-        )
-        region = PlacementRegion("table", (0.41, sign * 0.44, 0.7), (0.15, 0.16), (top,))
-    else:
-        raise ValueError("Collection destination must be table or tray")
-    obstacles = []
-    for i, obj in enumerate(task.layout.objects):
-        if i == task.selected:
-            continue
-        body = task.data.body(obj.name)
-        extent = object_extent(obj, body.xmat.reshape(3, 3))
-        obstacles.append(
-            PlacementObstacle(
-                tuple(body.xpos[:2]),
-                tuple(extent[:2]),
-                float(body.xpos[2] - extent[2]),
-                float(body.xpos[2] + extent[2]),
-            )
-        )
-    if destination == "table":
-        tray = task.data.body("task_bin")
-        obstacles.append(
-            PlacementObstacle(
-                tuple(tray.xpos[:2]), (0.16, 0.235), float(tray.xpos[2]), float(tray.xpos[2] + 0.1)
-            )
-        )
-    obj = task.layout.objects[task.selected]
-    points = placement_candidates(
-        region, radius=obj.radius, half_height=obj.half_size[2], obstacles=tuple(obstacles)
-    )
-    source = task.data.body(task.bottle_id).xpos
-    points = tuple(p for p in points if np.linalg.norm(np.asarray(p[:2]) - source[:2]) >= 0.045)
-    if not points:
-        raise RuntimeError("No empty placement region with object and open-finger clearance")
-    return np.asarray(points[int(np.random.default_rng(seed).integers(len(points)))]), region
+from dimos.robot.galaxea.r1pro.primitive_scene import choose_placement, prepare_primitive_scene
 
 
 def collect(

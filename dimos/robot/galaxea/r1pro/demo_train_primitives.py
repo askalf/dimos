@@ -69,6 +69,8 @@ def run(args: argparse.Namespace) -> None:
         str(root),
         "--with",
         "mujoco==3.10.0",
+        "--with",
+        "roboplan==0.6.0",
         "python",
     ]
 

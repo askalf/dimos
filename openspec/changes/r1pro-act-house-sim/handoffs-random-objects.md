@@ -138,3 +138,27 @@ boundary, verify house regions and recovery, and test mixed interactive commands
 The existing object blueprint remains the previous working version. Prior pending
 permission for an automated external LLM/API test is still unanswered; local ACT
 and recorded-response MCP checks do not require that API call.
+
+### September 12: main/PR integration and first native independent ACT checks
+
+Continue in `/tmp/dimos-r1pro-primitives`, branch
+`feat/r1pro-primitives-integration`. Main merge commit is `5c83ed2b02`;
+PR #4096 integration ends at `cb5c3d4fc5`. No Codex co-author trailers. These are
+local commits; original `feat/r1pro-act-sim` is still at `607ce29498` while the
+four-policy training job runs from that original checkout. Root Alfred work and
+its environment were not changed. Do not switch the training checkout before
+its detached pipeline completes.
+
+New native implementation, tests and `OBJECT_PRIMITIVES.md` describe the exact
+state. Native SDK base motion passed. Independent right ACT pick/hold passed via
+MCP. At 30 executed actions per chunk, ACT tray placement and tray-source pick
+also passed. Table placement still stalls with the gripper closed: do not claim
+full success or replace the old demo. The 20-step and 30-step comparison jobs are
+`jobs/primitive-native-interactive-01` and
+`jobs/primitive-native-interactive-steps30` in the original recordings directory.
+Next: finish both left policies' detached training, evaluate fresh layouts,
+resolve release stalls, validate mixed-hand holds and recovery physically, then
+promote only checkpoints passing those checks. The long pipeline remains
+`jobs/independent-primitives-act-v1` (parent PID 1436126), with `status.json` and
+per-stage logs. Do not start another learner against its isolated project while
+it is training. The integration checkout has its own isolated learner project.

@@ -52,6 +52,7 @@ class PrimitiveSceneState:
             held_by = holders[0] if holders else None
             row.update(
                 released=not contacts,
+                supported=bool(row["support_geoms"]),
                 contacting_arms=contacts,
                 held_by=held_by,
                 tcp_offset=(
