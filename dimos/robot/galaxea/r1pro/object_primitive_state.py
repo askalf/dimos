@@ -20,6 +20,7 @@ import mujoco
 import numpy as np
 from numpy.typing import NDArray
 
+from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.object_packing_scene import ObjectLayout
 from dimos.robot.galaxea.r1pro.object_packing_state import ObjectPackingState
 from dimos.robot.galaxea.r1pro.object_primitives import ARMS, Arm
@@ -73,6 +74,29 @@ class PrimitiveSceneState:
             arm: next((i for i, row in enumerate(rows) if row["held_by"] == arm), None)
             for arm in ARMS
         }
+
+    def transport_planner(self) -> PlanarTransport:
+        """Include both hands' measured cargo; leave the tray and unheld objects stationary."""
+        return PlanarTransport(
+            self.model,
+            self.data,
+            cargo_bodies=tuple(row["object"] for row in self.inventory() if row["held_by"]),
+            carry_tray=False,
+            sweep_spacing=0.005,
+        )
+
+    def preposition_path(self, arm: Arm, target: NDArray[Any]) -> list[list[float]]:
+        """Route the held posture into the learned workspace without sweeping cargo into clutter."""
+        desired = np.array(
+            [
+                min(float(target[0]) - 0.4, 0.0),
+                float(target[1]) + (0.32 if arm == "right" else -0.32),
+                0.0,
+            ]
+        )
+        planner = self.transport_planner()
+        path = planner.plan(tuple(desired[:2]), resolution=0.025, max_distance=1.5, timeout=10)
+        return planner.shorten_path([*path, desired.tolist()])
 
     def select_pick(self, arm: Arm, index: int) -> ObjectPackingState:
         rows = self.inventory()

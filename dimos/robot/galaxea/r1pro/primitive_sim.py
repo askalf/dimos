@@ -281,34 +281,34 @@ class R1ProPrimitiveSim(MujocoSimModule):
                 scene.select_place(cast("Arm", arm), target)
             self._active = (cast("Primitive", primitive), cast("Arm", arm))
             self._initial = scene.inventory()
-            desired = np.array(
-                [
-                    min(float(target[0]) - 0.4, 0.0),
-                    float(target[1]) + (0.32 if arm == "right" else -0.32),
-                    0.0,
-                ]
-            )
-            current = np.array([engine.data.joint(n).qpos[0] for n in VIRTUAL_BASE_JOINTS])
-            # Check the physical robot sweep before asking the SDK to execute it.
-            probe = mujoco.MjData(engine.model)
-            probe.qpos[:] = engine.data.qpos
-            for t in np.linspace(0, 1, max(2, int(np.linalg.norm(desired - current) / 0.005) + 1)):
-                for name, value in zip(
-                    VIRTUAL_BASE_JOINTS, current + t * (desired - current), strict=True
-                ):
-                    probe.joint(name).qpos[0] = value
-                mujoco.mj_forward(engine.model, probe)
-                collisions = state.guard.collisions(probe, ignore_cargo=True)
-                if collisions:
-                    raise RuntimeError(f"Prepositioning sweep is blocked: {collisions}")
+            path = scene.preposition_path(cast("Arm", arm), target)
             return dict(
                 object=f"object_{state.selected + 1}",
                 arm=arm,
                 primitive=primitive,
                 target=target.tolist(),
-                base_target=desired.tolist(),
+                base_target=path[-1],
+                base_waypoints=path,
                 region=asdict(self._region) if self._region else None,
             )
+
+    @rpc
+    def validate_primitive_base_plan(self, trajectory: JointTrajectory) -> None:
+        """Check the actual DimOS base trajectory with the current posture and held objects."""
+        engine = self._engine
+        if engine is None or self._active is None:
+            raise RuntimeError("No selected primitive to preposition")
+        if set(trajectory.joint_names) != set(VIRTUAL_BASE_JOINTS) or not trajectory.points:
+            raise ValueError("Prepositioning requires a nonempty base-only trajectory")
+        columns = [trajectory.joint_names.index(name) for name in VIRTUAL_BASE_JOINTS]
+        with engine._lock:
+            planner = self._state(engine).transport_planner()
+            start = planner.start
+            for point in trajectory.points:
+                target = np.asarray(point.positions)[columns]
+                if not np.isfinite(target).all() or not planner.clear_pose_segment(start, target):
+                    raise RuntimeError("DimOS base plan is obstructed with the held objects")
+                start = target
 
     @rpc
     def primitive_state(self) -> dict[str, Any]:

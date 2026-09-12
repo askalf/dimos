@@ -23,11 +23,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dimos.robot.galaxea.r1pro.grasping_task import HOME_TCP
+from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.home_kinematics import HomeKinematics
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_FPS as FPS
 from dimos.robot.galaxea.r1pro.object_packing_scene import ObjectLayout
 from dimos.robot.galaxea.r1pro.object_packing_state import ObjectPackingState
 from dimos.robot.galaxea.r1pro.object_packing_task import ObjectPackingTask
+from dimos.robot.galaxea.r1pro.object_primitive_state import PrimitiveSceneState
 from dimos.robot.galaxea.r1pro.object_primitives import (
     MIRROR_ARM_SIGNS,
     Arm,
@@ -77,19 +79,11 @@ class ObjectPrimitiveTask(ObjectPackingTask):
         Deployment will request the corresponding SDK whole-body plan instead.
         """
         initial = self.inventory()
-        start = self.data.ctrl[self.base_aids].copy()
-        desired = np.array(
-            [
-                min(float(target[0]) - 0.4, 0.0),
-                float(target[1]) + (0.32 if self.arm == "right" else -0.32),
-                0.0,
-            ]
-        )
-        seconds = max(3.0, float(np.linalg.norm(desired - start)) / 0.08)
+        scene = PrimitiveSceneState(self.model, self.data, self.layout, self.home)
+        path = scene.preposition_path(self.arm, target)
         command = self.data.ctrl[self.aids].copy()
-        for frame in range(round(seconds * FPS)):
-            t = (frame + 1) / round(seconds * FPS)
-            super().step(command, base_target=start + (desired - start) * t * t * (3 - 2 * t))
+        for pose in PlanarTransport.targets(path, FPS, speed=0.08):
+            super().step(command, base_target=pose)
             self.state.observe()
             self.validate(initial)
         for _ in range(FPS):

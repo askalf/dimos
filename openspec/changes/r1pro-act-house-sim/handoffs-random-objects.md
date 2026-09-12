@@ -252,3 +252,53 @@ blueprint factory were invisible to the AST scanner. Added terminal
 .global_config() calls, regenerated all_blueprints.py with its pytest generator,
 and added regression tests resolving both names through get_blueprint_by_name.
 This fixes dimos run discovery; factory-level/MCP tests alone had missed it.
+
+### September 12: refinement results and carried-object collision fix
+
+Both placement refinements and their evaluations finished. Refined ACT on fresh
+seeds 352000..352003: 8/8 picks, 4/8 complete sequences. Do not compare this directly
+with the baseline's 7/8 on different seeds 330000..330003. No promotion occurred.
+DimOS/MCP evaluation `primitive-place-refine-native-v1/validation` finished:
+right pick/place-to-tray/unload all passed, then table placement timed out with
+closed jaws; left pick passed but tray release timed out; both-hand sequence
+passed right pick but left pick missed while the right hand held its object.
+Thus independent pick/hold, tray unloading and the interface exist, but full
+placement reliability and other-hand-held training remain unfinished.
+
+The user wanted HumanCLI, not only direct MCP. Added its exact command beside
+`r1pro-primitives-sim-agent` in OBJECT_PRIMITIVES.md. Both CLI names already
+resolve in the original worktree through 3d0a07a7af. Agent credentials must be
+configured by the user; external LLM testing remains unapproved. Local MCP and
+physics tests require no external model. Estimated roughly one hour for the next
+fix/test pass, explicitly not a promise of full reliability within that hour.
+
+Diagnosed seed 352002: base prepositioning, before ACT place, carried object_3
+through object_5. The old check moved only the robot and ignored cargo. Added a
+held-object-only mode to the existing PlanarTransport: both measured held objects
+move in the planning copy; the tray and unheld objects remain obstacles. The
+primitive scene plans a detour with 5 mm sweep sampling. Offline teacher and
+DimOS execution share this route. DimOS still plans/executes every waypoint via
+ManipulationModule and the coordinator, and its actual returned base trajectory
+is checked again with current cargo before execution. Existing carried-tray mode
+retains its behavior. No live object attachments or teleports were introduced.
+
+Saved failing physics state: `jobs/primitive-transfer-probe-01/before.npz`.
+Replaying it with the new route retained the grasp; unrequested-object movement
+was zero except 0.00000078 m numerical settling on object_1. The selected object
+traveled 0.388 m. Focused transport/primitive tests: 29 passed; mypy passed all
+six changed production files. This alone is not an ACT placement success claim.
+
+Detached follow-up `jobs/primitive-cargo-validation-v1` (parent PID 1676858) runs
+the full DimOS pick/place on seed 352002, then baseline and refined checkpoints
+on that same seed and both arms. Its `status.json`, `dimos/result.json`, and
+baseline/refined reports preserve separate outcomes; no checkpoint promotion.
+Source work remains in `/tmp/dimos-r1pro-primitives`; the user's preview is not
+changed by background model evaluation. Remaining priorities: inspect this run,
+address ACT release fixed points, add demonstrated other-hand-held contexts,
+validate arbitrary supported regions, then promote only passing policies.
+
+The cargo validation's full DimOS case has now PASSED: right ACT pick object_3,
+measured base routing, then ACT placement into the tray on seed 352002. Both
+actions report success without recovery. Matched-seed offline comparison is
+still running. This verifies the integrated route and actual DimOS trajectory
+validation, not just an offline geometric plan.

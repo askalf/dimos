@@ -44,7 +44,13 @@ class PlanarTransport:
         data: mujoco.MjData,
         *,
         cargo_bodies: tuple[str, ...] = ("task_bottle",),
+        carry_tray: bool = True,
+        sweep_spacing: float = 0.05,
     ) -> None:
+        if not math.isfinite(sweep_spacing) or sweep_spacing <= 0:
+            raise ValueError("Sweep spacing must be positive and finite")
+        self.carry_tray = carry_tray
+        self.sweep_spacing = sweep_spacing
         self.model = copy.copy(model)
         self.qids = np.array([model.joint(name).qposadr[0] for name in VIRTUAL_BASE_JOINTS])
         self.aids = np.array([model.actuator(name).id for name in VIRTUAL_BASE_JOINTS])
@@ -60,8 +66,11 @@ class PlanarTransport:
         self.cargo_ids = {model.body(name).id for name in cargo_bodies}
         self.tray_id = model.body("task_bin").id
         self.carried_qpos: list[tuple[int, NDArray[np.float64]]] = []
-        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "task_tray_free") >= 0:
-            for body_name in ("task_bin", *cargo_bodies):
+        if (
+            not carry_tray
+            or mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "task_tray_free") >= 0
+        ):
+            for body_name in ("task_bin", *cargo_bodies) if carry_tray else cargo_bodies:
                 body = model.body(body_name).id
                 joint = int(model.body_jntadr[body])
                 if joint < 0 or model.jnt_type[joint] != mujoco.mjtJoint.mjJNT_FREE:
@@ -97,7 +106,7 @@ class PlanarTransport:
         """Check translations and turns, including the full held-cargo envelope."""
         count = max(
             1,
-            math.ceil(float(np.linalg.norm(second[:2] - first[:2])) / 0.05),
+            math.ceil(float(np.linalg.norm(second[:2] - first[:2])) / self.sweep_spacing),
             math.ceil(abs(float(second[2] - first[2])) / 0.08),
         )
         for fraction in np.linspace(0, 1, count + 1):
@@ -160,7 +169,13 @@ class PlanarTransport:
                 departure, turned
             ):
                 continue
-            aligned = PlanarTransport(self.model, self.probe, cargo_bodies=self.cargo_bodies)
+            aligned = PlanarTransport(
+                self.model,
+                self.probe,
+                cargo_bodies=self.cargo_bodies,
+                carry_tray=self.carry_tray,
+                sweep_spacing=self.sweep_spacing,
+            )
             try:
                 path = aligned.plan(
                     tuple(target[:2]),

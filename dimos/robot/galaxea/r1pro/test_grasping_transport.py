@@ -93,3 +93,62 @@ def test_docking_uses_clear_elbow_around_furniture(checker):
 def test_grid_search_has_a_time_limit_when_simple_docking_paths_are_blocked(checker):
     with pytest.raises(RuntimeError, match="planning timed out"):
         checker.plan((1.0, 0.0), timeout=0.0)
+
+
+@pytest.fixture
+def cargo_scene():
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco><worldbody>
+      <body name="base_link" pos="0 0 .3">
+        <joint name="r1pro/base_x" type="slide" axis="1 0 0"/>
+        <joint name="r1pro/base_y" type="slide" axis="0 1 0"/>
+        <joint name="r1pro/base_yaw" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size=".05"/>
+      </body>
+      <body name="held_right" pos="0 .4 .3"><freejoint/>
+        <geom type="sphere" size=".04"/>
+      </body>
+      <body name="held_left" pos="0 -.4 .3"><freejoint/>
+        <geom type="sphere" size=".04"/>
+      </body>
+      <body name="unheld_object" pos=".5 .4 .3"><freejoint/>
+        <geom type="sphere" size=".04"/>
+      </body>
+      <body name="task_bin" pos=".5 -.4 .3"><freejoint name="task_tray_free"/>
+        <geom type="box" size=".1 .1 .01"/>
+      </body>
+    </worldbody><actuator>
+      <position name="r1pro/base_x" joint="r1pro/base_x"/>
+      <position name="r1pro/base_y" joint="r1pro/base_y"/>
+      <position name="r1pro/base_yaw" joint="r1pro/base_yaw"/>
+    </actuator></mujoco>""")
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    return model, data
+
+
+@pytest.mark.parametrize("held", [("held_right",), ("held_left",), ("held_right", "held_left")])
+def test_carried_objects_route_around_stationary_objects_and_tray(cargo_scene, held):
+    model, data = cargo_scene
+    before = data.qpos.copy()
+    checker = PlanarTransport(model, data, cargo_bodies=held, carry_tray=False, sweep_spacing=0.005)
+    assert not checker.clear_segment(np.zeros(2), np.array([1.0, 0.0]))
+    path = checker.plan((1.0, 0.0))
+    assert path[-1] == [1.0, 0.0, 0.0]
+    assert len(path) > 2
+    assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))
+    np.testing.assert_array_equal(checker.probe.body("task_bin").xpos, data.body("task_bin").xpos)
+    np.testing.assert_array_equal(
+        checker.probe.body("unheld_object").xpos, data.body("unheld_object").xpos
+    )
+    # Planning moves only a private copy, including the held objects.
+    np.testing.assert_array_equal(data.qpos, before)
+
+
+def test_existing_tray_transport_still_moves_the_tray_in_its_planning_copy(cargo_scene):
+    model, data = cargo_scene
+    checker = PlanarTransport(model, data, cargo_bodies=("held_right", "held_left"))
+    assert checker.clear_segment(np.zeros(2), np.array([-0.5, 0.0]))
+    np.testing.assert_allclose(
+        checker.probe.body("task_bin").xpos, data.body("task_bin").xpos + np.array([-0.5, 0, 0])
+    )
