@@ -28,6 +28,14 @@ from dimos.robot.galaxea.r1pro.primitive_skills import (
     R1ProPrimitiveSkills,
     resolve_primitive_object,
 )
+from dimos.robot.get_all_blueprints import get_blueprint_by_name
+
+
+@pytest.mark.parametrize("name", ["r1pro-primitives-sim", "r1pro-primitives-sim-agent"])
+def test_cli_can_resolve_independent_primitive_blueprints(name):
+    blueprint = get_blueprint_by_name(name)
+    modules = {atom.module for atom in blueprint.active_blueprints}
+    assert modules.issuperset({R1ProPrimitiveSkills, *POLICIES.values()})
 
 
 @pytest.fixture

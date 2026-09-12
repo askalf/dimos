@@ -246,3 +246,9 @@ At this check right placement refinement/export finished and left placement is
 training. The local DimOS/MCP validation queue still waits for all exports and
 held-out evaluation. Preview sessions use default ports, separate from the
 queued verification session (MCP 10016, discovery 19479).
+
+The exact CLI check caught a registry omission: top-level calls to the custom
+blueprint factory were invisible to the AST scanner. Added terminal
+.global_config() calls, regenerated all_blueprints.py with its pytest generator,
+and added regression tests resolving both names through get_blueprint_by_name.
+This fixes dimos run discovery; factory-level/MCP tests alone had missed it.
