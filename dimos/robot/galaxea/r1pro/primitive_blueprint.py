@@ -209,8 +209,8 @@ objects, unvalidated support heights, or room navigation. Grasp and place are AC
 is classical SDK execution. Keep replies brief."""
 
 r1pro_primitives_sim = build_primitive_blueprint(
-    RECORDINGS_DIR / "r1pro-act-task/jobs/independent-primitives-act-v1/policies"
+    RECORDINGS_DIR / "r1pro-act-task/policy-primitives-preview"
 )
 r1pro_primitives_sim_agent = build_primitive_blueprint(
-    RECORDINGS_DIR / "r1pro-act-task/jobs/independent-primitives-act-v1/policies", agent=True
+    RECORDINGS_DIR / "r1pro-act-task/policy-primitives-preview", agent=True
 )

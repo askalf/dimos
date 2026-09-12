@@ -245,3 +245,38 @@ for planning and the same coordinator for execution. The demo selects DimOS
 queries. RoboPlan is a planning dependency inside DimOS. The phrase "native
 validation" in older notes means testing the composed DimOS processes and MCP
 interface, as distinct from an offline policy rollout in the training harness.
+
+## View the current primitive preview
+
+From a desktop terminal:
+
+```bash
+cd /home/mustafa/dimos-wt/r1pro-act-sim
+.home-venv/bin/dimos run r1pro-primitives-sim
+```
+
+This opens the MuJoCo table scene and starts idle. The blueprint uses
+`recordings/r1pro-act-task/policy-primitives-preview`: all four first-round
+independent policies with unchanged weights and the tested 30-action setting.
+It is a preview with known placement failures. Ongoing refinement and its queued
+checks use separate artifacts and local transport sessions.
+
+In another terminal in the same directory:
+
+```bash
+.home-venv/bin/dimos mcp call pick_object --arg object=object_2 --arg arm=right
+.home-venv/bin/dimos mcp call wait_for_action --arg seconds=20
+```
+
+Repeat the wait command while the action is running. A successful pick ends
+holding the object. After success, request placement separately:
+
+```bash
+.home-venv/bin/dimos mcp call place_object --arg region=tray --arg arm=right
+.home-venv/bin/dimos mcp call wait_for_action --arg seconds=20
+```
+
+Use `get_scene` to inspect objects and hands, and explicit `recover_action` after a
+failed motion. This direct MCP preview does not need an OpenAI key. Language-agent
+mode uses `r1pro-primitives-sim-agent` and requires the user's configured model
+credentials; automated external-agent validation is still pending permission.

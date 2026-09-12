@@ -230,3 +230,19 @@ Its source and documentation now include these changes; active jobs continue fro
 `/tmp/dimos-r1pro-primitives`. Root `/home/mustafa/dimos` Alfred work is untouched.
 Recent source commit: 58fdec4749; documentation clarification: 4d4a08e18b. Both
 passed commit hooks without co-author trailers. These changes are still local.
+
+### Current-state preview requested
+
+Prepared `recordings/r1pro-act-task/policy-primitives-preview` as a complete,
+separate copy of all four first-round independent policies. Verified every weight
+checksum unchanged; only n_action_steps is changed to 30, with provenance in
+preview.json and each deployment.json. The two new primitive blueprints now use
+this preview path, so `r1pro-primitives-sim` opens an idle full MuJoCo view with
+direct MCP commands. Original checkpoints and the old object demo are untouched.
+Known baseline result remains 7/8 offline sequences, with placement failures;
+this does not promote the unfinished refinement. See OBJECT_PRIMITIVES.md for
+minimal desktop launch and separate pick/hold/place commands.
+At this check right placement refinement/export finished and left placement is
+training. The local DimOS/MCP validation queue still waits for all exports and
+held-out evaluation. Preview sessions use default ports, separate from the
+queued verification session (MCP 10016, discovery 19479).
