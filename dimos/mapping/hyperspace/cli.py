@@ -222,8 +222,12 @@ def ingest(
         transforms += 1
     typer.echo(f"tf: {transforms} messages")
 
-    min_interval = 1.0 / hz if hz > 0 else 0.0
-    ingestor.config.min_frame_interval_s = max(min_interval, config.min_frame_interval_s)
+    # --hz IS the embed rate. It used to be max(1/hz, the config default), which meant
+    # it could only ever slow embedding down: --hz 15 against a 0.2 default did nothing.
+    ingestor.config.min_frame_interval_s = 1.0 / hz if hz > 0 else 0.0
+    ingestor.buffer.config.min_interval = min(
+        ingestor.buffer.config.min_interval or 0.0, ingestor.config.min_frame_interval_s
+    )
     first_ts: float | None = None
     started = time.monotonic()
     for pair in colors.align(depths, tolerance=config.depth_max_dt):
@@ -430,7 +434,10 @@ def main(
         "an .mcap cannot be written to, so it gets <recording>.hyperspace.db)",
     ),
     reuse: bool = typer.Option(True, help="Reuse an existing memory db instead of re-embedding"),
-    hz: float = typer.Option(5.0, help="Colour frames per second to consider"),
+    hz: float = typer.Option(
+        hs.MAX_KEYFRAME_HZ,
+        help="Frames per second to embed, and so the ceiling on the keyframe rate",
+    ),
     max_seconds: float = typer.Option(1e9, help="Stop after this much of the recording"),
     frame: str = typer.Option("odom", help="Frame to answer in"),
     voxel_size: float = typer.Option(0.1, help="Voxel edge length, meters"),

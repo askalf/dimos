@@ -49,6 +49,12 @@ class Intrinsics:
     cy: float
 
 
+# Frames per second the ingest embeds at, and so the ceiling on the keyframe rate:
+# novelty can spike the keeps up to here and no further. The colour stream is 30 Hz, so
+# this is a cost choice, not a sensor limit -- ~26 ms/frame per member on an M-series GPU.
+MAX_KEYFRAME_HZ = 15.0
+
+
 @dataclass
 class KeyframeGateConfig:
     """Every knob is per camera and individually off-able (``None``)."""
@@ -74,7 +80,10 @@ class KeyframeGateConfig:
     dark_level: int = 8
     max_bright_fraction: float | None = None
     bright_level: int = 247
-    min_interval: float | None = 0.1
+    # Smallest gap between two keyframes. It must not sit below the embed interval or
+    # it silently becomes the real rate cap: at 15 Hz embedding the old 0.1 held
+    # keyframes to 10 Hz however fast the view changed.
+    min_interval: float | None = 1.0 / MAX_KEYFRAME_HZ
 
 
 def exposure_stats(

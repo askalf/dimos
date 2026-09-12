@@ -96,8 +96,9 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
     device: str = "auto"
     # Frame the quality gate measures camera motion against.
     motion_reference_frame: str = "odom"
-    # Never embed frames closer together than this (s). 0.2 = 5 Hz.
-    min_frame_interval_s: float = 0.2
+    # Never embed frames closer together than this (s), which is also the ceiling on
+    # the keyframe rate: novelty spikes the keeps up to here and no further.
+    min_frame_interval_s: float = 1.0 / hs.MAX_KEYFRAME_HZ
 
     # Keyframe gate. Negative turns a gate off.
     # Frames held after a candidate to swap a blurry one for a sharp one; the rate
@@ -110,7 +111,7 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
     max_linear_velocity: float = -1.0
     max_dark_fraction: float = 0.6
     max_bright_fraction: float = -1.0
-    min_keyframe_interval: float = 0.1
+    min_keyframe_interval: float = 1.0 / hs.MAX_KEYFRAME_HZ
 
     # Depth readings beyond this (m) are holes: RealSense frames carry 65535 mm
     # "no reading" sentinels and occasional 20-40 m glitches.

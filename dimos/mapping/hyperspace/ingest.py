@@ -133,7 +133,7 @@ class IngestConfig:
     gate: hs.KeyframeGateConfig
     motion_reference_frame: str = "odom"
     # Never embed frames closer together than this (s). 0.2 = 5 Hz.
-    min_frame_interval_s: float = 0.2
+    min_frame_interval_s: float = 1.0 / hs.MAX_KEYFRAME_HZ
     # Depth beyond this (m) is a hole: RealSense 65535 mm sentinels and glitches.
     max_depth_m: float = 10.0
     depth_max_dt: float = 0.05
