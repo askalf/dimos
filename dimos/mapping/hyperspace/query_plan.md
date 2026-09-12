@@ -208,6 +208,33 @@ in hyperspace instead, so `self.tf.get` goes away either way.
 | tf tree of row ids | yes | **yes** -- `fetch_by_ids` |
 | sparse refine | no | no |
 
+## Grouping the patches
+
+Clustering runs on the hot patches, not on a dense grid. Two shapes, and the second is
+the one to build.
+
+**Points, radius, KD-tree.** `cKDTree.query_pairs(r)` then connected components over the
+pairs -- DBSCAN with `min_samples=1`, no grid, `r` a real distance. Measured at grocery's
+size, 7,807 points with r=0.2: **11 ms**, against 82.6 s for the dense chain. It scales
+poorly though -- 6,000 points 6 ms, 20,000 56 ms, 50,000 336 ms -- and is sharply
+sensitive to the radius: at 20,000 points r=0.5 costs 236 ms against r=0.2's 56 ms,
+because the pair count grows with the cube of the radius inside a dense blob. Use
+`output_type="ndarray"`; the default builds a python set of tuples and dwarfs the search.
+
+**Boxes, sweep and prune.** Each patch is a pyramid, so take its axis-aligned bounding
+box and group boxes that overlap: sort by x-min, sweep, keep an active set, and test y
+and z only on the pairs that overlap in x. Union-find the result. O(n log n) plus the
+number of real overlaps, no grid, and no radius to pick.
+
+The box is the better primitive because it carries the distance for free. A far patch's
+box is large -- its depth is uncertain and its pixel footprint covers more of the world
+-- while a near patch's is small. So two far patches merge readily and two near ones
+have to genuinely touch, which is the behaviour a fixed radius has to be tuned into.
+
+Not yet designed: how a group is SCORED once it exists. It should use the match strength
+and the agreement between models, and a big box should count for less than a small one
+at the same score.
+
 ## Still open
 
 - Refine on the sparse set instead of a dense box, or capped the way memory_world caps
