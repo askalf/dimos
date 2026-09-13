@@ -89,6 +89,7 @@ def main(
     gap_s: float = typer.Option(1.0, "--gap", help="quiet this long ends an episode (s)"),
     threshold: float = typer.Option(0.15, "--threshold", help="OWLv2's per-box acceptance score"),
     attempts: int = typer.Option(3, "--attempts", help="frames of an episode to try"),
+    batch: int = typer.Option(1, "--batch", help="frames per detector forward pass"),
     checkpoint: str = typer.Option("", "--owl", help="an OWLv2 checkpoint other than base"),
     band_m: float = typer.Option(
         0.5, "--depth-band", help="depth spread that is still the object (m)"
@@ -130,6 +131,7 @@ def main(
         checkpoint=checkpoint or DetectConfig.checkpoint,
         device=pick_device(device),
         attempts=attempts,
+        batch=batch,
         max_episodes=max_episodes,
         min_episode_frames=min_episode_frames,
         episode_gap_s=gap_s,

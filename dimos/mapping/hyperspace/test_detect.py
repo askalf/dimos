@@ -22,8 +22,10 @@ distance -- so a wrong answer says which step is wrong rather than only that one
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -33,6 +35,7 @@ from dimos.mapping.hyperspace.detect import (
     Box3D,
     DetectConfig,
     Detection,
+    Owlv2Boxes,
     RecordingFrames,
     box_from_points,
     detect_episode,
@@ -221,29 +224,42 @@ def test_a_box_on_a_different_grid_than_the_intrinsics_still_lands() -> None:
 
 
 class StubBoxes:
-    """A detector that answers with a fixed box, or refuses, and counts its calls."""
+    """A detector that answers with a fixed box, or refuses.
+
+    Counts images shown and forward passes separately: batching is exactly the
+    difference between the two, so a test can hold one fixed and assert on the other.
+    """
 
     def __init__(self, box: tuple[float, float, float, float] | None, score: float = 0.5) -> None:
         self.box = box
         self.score = score
         self.calls = 0
+        self.passes = 0
+
+    def answer(self) -> tuple[tuple[float, float, float, float], float] | None:
+        return None if self.box is None else (self.box, self.score)
+
+    def best_many(
+        self, images: Sequence[Image], text: str
+    ) -> list[tuple[tuple[float, float, float, float], float] | None]:
+        del text
+        self.passes += 1
+        answers = []
+        for _ in images:
+            self.calls += 1
+            answers.append(self.answer())
+        return answers
 
     def best(
         self, image: Image, text: str
     ) -> tuple[tuple[float, float, float, float], float] | None:
-        self.calls += 1
-        del image, text
-        return None if self.box is None else (self.box, self.score)
+        return self.best_many([image], text)[0]
 
 
 class RefusesThenAnswers(StubBoxes):
     """Refuses the first frame it is shown and answers the second."""
 
-    def best(
-        self, image: Image, text: str
-    ) -> tuple[tuple[float, float, float, float], float] | None:
-        self.calls += 1
-        del image, text
+    def answer(self) -> tuple[tuple[float, float, float, float], float] | None:
         if self.calls == 1:
             return None
         return (self.box, self.score)  # type: ignore[return-value]
@@ -381,28 +397,91 @@ def test_a_detection_without_depth_still_reports_the_2d_box(recording: SqliteSto
     assert found.note == "no usable depth inside the box"
 
 
-def test_find_yields_episodes_one_at_a_time(recording: SqliteStore, monkeypatch) -> None:
-    """The detector must not have run for every episode before the first result."""
+def test_every_episode_is_detected_in_one_forward_pass(recording: SqliteStore, monkeypatch) -> None:
+    """Two episodes, two images, but only one trip through the detector.
+
+    This is the whole point of the round: the detector costs the same whether it is
+    shown one frame or eight, so showing it the whole round at once is most of a
+    query's detector time. It replaces an older contract where episodes trickled out
+    one at a time -- that only ever bought a progress bar.
+    """
     frames = [frame_at(ts, 0.9) for ts in (10.0, 10.25)] + [
         frame_at(ts, 0.4) for ts in (30.0, 30.25)
     ]
     monkeypatch.setattr("dimos.mapping.hyperspace.frames.hot_frames", lambda *a, **k: frames)
     boxes = StubBoxes((28.0, 20.0, 36.0, 28.0))
     config = DetectConfig(world_frame=WORLD)
-    answers = find(
-        recording,
-        recording,
-        "a square",
-        config=config,
-        frames=RecordingFrames(recording, config=config),
-        boxes=boxes,
+    answers = list(
+        find(
+            recording,
+            recording,
+            "a square",
+            config=config,
+            frames=RecordingFrames(recording, config=config),
+            boxes=boxes,
+        )
     )
-    first = next(answers)
-    assert first.rank == 1
-    assert boxes.calls == 1, "the second episode should not have been detected yet"
-    rest = list(answers)
-    assert len(rest) == 1 and rest[0].rank == 2
-    assert boxes.calls == 2
+    assert [answer.rank for answer in answers] == [1, 2]
+    assert boxes.calls == 2, "one image per episode"
+    assert boxes.passes == 1, "and both of them in the same forward pass"
+
+
+def test_an_episode_that_answered_is_not_shown_a_second_frame(
+    recording: SqliteStore, monkeypatch
+) -> None:
+    """Batching must not cost extra work: a settled episode sits out later rounds."""
+    frames = [frame_at(ts, 0.9) for ts in (10.0, 10.25, 10.5)]
+    monkeypatch.setattr("dimos.mapping.hyperspace.frames.hot_frames", lambda *a, **k: frames)
+    boxes = StubBoxes((28.0, 20.0, 36.0, 28.0))
+    config = DetectConfig(world_frame=WORLD, attempts=3)
+    answers = list(
+        find(
+            recording,
+            recording,
+            "a square",
+            config=config,
+            frames=RecordingFrames(recording, config=config),
+            boxes=boxes,
+        )
+    )
+    assert len(answers) == 1 and answers[0].box3d is not None
+    assert boxes.calls == 1, "it answered on the first frame; the other two are never shown"
+    assert boxes.passes == 1
+
+
+class CountingDetector:
+    """Stands in for core's OWLv2, recording the size of every forward pass."""
+
+    def __init__(self) -> None:
+        self.passes: list[int] = []
+
+    def query_detections_batch(self, images, queries, threshold):  # type: ignore[no-untyped-def]
+        del queries, threshold
+        self.passes.append(len(images))
+        return [SimpleNamespace(detections=[]) for _ in images]
+
+
+def test_a_round_is_split_at_the_configured_batch_size() -> None:
+    """The cap bounds how much of the GPU one round can ask for.
+
+    Ten frames at a cap of four is three passes of 4, 4 and 2 -- not ten passes, and
+    not one pass of ten.
+    """
+    boxes = Owlv2Boxes(DetectConfig(batch=4))
+    detector = CountingDetector()
+    boxes._detector = detector
+    answers = boxes.best_many([object()] * 10, "a square")  # type: ignore[list-item]
+    assert detector.passes == [4, 4, 2]
+    assert answers == [None] * 10, "every image was answered, in order"
+
+
+def test_one_image_is_still_one_pass() -> None:
+    """`best` is the single-image case of the same path, not a second code path."""
+    boxes = Owlv2Boxes(DetectConfig(batch=8))
+    detector = CountingDetector()
+    boxes._detector = detector
+    assert boxes.best(object(), "a square") is None  # type: ignore[arg-type]
+    assert detector.passes == [1]
 
 
 def test_geometry_matches_a_hand_computation() -> None:

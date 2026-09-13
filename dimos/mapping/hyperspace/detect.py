@@ -65,10 +65,13 @@ class DetectConfig:
     # usually right, but an object can be half out of the frame at the moment it scores
     # highest, and the next look is free of that.
     attempts: int = 3
-    # Frames handed to the detector in one forward pass. Preprocessing, text encoding
-    # and kernel launches amortize across a batch, so the whole round of episodes goes
-    # in together; the cap is there to bound how much of the GPU a round can ask for.
-    batch: int = 8
+    # Frames handed to the detector in one forward pass. One, because batching was
+    # measured on this Mac and LOST: OWLv2 pads every frame to 960x960, so the cost is
+    # per pixel and there is little per-call overhead to amortize, while the bigger
+    # activation tensor pushes MPS around -- 275 ms a frame at 1, 300 at 4, 514 at 12.
+    # The knob stays because a CUDA box with headroom is the case where it should win;
+    # raise it there and measure before believing it.
+    batch: int = 1
     # Episodes to run the detector over at all, strongest first. Detection is ~0.7 s a
     # frame, so this is the knob that decides what a query costs.
     max_episodes: int = 12
@@ -384,7 +387,7 @@ def detect_episode(
     A detection that was found but never placed is kept as the answer of last resort.
     """
     peak = episode.peak
-    detection = Detection(
+    Detection(
         query=query,
         rank=rank,
         ts=peak.ts,
@@ -568,10 +571,16 @@ def find(
     boxes: Owlv2Boxes | None = None,
     keep_images: bool = False,
 ) -> Iterator[Detection]:
-    """The whole chain, yielding one detection per episode as it is found.
+    """The whole chain: text in, one detection per episode out, in rank order.
 
     *store* holds the patch index, *recording* the pictures. They are usually the same
     file -- a recording indexes itself -- but an .mcap keeps its index alongside.
+
+    The episodes are detected as a group rather than one at a time, so results arrive
+    together at the end rather than trickling out. That is the price of batching, and
+    it is worth paying: the detector is a fixed cost per call, so twelve episodes in
+    one pass is most of a query's detector time saved, while the trickle only ever
+    bought a progress bar.
     """
     from dimos.mapping.hyperspace.frames import hot_frames, ranked_episodes
 
@@ -587,13 +596,4 @@ def find(
         min_frames=config.min_episode_frames,
         limit=config.max_episodes,
     )
-    for rank, episode in enumerate(found, 1):
-        yield detect_episode(
-            episode,
-            query,
-            frames,
-            boxes,
-            rank=rank,
-            config=config,
-            keep_image=keep_images,
-        )
+    yield from detect_episodes(found, query, frames, boxes, config=config, keep_images=keep_images)
