@@ -1,6 +1,6 @@
 # Classical R1Pro apartment
 
-A separate interactive demo on `feat/r1pro-classical-apartment`. The robot uses GraspGenX and DimOS planning; no ACT policy runs in this stack. Native MCP validation passed the complete pick → dining delivery → placement → re-pick → kitchen delivery → placement sequence. Separate tests passed both-hand manipulation, carton handling and cup placement. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-classical-apartment.md) for evidence and scope.
+A separate interactive demo on `feat/r1pro-classical-apartment`. The robot uses GraspGenX and DimOS planning; no ACT policy runs in this stack. Native MCP validation passed the complete pick → dining delivery → placement → re-pick → kitchen delivery → placement sequence. The reported cabinet collision was reproduced and fixed; seed 1646757217 now passes glue-stick delivery to dining, kitchen cup pickup, return navigation and worktable placement. Separate tests passed both-hand manipulation, carton handling and cup placement. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-classical-apartment.md) for evidence and scope.
 
 ## This workstation
 
@@ -82,6 +82,6 @@ The local MCP harness runs without an external language model:
   --viewer --stay-open
 ```
 
-Use a fresh output directory and unused test ports. Per-action JSON contains requested/resolved targets, planning choices, outcome and physical state; `result.json` also records source hashes. Workstation background validation status is under `/tmp/r1pro-classical-bootstrap/*-status.json`.
+Use a fresh output directory and unused test ports. Per-action JSON contains requested/resolved targets, planning choices, outcome and physical state; `result.json` also records source hashes. The latest completed navigation evidence is in `recordings/r1pro-classical-navigation-fix/seed-1646757217/`. Its `stack-v6-status.json` reports all seven actions successful.
 
 For a fresh environment the project provides `manipulation` and `graspgenx` extras. GraspGenX source and model revisions are pinned by the existing DimOS provider. The workstation's `.classical-venv` adds that provider to the existing apartment runtime without modifying the user's ACT environment.
