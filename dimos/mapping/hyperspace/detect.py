@@ -81,6 +81,9 @@ class DetectConfig:
     # before any group gets a second one. Off means strongest-first, which spends the
     # detector on four looks at the nearest chair before it has seen the far one.
     spread_places: bool = True
+    # Cells whose depth is within this of the strongest hit's are the same surface it
+    # is on. What keeps a cone's cells and drops the floor under it.
+    place_band_m: float = 0.3
     # How close two episodes have to be to count as the same place for that ordering.
     # Deliberately looser than the radius answers are merged at: this estimate comes
     # from patch rays before any detector has looked, and one cone at a metre placed
@@ -484,24 +487,36 @@ class _Try:
 
 
 def place_of(
-    episode: Episode, frames: RecordingFrames, world_frame: str
+    episode: Episode, frames: RecordingFrames, world_frame: str, *, band_m: float = 0.3
 ) -> NDArray[np.float64] | None:
     """Roughly where an episode's match is, before any detector has looked at it.
 
     A hot patch already carries the ray through its cell and the depth the sensor read
     there, which is all the dense path ever had; one transform puts it in the world.
-    Rough on purpose -- it exists to tell two places apart, not to answer with.
+
+    The hot cells are not the object. Measured on one cone: a 24x42 grid over an
+    848x480 frame makes a cell about 11 cm of scene at 2.3 m, so a 40 cm cone is four
+    cells -- and a hundred cells came back hot, a tenth of the frame. Those extra cells
+    are mostly the floor under and in front of it, at their own perfectly correct
+    depths, so averaging over all of them lands between two surfaces: the strongest hit
+    alone was 0.17 m from the cone where the median of the top five was 1.54 m.
+
+    So the strongest hit picks the surface and *band_m* keeps the cells that agree with
+    it, which the object's do and the floor's do not. The same move `object_points`
+    makes inside the detector's box, one step earlier.
     """
     peak = episode.peak
     usable = sorted(
         (hit for hit in peak.hits if np.isfinite(hit.depth) and hit.depth > 0),
         key=lambda hit: -hit.score,
-    )[:5]
+    )
     if not usable:
         return None
-    here = np.median(
-        [[hit.ray[0] * hit.depth, hit.ray[1] * hit.depth, hit.depth] for hit in usable], axis=0
-    )
+    surface = usable[0].depth
+    kept = [hit for hit in usable if abs(hit.depth - surface) <= band_m]
+    weights = np.array([max(hit.score, 1e-6) for hit in kept])
+    points = np.array([[hit.ray[0] * hit.depth, hit.ray[1] * hit.depth, hit.depth] for hit in kept])
+    here = (points * weights[:, None]).sum(axis=0) / weights.sum()
     pose = frames.pose(peak.frame, peak.ts, world_frame)
     if pose is None:
         return None
@@ -522,7 +537,10 @@ def spread_by_place(
     later than it would have been, which is a different thing from being dropped, and
     the grouping leans on patch depth -- reliable up close, not at ten metres.
     """
-    places = [place_of(episode, frames, config.world_frame) for episode in episodes]
+    places = [
+        place_of(episode, frames, config.world_frame, band_m=config.place_band_m)
+        for episode in episodes
+    ]
     groups: list[list[int]] = []
     centres: list[NDArray[np.float64] | None] = []
     for index, here in enumerate(places):
