@@ -521,3 +521,28 @@ the four current interactive policies for 4,000 updates each. Compare old/new
 on identical fresh seeds 371000..371003, then run the seven integrated cases.
 Nothing is automatically promoted or pushed. Check the pipeline's status.json
 for its actual running stage; collection/verification is not completed training.
+
+### September 12, 22:05 Pacific: three profiles trained; disk interruption resumed
+
+The longer-reach smoke passed its acceptance gate. Full correction collection
+retained 41 physically verified pick/place pairs: 18 right-arm and 23 left-arm,
+including 19 pairs with an object held in the other hand. Failed demonstrations
+were excluded. Existing rehearsal data and all source policies remain intact.
+
+Right pick, right place and left pick each completed 4,000 refinement updates.
+Their final checkpoints and completed-stage markers are saved. The pipeline
+then stopped before exporting left pick because free disk space fell below
+its 12 GiB reserve; the status retained the previous stage name, so this was
+not a failed or lost left-pick training run. Left place had not started.
+
+Space subsequently recovered without deleting this project's datasets or
+checkpoints. A waiting uv cache prune was canceled because another live demo
+was using the cache. With 31.27 GiB free, resumed the same detached run.py as
+PID 2461022. Completed stages are skipped; export-pick-left is now running.
+The interrupted status and resume record are preserved in the job directory.
+
+Remaining stages are left-place conversion/training/export, the matched
+eight-case held-out evaluation, and seven integrated DimOS/MCP cases. The old
+policies scored 3/8 on this round's fresh 371000..371003 baseline; the new
+policies have not yet been evaluated. Earlier 4/8 results used different seeds.
+Preview artifacts and the remote branch have not been promoted or replaced.
