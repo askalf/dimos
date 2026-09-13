@@ -12,12 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from IPython.terminal.ipapp import TerminalIPythonApp
+import pytest
 from typer.testing import CliRunner
 
 from dimos.cli.dimos import main
 from dimos.cli.shell import _format_description, _shell_namespace
 from dimos.core.introspection.module.info import ModuleInfo, ParamInfo, RpcInfo
 from dimos.porcelain.dimos import Dimos
+
+
+@pytest.fixture
+def legacy_ipython_cli():
+    application = TerminalIPythonApp()
+    # IPython 8, selected by the lockfile for Python 3.10, has no tip flags.
+    application.flags = {
+        name: value for name, value in application.flags.items() if name not in {"tip", "no-tip"}
+    }
+    yield application
+    application.close_handlers()
 
 
 def test_shell_rejects_non_interactive_execution(mocker):
@@ -32,7 +45,7 @@ def test_shell_rejects_non_interactive_execution(mocker):
     connect.assert_not_called()
 
 
-def test_shell_starts_ipython_with_debug_namespace_and_disconnects(mocker):
+def test_shell_starts_ipython_with_debug_namespace_and_disconnects(mocker, legacy_ipython_cli):
     app = mocker.Mock(spec=Dimos)
     mocker.patch("dimos.cli.shell._is_interactive_terminal", return_value=True)
     connect = mocker.patch("dimos.cli.shell.Dimos.connect", return_value=app)
@@ -43,7 +56,8 @@ def test_shell_starts_ipython_with_debug_namespace_and_disconnects(mocker):
 
     assert result.exit_code == 0, result.output
     connect.assert_called_once_with()
-    assert start_ipython.call_args.kwargs["argv"] == ["--no-banner", "--no-tip"]
+    legacy_ipython_cli.parse_command_line(start_ipython.call_args.kwargs["argv"])
+    assert legacy_ipython_cli.config.TerminalIPythonApp.display_banner is False
     namespace = start_ipython.call_args.kwargs["user_ns"]
     assert set(namespace) == {"app", "guide", "modules", "rpcs", "describe"}
     assert namespace["app"] is app
