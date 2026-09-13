@@ -34,7 +34,13 @@ import numpy as np
 import typer
 
 from dimos.mapping.hyperspace.cli import memory_db_for, open_store, pick_device, pick_stream
-from dimos.mapping.hyperspace.detect import DetectConfig, Owlv2Boxes, RecordingFrames, find
+from dimos.mapping.hyperspace.detect import (
+    DetectConfig,
+    Owlv2Boxes,
+    RecordingFrames,
+    find,
+    merge_duplicates,
+)
 from dimos.mapping.hyperspace.frames import TextTowers, member_streams
 from dimos.utils.logging_config import setup_logger
 
@@ -86,6 +92,9 @@ def main(
     checkpoint: str = typer.Option("", "--owl", help="an OWLv2 checkpoint other than base"),
     band_m: float = typer.Option(
         0.5, "--depth-band", help="depth spread that is still the object (m)"
+    ),
+    merge_m: float = typer.Option(
+        0.75, "--merge", help="answers whose centres are this close are one place (m)"
     ),
     world_frame: str = typer.Option("odom", "--world-frame"),
     device: str = typer.Option("auto", "--device"),
@@ -164,10 +173,14 @@ def main(
             found.append(detection)
         took = time.monotonic() - started
         placed = sum(1 for detection in found if detection.box3d is not None)
+        places = merge_duplicates(found, merge_m)
         typer.echo(
-            f"  {len(found)} episodes, {placed} placed, "
+            f"  {len(found)} episodes, {placed} placed in {places} distinct place(s), "
             f"{sum(1 for d in found if not d.found)} refused, {took:.1f}s"
         )
+        for detection in found:
+            if detection.duplicate_of is not None:
+                typer.echo(f"    #{detection.rank} is another look at #{detection.duplicate_of}")
 
         name = slug_of(text)
         if scene is None:
@@ -177,6 +190,7 @@ def main(
             "seconds": took,
             "episodes": len(found),
             "placed": placed,
+            "places": places,
             "detections": [detection.as_dict() for detection in found],
             "artifacts": {key: str(value) for key, value in sheet.items() if value},
         }

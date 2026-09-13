@@ -217,6 +217,7 @@ def boxes_html(
             "frames": detection.episode_frames,
             "span": detection.episode_span,
             "models": detection.models,
+            "duplicate_of": detection.duplicate_of,
         }
         for detection in detections
         if detection.box3d is not None
@@ -309,13 +310,16 @@ bounds.getCenter(centre)
 const span = Math.max(bounds.getSize(new THREE.Vector3()).length(), 4)
 
 const drawn = data.boxes.map(box => {
+    // A second look at a place already found is drawn cooler, so the distinct answers
+    // are the ones that stand out.
+    const tone = box.duplicate_of ? 0x8a6a4a : 0xff8a2e
     const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(...box.extent),
-        new THREE.MeshBasicMaterial({ color: 0xff8a2e, transparent: true, opacity: 0.18 }))
+        new THREE.MeshBasicMaterial({ color: tone, transparent: true, opacity: 0.18 }))
     mesh.position.set(...box.centre)
     const edges = new THREE.LineSegments(
         new THREE.EdgesGeometry(mesh.geometry),
-        new THREE.LineBasicMaterial({ color: 0xff8a2e }))
+        new THREE.LineBasicMaterial({ color: tone }))
     edges.position.copy(mesh.position)
     scene.add(mesh); scene.add(edges)
     return mesh
@@ -373,7 +377,8 @@ title.innerHTML = `<span>${data.query}</span>`
 side.appendChild(title)
 const sub = document.createElement("p")
 sub.className = "sub"
-sub.textContent = `${data.boxes.length} placed` +
+const places = data.boxes.filter(b => !b.duplicate_of).length
+sub.textContent = `${data.boxes.length} placed in ${places} distinct place(s)` +
     (data.refused.length ? `, ${data.refused.length} episode(s) the detector refused` : "") +
     (data.recording ? ` · ${data.recording}` : "")
 side.appendChild(sub)
@@ -387,6 +392,7 @@ data.boxes.forEach((box, index) => {
     const card = document.createElement("div")
     card.className = "box"
     card.innerHTML = `<b>#${box.rank}</b> owl ${box.score.toFixed(2)} &middot; ${box.depth.toFixed(1)} m away` +
+        (box.duplicate_of ? `<span class="n">another look at #${box.duplicate_of}</span>` : "") +
         `<span class="n">${box.centre.map(v => v.toFixed(1)).join(", ")} m &middot; ` +
         `${box.extent.map(v => v.toFixed(2)).join(" x ")} m</span>` +
         `<span class="n">${box.frames} frames over ${box.span.toFixed(1)}s &middot; ${box.models.join(", ")}</span>`

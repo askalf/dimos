@@ -30,12 +30,14 @@ import pytest
 
 from dimos.mapping.hyperspace import patches as hs
 from dimos.mapping.hyperspace.detect import (
+    Box3D,
     DetectConfig,
     Detection,
     RecordingFrames,
     box_from_points,
     detect_episode,
     find,
+    merge_duplicates,
     object_points,
 )
 from dimos.mapping.hyperspace.frames import Episode, Frame, Hit, episodes, ranked_episodes
@@ -493,3 +495,70 @@ def test_a_detection_that_can_never_be_placed_is_still_returned(recording: Sqlit
     assert found.found and found.box3d is None
     assert found.ts == pytest.approx(70.0), "the first, strongest attempt is the one kept"
     assert found.note == "no usable depth inside the box"
+
+
+def placed(rank: int, score: float, centre: tuple[float, float, float]) -> Detection:
+    detection = Detection(
+        query="a square",
+        rank=rank,
+        ts=float(rank),
+        camera_frame=CAMERA,
+        episode_frames=3,
+        episode_span=1.0,
+        episode_score=score,
+        models=["stub"],
+        attempts=1,
+        score=score,
+    )
+    detection.box2d = (0.0, 0.0, 1.0, 1.0)
+    detection.box3d = Box3D(
+        frame=WORLD, centre=centre, extent=(0.2, 0.2, 0.2), pixels=50, depth_m=1.0
+    )
+    return detection
+
+
+def test_several_looks_at_one_shelf_become_one_place() -> None:
+    """The real "cheese" answers on grocery.db: five episodes, three places.
+
+    Three of them are the same metre of the cheese fridge and collapse onto the
+    strongest. The fourth is 1.2 m along the same aisle and stays its own answer --
+    grouping is around a representative, not single-link, so a chain of near-neighbours
+    cannot swallow the length of a shelf.
+    """
+    found = [
+        placed(1, 0.34, (8.3, 20.8, -2.1)),
+        placed(2, 0.43, (8.2, 20.9, -2.2)),
+        placed(3, 0.47, (8.2, 20.9, -2.2)),
+        placed(4, 0.40, (7.5, 19.9, -2.1)),
+        placed(5, 0.48, (-1.3, 24.9, -1.3)),
+    ]
+    assert merge_duplicates(found, merge_m=0.75) == 3
+    # The strongest of the group keeps its rank; the rest point at it.
+    assert found[2].duplicate_of is None and found[2].score == 0.47
+    assert [d.duplicate_of for d in found] == [3, 3, None, None, None]
+    # Widen it and the fourth joins them.
+    assert merge_duplicates(found, merge_m=1.5) == 2
+
+
+def test_merging_keeps_places_further_apart_than_the_radius() -> None:
+    found = [placed(1, 0.5, (0.0, 0.0, 0.0)), placed(2, 0.4, (0.0, 0.8, 0.0))]
+    assert merge_duplicates(found, merge_m=0.75) == 2
+    assert merge_duplicates(found, merge_m=1.0) == 1
+
+
+def test_an_unplaced_detection_is_never_called_a_duplicate() -> None:
+    """Without a 3D box there is no "same place" to test, so it stays on its own."""
+    flat = Detection(
+        query="a square",
+        rank=2,
+        ts=2.0,
+        camera_frame=CAMERA,
+        episode_frames=3,
+        episode_span=1.0,
+        episode_score=0.1,
+        models=["stub"],
+        attempts=1,
+    )
+    found = [placed(1, 0.5, (0.0, 0.0, 0.0)), flat]
+    assert merge_duplicates(found) == 1
+    assert flat.duplicate_of is None

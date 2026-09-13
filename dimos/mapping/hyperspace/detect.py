@@ -126,6 +126,8 @@ class Detection:
     box2d: tuple[float, float, float, float] | None = None
     box3d: Box3D | None = None
     note: str = ""
+    # Set by `merge_duplicates`: the rank of the detection this one is another look at.
+    duplicate_of: int | None = None
     image: Image | None = field(default=None, repr=False)
 
     @property
@@ -147,6 +149,7 @@ class Detection:
             "box2d": None if self.box2d is None else list(self.box2d),
             "box3d": None if self.box3d is None else self.box3d.as_dict(),
             "note": self.note,
+            "duplicate_of": self.duplicate_of,
         }
 
 
@@ -431,6 +434,34 @@ def _place(
     detection.box3d = box_from_points(
         points, pose, config.world_frame, median, trim_percentile=config.trim_percentile
     )
+
+
+def merge_duplicates(detections: Sequence[Detection], merge_m: float = 0.75) -> int:
+    """Mark detections that are another look at the same thing. Returns how many places.
+
+    Episodes are split on time, deliberately: the trolley passes the cheese counter
+    four times and that is four chances at it rather than one. But the four answers are
+    one place, so the last step is to say so -- in 3D, where "the same place" means
+    something, rather than in the episode split, where it would cost the extra chances.
+
+    The strongest detection of a group keeps its rank and the rest point at it; nothing
+    is dropped, because a second look is evidence and a caller may want to show it.
+    """
+    placed = [d for d in detections if d.box3d is not None]
+    for detection in detections:
+        detection.duplicate_of = None
+    for detection in sorted(placed, key=lambda d: -d.score):
+        if detection.duplicate_of is not None:
+            continue
+        assert detection.box3d is not None
+        here = np.asarray(detection.box3d.centre)
+        for other in placed:
+            if other is detection or other.duplicate_of is not None:
+                continue
+            assert other.box3d is not None
+            if float(np.linalg.norm(np.asarray(other.box3d.centre) - here)) <= merge_m:
+                other.duplicate_of = detection.rank
+    return sum(1 for d in placed if d.duplicate_of is None)
 
 
 def find(
