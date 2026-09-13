@@ -197,3 +197,14 @@ def test_primitive_can_stand_back_when_nearby_workspace_poses_hit_the_table(
 
     assert 0.48 <= target[0] - path[-1][0] <= 0.520001
     assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))
+
+
+def test_demonstration_can_prefer_longer_reach_without_disabling_collision_checks(checker, mocker):
+    mocker.patch("dimos.robot.galaxea.r1pro.object_primitive_state.ObjectPackingState")
+    scene = PrimitiveSceneState(checker.model, checker.probe, sample_layout(0), np.zeros(20))
+    mocker.patch.object(scene, "transport_planner", return_value=checker)
+
+    path = scene.preposition_path("right", np.array([0.6, 0.18, 0.77]), preferred_reach=0.48)
+
+    assert path[-1] == pytest.approx([0.12, 0.5, 0.0])
+    assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))

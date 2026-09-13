@@ -480,3 +480,44 @@ No external LLM is called, no preview is overwritten and nothing is promoted
 automatically. If neither qualifies, the evidence will guide corrective data
 collection. No training is currently running. Overall demonstrated reliability
 remains 4/8 offline and 3/7 integrated until new results establish otherwise.
+
+### September 12: feedback rejected; corrective approach demonstrations
+
+Feedback comparison completed: 10-action execution passed 1/8 sequences and
+2/8 picks; 20 actions passed 2/8 sequences and 3/8 picks. Neither qualified
+for the integrated-test gate. Retain the 30-action setting (4/8 sequences).
+More frequent observation updates did not solve these policies' grasp errors.
+
+Added an offline corrective collector, `demo_collect_primitive_approaches`.
+ACT performs the approach until it is about to close an open hand near an
+upright, settled, supported object. The DimOS teacher then centers, closes,
+lifts and holds; only teacher-generated frames become labels. Unsafe approach
+states are rejected. Corrected picks must retain a five-second physical hold.
+Place demonstrations remain separately labeled. The shared bilateral scene
+retains an object in the other hand for half the layouts, with ownership and
+disturbance checks throughout. No teacher fallback was added to runtime skills.
+
+Table-source collection can prefer 48 cm reach to cover the failing posture;
+the existing collision-checked candidate set and runtime default order remain
+unchanged. The preference only reorders demonstrated, bounded reach candidates.
+New `--approach-corrections` refinement mode trains all four existing profiles
+with original-data rehearsal and unchanged normalization, after checking the
+minimum accepted data and other-hand-held counts. It is mutually exclusive with
+the previous interactive-context collection mode; both older modes remain.
+
+Initial physical smoke `jobs/primitive-approach-smoke-v1` passed 8/8 corrective
+pick/place pairs (four per arm), including four pairs with another object held.
+Its table positioning used the original preference. The longer-reach smoke is
+`jobs/primitive-approach-smoke-v2` on 370200..370203 and is running separately.
+Saved arrays contain only approach/grasp/lift/hold in pick labels, and separate
+place/release/retreat phases; ACT approach prefixes are metadata, not labels.
+Twenty data/profile/refinement tests and fifteen transport tests passed; all
+four changed source files passed typing, and lint/format checks passed.
+
+Next detached pipeline is `jobs/primitive-approach-refine-v1`: gate on the
+longer-reach smoke, collect 32 fresh layouts 370000..370031, preserve all data
+through rehearsal from `primitive-interactive-refine-v1/merged`, and fine-tune
+the four current interactive policies for 4,000 updates each. Compare old/new
+on identical fresh seeds 371000..371003, then run the seven integrated cases.
+Nothing is automatically promoted or pushed. Check the pipeline's status.json
+for its actual running stage; collection/verification is not completed training.

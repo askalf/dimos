@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fine-tune existing place primitives on ACT-held states with original-data rehearsal."""
+"""Fine-tune existing primitives on verified correction data with original-data rehearsal."""
 
 import argparse
 import hashlib
@@ -88,6 +88,9 @@ def run(args: argparse.Namespace) -> None:
     )
     if args.interactive_context:
         contract["interactive_context"] = True
+    if args.approach_corrections:
+        contract["approach_corrections"] = True
+    train_all = args.interactive_context or args.approach_corrections
     settings = job / "settings.json"
     if settings.exists() and json.loads(settings.read_text()) != contract:
         raise ValueError("Resume settings or source policies differ")
@@ -95,44 +98,43 @@ def run(args: argparse.Namespace) -> None:
     stage = TrainingStages(root, job)
     prepare = [*stage.learned, "-m", "dimos_lerobot.prepare_primitive_act"]
     try:
+        collection = (
+            [
+                sys.executable,
+                "-m",
+                "dimos.robot.galaxea.r1pro.demo_collect_primitives",
+                "--interactive-context",
+            ]
+            if args.interactive_context
+            else [
+                *stage.learned,
+                "-m",
+                "dimos_lerobot.demo_collect_primitive_approaches"
+                if args.approach_corrections
+                else "dimos_lerobot.demo_collect_primitive_corrections",
+                "--policies",
+                str(args.policies.resolve()),
+                "--action-steps",
+                str(args.action_steps),
+            ]
+        )
         stage(
             "collect",
-            (
-                [
-                    sys.executable,
-                    "-m",
-                    "dimos.robot.galaxea.r1pro.demo_collect_primitives",
-                    "--interactive-context",
-                    "--output",
-                    str(job / "collection"),
-                    "--layouts",
-                    str(args.layouts),
-                    "--start-seed",
-                    str(args.start_seed),
-                ]
-                if args.interactive_context
-                else [
-                    *stage.learned,
-                    "-m",
-                    "dimos_lerobot.demo_collect_primitive_corrections",
-                    "--policies",
-                    str(args.policies.resolve()),
-                    "--output",
-                    str(job / "collection"),
-                    "--layouts",
-                    str(args.layouts),
-                    "--start-seed",
-                    str(args.start_seed),
-                    "--action-steps",
-                    str(args.action_steps),
-                ]
-            ),
+            [
+                *collection,
+                "--output",
+                str(job / "collection"),
+                "--layouts",
+                str(args.layouts),
+                "--start-seed",
+                str(args.start_seed),
+            ],
         )
         for primitive, arm in (
-            (p, a) for a in ARMS for p in (PRIMITIVES if args.interactive_context else ("place",))
+            (p, a) for a in ARMS for p in (PRIMITIVES if train_all else ("place",))
         ):
             name = f"{primitive}-{arm}"
-            if args.interactive_context:
+            if train_all:
                 fresh = json.loads((job / "collection" / name / "manifest.json").read_text())
                 held_examples = sum(bool(row.get("other_hand_object")) for row in fresh["episodes"])
                 if held_examples < 4:
@@ -204,7 +206,7 @@ def run(args: argparse.Namespace) -> None:
                     "--output_dir=" + str(training),
                 ],
             )
-            for export_primitive in (primitive,) if args.interactive_context else PRIMITIVES:
+            for export_primitive in (primitive,) if train_all else PRIMITIVES:
                 name = f"{export_primitive}-{arm}"
                 source_policy = (
                     training / "checkpoints/last/pretrained_model"
@@ -277,7 +279,9 @@ def main() -> None:
     parser.add_argument("--evaluation-seed", type=int, default=352000)
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--action-steps", type=int, default=30)
-    parser.add_argument("--interactive-context", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--interactive-context", action="store_true")
+    mode.add_argument("--approach-corrections", action="store_true")
     args = parser.parse_args()
     if args.layouts < 8 or args.steps < 1 or min(args.start_seed, args.evaluation_seed) < 0:
         parser.error("Use at least eight layouts, positive steps and nonnegative seeds")
@@ -288,7 +292,11 @@ def main() -> None:
     ):
         parser.error("Evaluation seeds must be held out of correction collection")
     for primitive, arm in (
-        (p, a) for a in ARMS for p in (PRIMITIVES if args.interactive_context else ("place",))
+        (p, a)
+        for a in ARMS
+        for p in (
+            PRIMITIVES if args.interactive_context or args.approach_corrections else ("place",)
+        )
     ):
         seeds = {
             r["seed"]
