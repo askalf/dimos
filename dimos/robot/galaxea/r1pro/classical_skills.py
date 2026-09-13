@@ -472,7 +472,9 @@ class R1ProClassicalSkills(Module):
                     abs(state["joint_positions"][n] - points[-1][i])
                     for i, n in enumerate(R1PRO_PICK_PLACE_JOINTS[:18])
                 )
-                stable = stable + 1 if error <= 0.02 else 0
+                velocities = state.get("joint_velocities", {})
+                moving = max(abs(velocities.get(n, 0.0)) for n in R1PRO_PICK_PLACE_JOINTS[:18])
+                stable = stable + 1 if error <= 0.02 and moving <= 0.03 else 0
             if protected_grasp is not None and not state["objects"][protected_grasp]["grasped"]:
                 raise RuntimeError("Selected object lost two-finger contact during transfer")
             if time.monotonic() - fresh > 2:

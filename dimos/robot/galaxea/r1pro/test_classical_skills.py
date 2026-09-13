@@ -61,6 +61,35 @@ def test_cancelled_motion_never_reaches_the_coordinator(skills):
     skills._control.execute_trajectory.assert_not_called()
 
 
+def test_scene_fault_prevents_motion(skills):
+    skills._sim.primitive_state.return_value = dict(error="lost cargo")
+    with pytest.raises(RuntimeError, match="lost cargo"):
+        skills._drive([[0.0] * 20, [0.01] * 18 + [0.0, 0.0]], {})
+    skills._control.execute_trajectory.assert_not_called()
+
+
+def test_small_joint_error_does_not_skip_a_needed_tcp_correction(skills, mocker):
+    joints = dict(zip(R1PRO_PICK_PLACE_JOINTS, [0.0] * 20, strict=True))
+    target = np.eye(4)
+    displaced = target.copy()
+    displaced[0, 3] = 0.01
+    skills._sim.primitive_state.side_effect = [
+        dict(joint_positions=joints),
+        dict(tcp_poses={"left": displaced.tolist()}),
+        dict(tcp_poses={"left": target.tolist()}),
+        dict(joint_positions=joints),
+    ]
+    mocker.patch.object(skills, "_drive")
+    skills._prepare_posture(
+        dict(
+            object="object_1",
+            reachability=dict(arm="left", ready_joints=[0.0] * 20, pregrasp=target.tolist()),
+        ),
+        {},
+    )
+    skills._sim.classical_align.assert_called_once_with(0, "left", target.tolist())
+
+
 def test_contact_loss_during_transfer_stops_the_segment(skills, mocker):
     positions = dict(zip(R1PRO_PICK_PLACE_JOINTS, [0.0] * 20, strict=True))
     before = dict(

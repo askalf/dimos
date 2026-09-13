@@ -84,6 +84,10 @@ class R1ProClassicalSim(R1ProApartmentSim):
                 name: float(self._engine.data.actuator(name).ctrl[0])
                 for name in R1PRO_PICK_PLACE_JOINTS
             }
+            state["joint_velocities"] = {
+                name: float(self._engine.data.joint(name).qvel[0])
+                for name in R1PRO_PICK_PLACE_JOINTS
+            }
             state["tcp_poses"] = {}
             for side in ARMS:
                 site = self._engine.data.site(f"{side}_tcp")

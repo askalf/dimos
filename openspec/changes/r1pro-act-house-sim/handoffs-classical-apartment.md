@@ -63,3 +63,16 @@ Wider tests exposed real remaining problems:
 Latest detached batch at this edit: `/tmp/r1pro-classical-bootstrap/verified-status.json`, supervisor PID3359541 at launch. Earlier batch files: `batch-status.json`, `retest-status.json`, `layouts-status.json`, `travel-status.json`. Runs are simulation-only, isolated MCP10026 / Zenoh19492, and do not affect the user's old desktop process. Harness results now record source SHA256 so tests can be tied to loaded code.
 
 34 focused regressions passed after support/contact fusion changes; mypy passed 10 implementation files before the latest centering/loaded-speed edits. Re-run affected checks and native tests before promotion. Navigation and robustness across layouts remain unfinished. No new ACT training is running. No external language-model test has been run.
+
+## Saved checkpoint and latest continuation
+
+- Local preview commit: `b9f2afd7d5` on `feat/r1pro-classical-apartment`; pre-commit hooks passed, no coauthor trailer, not pushed.
+- 67 focused tests (including registry and GraspGenX adapter) passed; mypy passed 12 implementation sources at that checkpoint.
+- `dining-v5` and `dining-v6` both physically picked and carried a bottle along the native route to the dining table, including the arrival turn, without losing it. This is positive navigation evidence, not yet completed delivery.
+- `bimanual-v6` physically placed the left object upright, supported, released and settled while preserving the right hold. Its final `complete` was false because a 10 cm retreat from the new body-centered grasp was 8 mm short of the existing above-object clearance check. The retreat now accounts for object height; the success check was not loosened.
+- `dining-v5` placement selected a posture with only 0.2% wrist joint margin. Placement search now rejects less than 4% margin and ranks the remainder by margin as well as base travel.
+- Exact `random-right-v5` failure snapshot replay now **passes support, release and retreat** (`support-replay-result.json`). The command-to-measured arm offset was causing a millimetre-level Cartesian descent to undertravel while the geometric planner correctly refused further virtual penetration. Local arm commands now retain measured static load compensation, and motion completion additionally waits for low measured joint velocity.
+- Small TCP staging corrections now retain static load compensation and can use torso assistance with the other hand preserved if fixed-torso IK cannot converge. They remain bounded and collision-checked.
+- The finer support descent starts from measured TCP, advances 1 mm at a time, and remains limited to 10 mm. Collision diagnostics name the offending geometry and save a replayable state on failure.
+
+Current supervisors: `/tmp/r1pro-classical-bootstrap/arrival-status.json` (v6), then `/tmp/r1pro-classical-bootstrap/integration-status.json` (supervisor PID3391484 at launch, queued v7 bimanual, full delivery/re-pick, carton, cup). Do not mistake an older success for validation of a later source version. Full agent/HumanCLI language-provider testing remains unperformed; local MCP is the verified command path. The new launch instructions are in `dimos/robot/galaxea/r1pro/CLASSICAL_APARTMENT.md`, still marked under validation.

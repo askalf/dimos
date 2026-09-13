@@ -63,6 +63,13 @@ class ClassicalGraspPlanner(ObjectReachability):
     allow_target_contact: bool = False
     sweep_error: str = ""
 
+    def _joint_margin(self, arm: Arm, joints: NDArray[Any]) -> float:
+        margins = []
+        for column in active_indices(arm)[:-1]:
+            lower, upper = self.model.joint(R1PRO_PICK_PLACE_JOINTS[column]).range
+            margins.append(min(joints[column] - lower, upper - joints[column]) / (upper - lower))
+        return float(min(margins))
+
     def _collisions(
         self, *, selected: int, arm: Arm, allow_selected_contact: bool = False
     ) -> list[str]:
@@ -146,22 +153,36 @@ class ClassicalGraspPlanner(ObjectReachability):
         return points
 
     def _arm_command(self, joints: NDArray[Any], arm: Arm) -> list[float]:
-        """Preserve stationary joints' servo targets, including torso gravity preload."""
+        """Keep static load compensation on moving joints and targets on stationary joints."""
         command = [
             float(self.scene.data.actuator(name).ctrl[0]) for name in R1PRO_PICK_PLACE_JOINTS
         ]
         for column in active_indices(arm)[:-1]:
-            command[column] = float(joints[column])
+            measured = float(self.scene.data.qpos[self.qids[column]])
+            bias = command[column] - measured
+            if abs(bias) > 0.03:
+                raise RuntimeError(
+                    "Arm has not settled enough to estimate static load compensation"
+                )
+            command[column] = float(joints[column]) + bias
         return command
 
     def align_pose(self, index: int, arm: Arm, target: NDArray[Any]) -> list[list[float]]:
-        """Correct staging error using measured torso FK, without moving the torso again."""
+        """Correct measured TCP error while retaining each joint's static load compensation."""
         self.initialize_local_probe(index, arm)
         before = self.probe.qpos[self.qids].copy()
-        goal = self.solve_pose(arm, target)
+        try:
+            goal = self.solve_pose(arm, target)
+        except RuntimeError:
+            goal = self.solve_pose(arm, target, torso=True, preserve_other=True)
         if np.max(np.abs(goal - before)) > 0.20 or not self._sweep(goal, index, arm):
             raise RuntimeError("Staging correction exceeds the local collision-checked range")
-        return [self._arm_command(before, arm), self._arm_command(goal, arm)]
+        command = np.array(
+            [float(self.scene.data.actuator(name).ctrl[0]) for name in R1PRO_PICK_PLACE_JOINTS]
+        )
+        corrected = command.copy()
+        corrected[:18] += (goal - before)[:18]
+        return [command.tolist(), corrected.tolist()]
 
     def _check_closure(self, index: int, arm: Arm) -> None:
         """Require opposed finger-pad contacts at one attainable jaw opening."""
@@ -302,9 +323,15 @@ class ClassicalGraspPlanner(ObjectReachability):
                 target + site.xpos - self.probe.body(self.scene.layout.objects[index].name).xpos
             )
             above = tcp.copy()
-            above[2, 3] += 0.10
+            above[2, 3] = max(
+                tcp[2, 3] + 0.10,
+                target[2] + self.scene.layout.objects[index].half_size[2] + 0.05,
+            )
             try:
                 ready = self.solve_pose(arm, above, torso=torso)
+                margin = self._joint_margin(arm, ready)
+                if margin < 0.04:
+                    raise RuntimeError("Placement posture leaves insufficient joint-limit margin")
                 self.probe.qpos[self.qids] = ready
                 self._forward()
                 self.allow_target_contact = True
@@ -320,6 +347,7 @@ class ClassicalGraspPlanner(ObjectReachability):
                 cost = float(
                     np.linalg.norm(pose[:2] - self.transport.start[:2])
                     + 0.15 * abs(pose[2] - self.transport.start[2])
+                    - 0.5 * margin
                 )
                 return dict(
                     index=index,
@@ -329,6 +357,7 @@ class ClassicalGraspPlanner(ObjectReachability):
                     tcp=tcp.tolist(),
                     preplace=above.tolist(),
                     ready_joints=ready.tolist(),
+                    joint_margin=margin,
                     cost=cost,
                 )
             except RuntimeError as exc:
