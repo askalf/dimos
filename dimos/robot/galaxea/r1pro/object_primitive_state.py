@@ -81,6 +81,12 @@ class PrimitiveSceneState:
                 ).tolist()
                 if held_by
                 else None,
+                tcp_offset_local=(
+                    self.data.site(f"{held_by}_tcp").xmat.reshape(3, 3).T
+                    @ (self.data.site(f"{held_by}_tcp").xpos - self.data.body(obj.name).xpos)
+                ).tolist()
+                if held_by
+                else None,
             )
             rows.append(row)
         for arm in ARMS:
@@ -236,7 +242,9 @@ class PrimitiveSceneState:
                 if (
                     after["held_by"] != before["held_by"]
                     or not after["upright"]
-                    or np.linalg.norm(np.asarray(after["tcp_offset"]) - before["tcp_offset"])
+                    or np.linalg.norm(
+                        np.asarray(after["tcp_offset_local"]) - before["tcp_offset_local"]
+                    )
                     > 0.015
                 ):
                     raise RuntimeError(f"Lost or disturbed the other hand's {after['object']}")

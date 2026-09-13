@@ -19,7 +19,7 @@ All kinematic object attachments here live only in the planning snapshot.
 """
 
 from dataclasses import dataclass, replace
-from itertools import pairwise
+from itertools import islice, pairwise
 import time
 from typing import Any, cast
 
@@ -135,7 +135,13 @@ class ClassicalGraspPlanner(ObjectReachability):
         return True
 
     def solve_pose(
-        self, arm: Arm, tcp: NDArray[Any], *, torso: bool = False, preserve_other: bool = False
+        self,
+        arm: Arm,
+        tcp: NDArray[Any],
+        *,
+        torso: bool = False,
+        preserve_other: bool = False,
+        neutral_seed: bool = False,
     ) -> NDArray[np.float64]:
         base = self.probe.body("base_link")
         transform = self.reference_rotation @ base.xmat.reshape(3, 3).T
@@ -160,6 +166,14 @@ class ClassicalGraspPlanner(ObjectReachability):
             position_tolerance=0.0002,
             orientation_tolerance=0.008,
             max_attempts=1,
+            seed=(
+                JointState(
+                    name=list(R1PRO_PICK_PLACE_JOINTS[:18]),
+                    position=self.scene.arms[arm].home[:18].tolist(),
+                )
+                if neutral_seed
+                else None
+            ),
         )
         result[-2:] = self.probe.qpos[self.qids[-2:]]
         return result
@@ -366,7 +380,7 @@ class ClassicalGraspPlanner(ObjectReachability):
         if np.linalg.norm(target[:2] - pose[:2]) > 0.85:
             raise RuntimeError("Placement outside bounded arm reach search")
         errors = []
-        for torso in (False, True):
+        for torso, neutral_seed in ((False, False), (True, False), (True, True)):
             self.initialize_probe(pose)
             site = self.probe.site(f"{arm}_tcp")
             c, s = np.cos(yaw_offset), np.sin(yaw_offset)
@@ -382,7 +396,7 @@ class ClassicalGraspPlanner(ObjectReachability):
                 target[2] + self.scene.layout.objects[index].half_size[2] + 0.05,
             )
             try:
-                ready = self.solve_pose(arm, above, torso=torso)
+                ready = self.solve_pose(arm, above, torso=torso, neutral_seed=neutral_seed)
                 margin = self._joint_margin(arm, ready)
                 clearance = self._joint_clearance(arm, ready)
                 # The joint ranges differ substantially. Requiring 4% of each
@@ -438,7 +452,14 @@ class ClassicalGraspPlanner(ObjectReachability):
             key=lambda p: float(np.linalg.norm(p[:2] - self.initial.site(f"{arm}_tcp").xpos[:2])),
         )
         for target in ordered[:24]:
-            for pose in self._body_poses(target, arm)[:8]:
+            # Nearby ideal reach poses can be inside a counter or cabinet.
+            # Obstructed poses must not consume the finite IK search budget.
+            clear_poses = (
+                pose
+                for pose in self._body_poses(target, arm)
+                if self.transport.clear_pose_segment(pose, pose)
+            )
+            for pose in islice(clear_poses, 8):
                 # Placement may turn an upright item about gravity. A fixed
                 # wrist heading can otherwise force a joint against its stop.
                 for yaw in (0.0, -np.pi / 2, np.pi / 2, np.pi):

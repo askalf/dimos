@@ -25,6 +25,10 @@ Live MCP tools were inspected: independent get_scene/get_surfaces/pick_object/pl
 
 Tracking diagnostics initially included a NumPy boolean that JSON could not serialize; native action execution continued but one navigation evidence file was not written in v14. Diagnostics now cast scalar types, and the execution regression uses NumPy planner endpoints and checks JSON serialization. Fourteen tests and mypy on both changed implementation files pass. No motion/contact success threshold was relaxed.
 
+`delivery-v15` passed pickup, dining navigation, dining placement, re-pick and navigation to kitchen. Its final kitchen placement exhausted the bounded search. Filtering obstructed body poses before applying the IK candidate cap and adding the calibrated neutral posture as an additional endpoint seed found three fully checked kitchen candidates in 20.74 seconds. The best candidate's continuous upright transfer also passes in the saved scene (64 waypoints, 3.22 seconds). `HomeKinematics.solve` accepts an optional explicit seed; default behavior is unchanged, and seed vectors contain only the 18 modeled body/arm joints.
+
+`delivery-v16` exposed a real frame bug in the inherited cargo monitor: it compared world-frame TCP/object offsets across a turn. The bottle remained in the right hand; world offset changed 15.49 mm, but gripper-frame offset changed only 0.64 mm. Inventory now adds `tcp_offset_local`, and slip checks use that field. The existing world-frame field remains available for reachability calculations. Two tests (one per hand) rotate/translate held cargo without reporting slip, then inject actual 20 mm relative motion and require rejection. Twenty-one related state/reachability/execution tests pass. Current native rerun: `grip-frame-delivery-status.json`, supervisor PID3522263, case `delivery-v17`. This is the only full test stack; prior supervisors have completed.
+
 The entries below are chronological history and include superseded tuning values and completed process IDs.
 
 ## Current implementation (under validation; not promoted)

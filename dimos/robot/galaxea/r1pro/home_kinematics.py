@@ -122,6 +122,7 @@ class HomeKinematics:
         position_tolerance: float = POSITION_TOLERANCE,
         orientation_tolerance: float = ORIENTATION_TOLERANCE,
         max_attempts: int = 8,
+        seed: JointState | None = None,
     ) -> NDArray[np.float64]:
         torso = self.groups["torso"]
         if torso_yaw_only:
@@ -137,7 +138,7 @@ class HomeKinematics:
                 for side, xyz in targets.items()
             },
             auxiliary_groups=[torso] if allow_torso else [],
-            seed=self.seed(data),
+            seed=self.seed(data) if seed is None else seed,
             position_tolerance=position_tolerance,
             orientation_tolerance=orientation_tolerance,
             check_collision=False,
