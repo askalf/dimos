@@ -1,0 +1,376 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Smoke tests for the memory world.
+
+Deliberately small. This is a visual demo, and the viewer is checked by looking at it --
+what is here is the arithmetic underneath that a person cannot see going wrong: the route
+planner, the tf interpolation, the replay's scan accumulation, the shapes that go on the
+wire, and the answer path end to end. A green run here means the pieces still fit
+together; it does not mean the demo looks right.
+"""
+
+from __future__ import annotations
+
+import itertools
+import math
+import threading
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from dimos.teleop.memory_world.query import ClusterSummary, MemoryQueryResult
+from dimos.teleop.memory_world.route import LETHAL, RoutePlanner
+from dimos.teleop.memory_world.tf_tree import TfTree, pose_matrix, quaternion_from_matrix
+from dimos.teleop.memory_world.visual_search import PatchHit, Place, cluster_hits, search_phrase
+
+VOXEL = 0.1
+BODY_Z = 0.4  # the robot's base height above the floor at z = 0
+
+
+# ---- the module itself ------------------------------------------------------------
+
+
+def test_the_module_composes_and_serves_its_routes(memory_world) -> None:  # type: ignore[no-untyped-def]
+    """It is five mixins over one config; a name two of them disagree about breaks at import.
+
+    Cheap, and it is the test that would have caught every rename made while the
+    hyperspace half was being cut out of this package.
+    """
+    app = SimpleNamespace(
+        routes=[],
+        exception_handler=lambda *a, **k: (lambda fn: fn),
+        get=lambda path, **k: (lambda fn: app.routes.append(("GET", path)) or fn),
+        post=lambda path, **k: (lambda fn: app.routes.append(("POST", path)) or fn),
+    )
+    memory_world._setup_answer_routes(app)
+
+    assert ("POST", "/memory_world/ask") in app.routes
+    assert ("POST", "/memory_world/navigate") in app.routes
+    assert ("GET", "/memory_world/frames") in app.routes
+    assert ("GET", "/memory_world/orbit") in app.routes
+    assert ("GET", "/memory_world/answer") in app.routes
+    # The engine is not configurable and the module says so to anything that asks.
+    assert memory_world.find_in_memory("").success is False
+
+
+# ---- the route planner -------------------------------------------------------------
+
+
+def _path(*waypoints: tuple[float, float]) -> np.ndarray:
+    """The robot's base along straight legs between waypoints, a point every 5 cm."""
+    points = []
+    for (x0, y0), (x1, y1) in itertools.pairwise(waypoints):
+        n = max(int(math.dist((x0, y0), (x1, y1)) / 0.05), 2)
+        for t in np.linspace(0, 1, n):
+            points.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, BODY_Z))
+    return np.asarray(points)
+
+
+def _floor(x0: float, x1: float, y0: float, y1: float) -> np.ndarray:
+    xs = np.arange(x0, x1, VOXEL)
+    ys = np.arange(y0, y1, VOXEL)
+    gx, gy = np.meshgrid(xs, ys, indexing="ij")
+    return np.stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)], axis=1)
+
+
+def _wall(x0: float, x1: float, y0: float, y1: float, height: float = 1.5) -> np.ndarray:
+    xs = np.arange(x0, x1, VOXEL)
+    ys = np.arange(y0, y1, VOXEL)
+    zs = np.arange(VOXEL, height, VOXEL)
+    gx, gy, gz = np.meshgrid(xs, ys, zs, indexing="ij")
+    return np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+
+
+# A 10 x 6 m floor with a wall across x = 5 that has a 1.2 m gap at y in [4, 5.2], and a
+# drive that goes through the gap and back down the far side.
+ROOM = np.concatenate([_floor(0, 10, 0, 6), _wall(4.9, 5.1, 0, 4.0), _wall(4.9, 5.1, 5.2, 6.0)])
+DRIVE = _path((1, 1), (1, 4.6), (9, 4.6), (9, 1))
+
+
+def test_the_route_goes_through_the_doorway_and_never_through_the_wall() -> None:
+    """The one thing Navigate must not do is draw a line through a wall.
+
+    The green tube is presented as what the navigation stack would drive, so a route that
+    crosses the wall is not a cosmetic defect: it is the demo asserting something false
+    about the map it is standing in.
+    """
+    planner = RoutePlanner.from_voxels(ROOM, DRIVE, voxel_size=VOXEL)
+
+    assert planner.costs[planner.cell_of((5.0, 3.5))] == LETHAL, "the wall is not free space"
+    assert 0 <= planner.costs[planner.cell_of((5.0, 4.6))] < LETHAL, "the doorway is passable"
+
+    route = planner.plan((1.5, 1.5), (8.5, 1.5))
+    assert route is not None, "no route between two points the robot drove between"
+    points = np.asarray([(x, y) for x, y, *_ in route.points])
+    # Every leg that crosses x = 5 has to do it in the doorway.
+    for (x0, y0), (x1, y1) in itertools.pairwise(points):
+        if (x0 - 5.0) * (x1 - 5.0) < 0:
+            span = (x1 - x0) or 1e-9
+            y_at_wall = y0 + (y1 - y0) * (5.0 - x0) / span
+            assert 3.9 < y_at_wall < 5.3, f"the route crosses the wall at y={y_at_wall:.2f}"
+    assert route.length_m > 7.0, f"a route around the wall cannot be {route.length_m:.1f} m"
+
+
+def test_a_goal_nothing_connects_to_is_refused_rather_than_faked() -> None:
+    """Outside the corridor the map is unknown, and unknown is not free."""
+    planner = RoutePlanner.from_voxels(ROOM, DRIVE, voxel_size=VOXEL)
+    assert planner.plan((1.5, 1.5), (200.0, 200.0)) is None
+
+
+# ---- tf ---------------------------------------------------------------------------
+
+
+def test_a_pose_between_two_tf_samples_is_interpolated_not_snapped() -> None:
+    """Every photograph is hung where tf says its camera was, at the frame's own stamp.
+
+    Nearest-sample instead of interpolation puts the evidence a whole tf period away from
+    where it was taken, which at 10 Hz and walking pace is tens of centimetres.
+    """
+    tree = TfTree()
+    tree.add("odom", "base_link", 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    tree.add("odom", "base_link", 1.0, (2.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+
+    half = tree.lookup("odom", "base_link", 0.5)
+
+    assert half is not None, "tf could not place a frame between two samples it holds"
+    assert half[0][0] == pytest.approx(1.0, abs=1e-6), f"x was {half[0][0]}, not the midpoint"
+
+
+def test_a_frame_tf_never_saw_has_no_pose_rather_than_the_origin() -> None:
+    """The origin is a place in the world; "I do not know" is not."""
+    tree = TfTree()
+    tree.add("odom", "base_link", 0.0, (1.0, 2.0, 3.0), (0.0, 0.0, 0.0, 1.0))
+    assert tree.lookup("odom", "camera_link", 0.0) is None
+
+
+def test_a_pose_survives_the_matrix_round_trip() -> None:
+    """Poses go to the viewer as a quaternion and come back as a matrix all through here."""
+    quaternion = (0.0, 0.0, math.sin(math.pi / 8), math.cos(math.pi / 8))  # 45 degrees about z
+    matrix = pose_matrix((1.0, 2.0, 3.0), quaternion)
+    back = quaternion_from_matrix(matrix)
+    assert np.allclose(matrix[:3, 3], (1.0, 2.0, 3.0))
+    # A quaternion and its negation are the same rotation, so compare up to sign.
+    assert np.allclose(back, quaternion, atol=1e-6) or np.allclose(
+        np.negative(back), quaternion, atol=1e-6
+    ), f"{back} is not {quaternion}"
+
+
+# ---- the replay -------------------------------------------------------------------
+
+
+def test_a_world_frame_scan_is_moved_back_to_where_the_rays_started() -> None:
+    """The map is ray-traced, so a scan has to be in the SENSOR's frame to be traced.
+
+    Some recordings store the cloud already registered in the world. Taking those points
+    as if they were sensor-relative casts every ray from the wrong origin, and the map
+    that comes out is carved in the wrong places -- a quiet, total corruption that still
+    renders as a plausible building.
+    """
+    from dimos.teleop.memory_world.replay import sensor_scan
+
+    world_from_sensor = pose_matrix((10.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    in_world = np.array([[11.0, 0.0, 0.0], [12.0, 0.0, 0.0]])
+
+    scan = sensor_scan(in_world, world_from_sensor, in_world=True)
+
+    assert scan.position == (10.0, 0.0, 0.0), "the rays do not start at the sensor"
+    assert np.allclose(scan.points, [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]), (
+        "a world-frame scan was traced from the origin of the world, not the sensor"
+    )
+    # ...and a scan already in the sensor frame is left exactly alone.
+    same = sensor_scan(in_world, world_from_sensor, in_world=False)
+    assert np.allclose(same.points, in_world)
+
+
+def test_a_tf_gap_holds_the_last_position_instead_of_dropping_to_the_origin() -> None:
+    """The same array is the orbit path AND the free corridor a route is planned over.
+
+    A run of origins in it is a straight line through unmapped space that the planner
+    cannot tell from somewhere the robot actually drove.
+    """
+    from dimos.teleop.memory_world.replay import frame_positions
+
+    known = {1.0: (5.0, 0.0, 0.0), 3.0: (7.0, 0.0, 0.0)}
+    positions = frame_positions(
+        [0.0, 1.0, 2.0, 3.0],
+        lambda ts: None if ts not in known else pose_matrix(known[ts], (0.0, 0.0, 0.0, 1.0)),
+    )
+
+    assert positions[0] == [5.0, 0.0, 0.0], "the gap before the first fix became the origin"
+    assert positions[2] == [5.0, 0.0, 0.0], "the gap did not hold the last known position"
+    assert positions[3] == [7.0, 0.0, 0.0]
+
+
+# ---- the wire ---------------------------------------------------------------------
+
+
+def test_one_engine_answers_and_it_is_named_on_the_wire() -> None:
+    """Two engines used to be able to answer, and the client branched on which. One now."""
+    result = MemoryQueryResult(answer="found it")
+    assert result.engine == "siglip"
+    with pytest.raises(ValueError):
+        MemoryQueryResult(answer="found it", engine="hyperspace")  # type: ignore[arg-type]
+
+
+def test_a_score_that_cannot_be_written_as_json_is_refused_at_the_model() -> None:
+    """`json.dumps` writes `NaN`, which `JSON.parse` throws on.
+
+    The viewer's `decodeText` then returns null and `main.js` drops the WHOLE
+    `query_result`: nothing on screen, and a success reported by the server.
+    """
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            ClusterSummary(index=0, centre=(0.0, 0.0, 0.0), radius=1.0, score=bad, peak=0.5)
+
+
+def test_a_spoken_question_is_reduced_to_the_thing_asked_about() -> None:
+    assert search_phrase("where did I see a fire extinguisher?") == "a fire extinguisher"
+    assert search_phrase("   ") == ""
+
+
+# ---- places -----------------------------------------------------------------------
+
+
+def _hit(x: float, y: float, similarity: float, camera: tuple[float, float, float]) -> PatchHit:
+    return PatchHit(
+        position=(x, y, 0.0),
+        similarity=similarity,
+        source_id=0,
+        ts=0.0,
+        camera_position=camera,
+        camera_orientation=(0.0, 0.0, 0.0, 1.0),
+        image_uv=(0.25, 0.75),
+    )
+
+
+def test_a_thing_seen_from_several_sides_outranks_a_single_lucky_frame() -> None:
+    """The primary rank key is distinct viewing directions, not similarity.
+
+    A high score in one frame is as often a look-alike patch as a real object; a thing
+    four cameras agree on from four sides is the answer worth flying the viewer to.
+    """
+    seen_all_round = [
+        _hit(0.0, 0.0, 0.30, camera=(3.0, 0.0, 0.0)),
+        _hit(0.0, 0.0, 0.30, camera=(-3.0, 0.0, 0.0)),
+        _hit(0.0, 0.0, 0.30, camera=(0.0, 3.0, 0.0)),
+    ]
+    one_lucky_frame = [_hit(20.0, 0.0, 0.90, camera=(23.0, 0.0, 0.0))]
+
+    places = cluster_hits(seen_all_round + one_lucky_frame, radius=1.0, max_places=5)
+
+    assert len(places) == 2
+    assert places[0].position[0] == pytest.approx(0.0, abs=0.2), "the single frame outranked it"
+    assert places[0].views == 3
+    assert places[0].image_uv == (0.25, 0.75), "the matched pixel was lost on the way out"
+
+
+# ---- the answer, end to end -------------------------------------------------------
+
+
+def test_a_question_becomes_places_with_photographs() -> None:
+    """Drive the whole answer path over a stubbed index: question in, places and pictures out.
+
+    The stubs are the model and the store, which is everything slow; the path between
+    them -- scoring, clustering, the result the viewer renders, the evidence headers it
+    hangs -- is the real code. This is the one test that fails if a rename in
+    `visual_answers` or `query` breaks the demo's only feature.
+    """
+    from dimos.teleop.memory_world.visual_answers import VisualAnswers
+
+    found = [
+        Place(position=(1.0, 2.0, 0.0), similarity=0.42, source_id=3, ts=1.0, views=3),
+        Place(position=(8.0, 2.0, 0.0), similarity=0.21, source_id=9, ts=2.0, views=1),
+    ]
+    published: dict[str, object] = {}
+
+    class Host(VisualAnswers):
+        def __init__(self) -> None:
+            self._store_lock = threading.RLock()
+            self._clients_lock = threading.RLock()
+            self._last_answer = (None, None)
+            self._active_query_images: list[tuple[dict, bytes]] = []
+            self.config = SimpleNamespace(
+                store_path="/nowhere/walk.db",
+                search_top_k=5,
+                place_radius_m=1.0,
+                max_places=3,
+                object_radius_m=0.25,
+                world_frame="odom",
+                image_stream_name="color_image",
+                query_image_max_size=240,
+                thumbnail_jpeg_quality=60,
+                query_image_distance_m=1.5,
+            )
+
+        def _ensure_visual_index(self):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(count=lambda: 7, search=lambda *a, **k: [])
+
+        def _locate_objects(self, phrase):  # type: ignore[no-untyped-def]
+            return found
+
+        def _markers_near(self, positions):  # type: ignore[no-untyped-def]
+            return [11]
+
+        def _add_route_to_result(self, result) -> None:  # type: ignore[no-untyped-def]
+            published["routed"] = True
+
+        def _query_is_current(self, query_id):  # type: ignore[no-untyped-def]
+            return True
+
+        def _publish_query_result(self, result) -> str:  # type: ignore[no-untyped-def]
+            published["result"] = result
+            return "qid"
+
+        def _camera_hfov(self) -> float:
+            return 70.0
+
+        def _broadcast(self, message) -> None:  # type: ignore[no-untyped-def]
+            published.setdefault("broadcasts", []).append(message)  # type: ignore[union-attr]
+
+        def _ensure_store(self):  # type: ignore[no-untyped-def]
+            frame = SimpleNamespace(data=np.zeros((4, 6, 3), dtype=np.uint8), ts=1.0)
+            stream = SimpleNamespace(at=lambda ts, tolerance: [frame])
+            return SimpleNamespace(streams={"color_image": stream})
+
+        @staticmethod
+        def _encode_jpeg(img, max_size, quality) -> bytes:  # type: ignore[no-untyped-def]
+            return b"jpeg"
+
+    host = Host()
+    outcome = host._find_with_siglip("a shelf of bottles", 0.0)
+
+    assert outcome.success, outcome.message
+    assert outcome.metadata["engine"] == "siglip"
+    assert len(outcome.metadata["places"]) == 2
+    assert outcome.duration_ms > 0
+
+    result = published["result"]
+    assert result.engine == "siglip"
+    assert len(result.clusters) == 2, "the viewer builds its results bar from these"
+    assert result.observation_ids == [11], "no marker was lit, so no photograph is shown"
+    assert result.focus_point == (1.0, 2.0, 0.0), "the answer flies to the wrong place"
+
+    # One evidence photograph per place, each carrying where its camera stood, which
+    # pixel matched, and the point that pixel produced -- the viewer draws all three.
+    images = host._active_query_images
+    assert len(images) == 2, f"{len(images)} evidence headers for 2 places"
+    for index, (header, jpeg) in enumerate(images):
+        assert jpeg == b"jpeg"
+        assert header["cluster"] == index, "an image not in a place is refused by /navigate"
+        assert header["query_id"] == "qid"
+        assert len(header["position"]) == 3
+        assert len(header["uv"]) == 2
+        assert header["point"] == [float(v) for v in found[index].position]
