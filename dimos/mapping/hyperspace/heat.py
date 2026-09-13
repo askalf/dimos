@@ -75,8 +75,11 @@ class HeatBox:
 class HeatConfig:
     """Everything the agreement step can be turned by."""
 
-    # Of the summed heat's peak in a frame. Jeff's 60%: what stands out of the sum.
-    relative: float = 0.6
+    # Of the summed heat's peak in a frame: what stands out of the sum. Measured on
+    # sf_office against the two cones that exist -- at 0.6 the blob is the hot core
+    # only, 12 cm of a 40 cm cone, and one cone came back as five places; 0.3 gives a
+    # 24 cm blob and one. Lower admits more of the frame without growing the thing.
+    relative: float = 0.3
     # And an absolute floor under it, because a fraction of a peak is still a fraction
     # when the peak is noise -- without this every frame yields a blob of whatever it
     # has most of.
@@ -95,6 +98,12 @@ class HeatConfig:
     # the point of boxes over points: a metre is nothing across a room and everything
     # inside a shelf, and no single number is right for both.
     pad_m: float = 0.1
+    # And most of the padding is a fraction of the box itself, because what survives
+    # the cut is the hot core of a thing rather than its outline: a 40 cm cone comes
+    # back as a 12 cm blob, and two such blobs on one cone miss each other by more than
+    # either is wide. Scaling with the box keeps that from becoming a fixed radius by
+    # another name -- a small thing stays small.
+    pad_fraction: float = 1.5
 
 
 def summed_heat(
@@ -281,15 +290,21 @@ class HeatPlace:
         return len({(box.camera_frame, box.ts) for box in self.boxes})
 
 
-def overlap(one: HeatBox, other: HeatBox, pad: float) -> bool:
+def overlap(one: HeatBox, other: HeatBox, pad: float, fraction: float = 0.0) -> bool:
     """Do these two boxes share any volume, once padded?
 
     The reason to carry boxes at all. Two looks at one cone overlap however the camera
     moved between them, and a cone and the chair a metre away do not, so nobody has to
     choose a distance that is right both across a room and inside a shelf.
+
+    Most of the padding scales with the boxes, because a blob is the hot core of a
+    thing and not its outline. A fixed pad big enough to join two cores of a cone would
+    be a radius again; one that grows with the box is not.
     """
-    here = np.array(one.centre) - np.array(one.extent) / 2 - pad
-    here_to = np.array(one.centre) + np.array(one.extent) / 2 + pad
+    size = max(max(one.extent), max(other.extent))
+    room = pad + fraction * size
+    here = np.array(one.centre) - np.array(one.extent) / 2 - room
+    here_to = np.array(one.centre) + np.array(one.extent) / 2 + room
     there = np.array(other.centre) - np.array(other.extent) / 2
     there_to = np.array(other.centre) + np.array(other.extent) / 2
     return bool(np.all(here <= there_to) and np.all(there <= here_to))
@@ -305,7 +320,7 @@ def places(boxes: Sequence[HeatBox], *, config: HeatConfig | None = None) -> lis
     found: list[HeatPlace] = []
     for box in sorted(boxes, key=lambda box: -box.heat):
         for place in found:
-            if overlap(place.best, box, config.pad_m):
+            if overlap(place.best, box, config.pad_m, config.pad_fraction):
                 place.boxes.append(box)
                 break
         else:
