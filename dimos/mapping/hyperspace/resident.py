@@ -120,6 +120,7 @@ def _warn_if_it_will_not_fit(tag: str, rows: int, width: int) -> None:
 
         free = int(psutil.virtual_memory().available)
     except Exception:
+        # Whatever went wrong asking, it is not a reason to refuse to load an index.
         return
     if wanted > free * 0.8:
         logger.warning(
