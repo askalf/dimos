@@ -848,11 +848,19 @@ def _agreed_candidates(
     from dimos.mapping.hyperspace import heat
 
     settings = config.heat or heat.HeatConfig()
-    poses = {}
-    for frame in matched:
-        pose = frames.pose(frame.frame, frame.ts, config.world_frame)
-        if pose is not None:
-            poses[(frame.frame, frame.ts)] = pose
+    # Every frame's pose in one call. Asking one at a time walked the transform tree
+    # eight hundred times and cost more than the agreement it was feeding.
+    frames.load_tf()
+    found_poses, usable = frames.tf.batch_get(
+        config.world_frame,
+        [frame.frame for frame in matched],
+        [frame.ts for frame in matched],
+    )
+    poses = {
+        (frame.frame, frame.ts): found_poses[index]
+        for index, frame in enumerate(matched)
+        if usable[index]
+    }
     by_ts = {(frame.frame, frame.ts): frame for frame in matched}
     found: list[Episode] = []
     for place in heat.places_of(matched, poses, config=settings):
