@@ -27,6 +27,7 @@ from dimos.core.core import rpc
 from dimos.msgs.manipulation_msgs.GraspCandidateArray import GraspCandidateArray
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.galaxea.r1pro.apartment_navigation import ApartmentSimSpec
+from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach
 from dimos.robot.galaxea.r1pro.apartment_sim import R1ProApartmentSim
 from dimos.robot.galaxea.r1pro.classical_perception import segmented_object_cloud
 from dimos.robot.galaxea.r1pro.classical_planning import ClassicalGraspPlanner
@@ -324,30 +325,12 @@ class R1ProClassicalSim(R1ProApartmentSim):
             if goal.shape != (3,) or not np.isfinite(goal).all():
                 raise ValueError("Expected a finite assessed base pose")
             yaw = float(goal[2])
-        # Search clear turn areas at several setbacks rather than refusing
-        # a destination because one fixed 28 cm dock cannot accommodate the hands.
-        nominal = goal.copy()
-        planner = scene.transport_planner()
-        docking = None
-        forward = np.array([np.cos(yaw), np.sin(yaw)])
-        lateral = np.array([-np.sin(yaw), np.cos(yaw)])
-        for setback in (0.28, 0.42, 0.60, 0.78, 1.0, 1.25):
-            for shift in (0.0, 0.15, -0.15, 0.3, -0.3, 0.45, -0.45):
-                candidate = nominal.copy()
-                candidate[:2] += -setback * forward + shift * lateral
-                travel = candidate.copy()
-                travel[2] = planner.start[2]
-                if planner.clear_pose_segment(candidate, candidate) and planner.clear_pose_segment(
-                    travel, candidate
-                ):
-                    goal, docking = travel, candidate
-                    break
-            if docking is not None:
-                break
-        if docking is None:
-            raise RuntimeError(
-                "No collision-free arrival turn area near this destination with current cargo"
-            )
+        # Leave an extra 2 cm at the arrival stop for measured settling error,
+        # so the next checked turn still has the full transit clearance.
+        planner = scene.transport_planner(
+            collision_margin=self.config.navigation_clearance_m + 0.02
+        )
+        goal, docking = apartment_approach(planner, goal)
         yaw = float(goal[2])
         offset = carrying_offset(scene.model, scene.data, planner.robot_bodies)
         departure = None

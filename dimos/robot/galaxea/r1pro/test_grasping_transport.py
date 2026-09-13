@@ -22,10 +22,12 @@ import numpy as np
 import pytest
 
 from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach, refine_apartment_route
+from dimos.robot.galaxea.r1pro.classical_sim import R1ProClassicalSim
 from dimos.robot.galaxea.r1pro.grasping_blueprint import R1ProGraspingSim
 from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.object_packing_scene import sample_layout
 from dimos.robot.galaxea.r1pro.object_primitive_state import PrimitiveSceneState
+from dimos.robot.galaxea.r1pro.placement_regions import PlacementRegion
 
 
 @pytest.fixture
@@ -310,3 +312,37 @@ def test_native_corridor_can_clear_obstacles_on_alternating_sides(corridor_check
 def test_corridor_refinement_rejects_an_obstructed_endpoint(corridor_checker):
     with pytest.raises(RuntimeError, match="No clear full-body route"):
         refine_apartment_route(corridor_checker, [[0, 0, 0], [0.35, 0.08, 0]])
+
+
+@pytest.fixture
+def classical_navigation_scene(checker, mocker):
+    sim = R1ProClassicalSim(navigation_clearance_m=0.06)
+    try:
+        scene = mocker.Mock(spec=PrimitiveSceneState, model=checker.model, data=checker.probe)
+        scene.preposition_pose.return_value = np.array([1.0, 0.0, 0.0])
+        scene.inventory.return_value = []
+        scene.transport_planner.side_effect = lambda **kwargs: PlanarTransport(
+            scene.model, scene.data, cargo_bodies=(), carry_tray=False, **kwargs
+        )
+        mocker.patch.object(sim, "_snapshot", return_value=scene)
+        sim._regions = {
+            "worktable": PlacementRegion("worktable", (1, 0, 0.7), (0.2, 0.2), ("support",))
+        }
+        sim._engine = mocker.Mock(_lock=threading.RLock())
+        yield sim, scene
+    finally:
+        sim._engine = None
+        sim.stop()
+
+
+def test_classical_arrival_reserves_transit_clearance_and_settling_room(classical_navigation_scene):
+    sim, scene = classical_navigation_scene
+
+    result = sim.prepare_object_navigation("worktable")
+
+    scene.transport_planner.assert_called_once_with(collision_margin=0.08)
+    checker = PlanarTransport(
+        scene.model, scene.data, cargo_bodies=(), carry_tray=False, collision_margin=0.08
+    )
+    assert checker.clear_pose_segment(*np.asarray(result["arrival"]))
+    assert result["arrival"][0] == result["goal"]

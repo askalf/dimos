@@ -71,8 +71,8 @@ def apartment_approach(
     docking_yaw = checker.start[2] + np.arctan2(
         np.sin(yaw - checker.start[2]), np.cos(yaw - checker.start[2])
     )
-    for stand_off in (0.28, 0.33, 0.38, 0.43, 0.48):
-        for lateral in (0.0, 0.05, -0.05):
+    for stand_off in (0.28, 0.33, 0.38, 0.43, 0.48, 0.60, 0.78, 1.0, 1.25):
+        for lateral in (0.0, 0.05, -0.05, 0.15, -0.15, 0.3, -0.3, 0.45, -0.45):
             docking = preposition.copy()
             docking[:2] += -stand_off * forward + lateral * left
             docking[2] = docking_yaw
@@ -96,21 +96,23 @@ def refine_apartment_route(checker: PlanarTransport, path: list[list[float]]) ->
     poses = np.vstack([checker.start, poses])
     poses[:, 2] = np.unwrap(poses[:, 2])
 
-    def checked(candidate: NDArray[np.float64]) -> list[list[float]]:
-        # A clear shortcut can introduce sharp corners the velocity controller
-        # cannot track within its clearance. Keep the native route sampling.
-        if not all(checker.clear_pose_segment(a, b) for a, b in pairwise(candidate)):
-            raise RuntimeError("Full robot sweep exceeds the available route clearance")
-        return [[float(value) for value in pose] for pose in candidate]
+    # Keep every native sample. A geometric shortcut can introduce sharp corners
+    # that the velocity controller cannot follow within the reserved clearance.
+    blocked = [
+        index
+        for index, (first, second) in enumerate(pairwise(poses))
+        if not checker.clear_pose_segment(first, second)
+    ]
+    if not blocked:
+        return [[float(value) for value in pose] for pose in poses]
+    adjustable = {
+        node for edge in blocked for node in range(max(1, edge - 2), min(len(poses) - 1, edge + 4))
+    }
 
-    try:
-        return checked(poses)
-    except RuntimeError:
-        pass
     # Layered corridor search: each native waypoint keeps its yaw and may move
     # by at most 10 cm. Penalize changes in offset to avoid introducing a kink.
     # A whole-path translation cannot clear obstacles on alternating sides.
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 30
     offsets = np.array(
         [(0.0, 0.0)]
         + [
@@ -123,14 +125,18 @@ def refine_apartment_route(checker: PlanarTransport, path: list[list[float]]) ->
     costs = np.zeros(1)
     parents: list[NDArray[np.int64]] = []
     for index in range(1, len(poses)):
-        candidates = np.tile(poses[index], (1 if index == len(poses) - 1 else len(offsets), 1))
-        if index != len(poses) - 1:
+        candidates = np.tile(poses[index], (len(offsets) if index in adjustable else 1, 1))
+        if index in adjustable:
             candidates[:, :2] += offsets
         current_costs = np.full(len(candidates), np.inf)
         predecessors = np.full(len(candidates), -1, dtype=np.int64)
         previous = layers[-1]
         previous_offsets = previous[:, :2] - poses[index - 1, :2]
         for node, candidate in enumerate(candidates):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Full-body corridor search exceeded its 30 second budget")
+            if not checker.clear_pose_segment(candidate, candidate):
+                continue
             offset = candidate[:2] - poses[index, :2]
             changes = np.linalg.norm(previous_offsets - offset, axis=1)
             scores = costs + np.linalg.norm(offset) + 4 * changes
@@ -139,7 +145,7 @@ def refine_apartment_route(checker: PlanarTransport, path: list[list[float]]) ->
             scores[changes > 0.05 + 1e-9] = np.inf
             for parent in np.argsort(scores):
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("No clear full-body route within the native path corridor")
+                    raise RuntimeError("Full-body corridor search exceeded its 30 second budget")
                 if not np.isfinite(scores[parent]):
                     break
                 if checker.clear_pose_segment(previous[parent], candidate):
