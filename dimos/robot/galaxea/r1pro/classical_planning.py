@@ -442,7 +442,7 @@ class ClassicalGraspPlanner(ObjectReachability):
         raise RuntimeError("; ".join(errors))
 
     def rank_places(
-        self, index: int, arm: Arm, targets: list[NDArray[Any]], *, seconds: float = 30
+        self, index: int, arm: Arm, targets: list[NDArray[Any]], *, seconds: float = 60
     ) -> list[dict[str, Any]]:
         deadline = time.monotonic() + seconds
         results: list[dict[str, Any]] = []
@@ -465,6 +465,11 @@ class ClassicalGraspPlanner(ObjectReachability):
                 # wrist heading can otherwise force a joint against its stop.
                 for yaw in (0.0, -np.pi / 2, np.pi / 2, np.pi):
                     if time.monotonic() > deadline:
+                        if not results:
+                            raise RuntimeError(
+                                f"Placement search exhausted its {seconds:g}s budget; "
+                                "the region has not been proved unreachable"
+                            )
                         return sorted(results, key=lambda row: row["cost"])
                     try:
                         results.append(

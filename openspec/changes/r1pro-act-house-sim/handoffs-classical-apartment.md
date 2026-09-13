@@ -31,6 +31,8 @@ Tracking diagnostics initially included a NumPy boolean that JSON could not seri
 
 `delivery-v17` completed pick, dining navigation and placement. Its re-pick then stopped because the inactive left elbow was 9.2e-8 rad outside the SDK's conservative limit. Solver outputs and full posture goals now normalize at most 1e-6 rad of numerical overshoot; larger violations and non-finite values are rejected. The exact saved failed goal passes SDK collision-checked planning in 0.024 seconds (`limit-replay.log`). Five boundary regressions and mypy on both changed sources pass. Current detached run: `limit-delivery-status.json`, supervisor PID3536109, case `delivery-v18`, same six-action delivery. No other full validation stack is running.
 
+`delivery-v18` completed the first five actions, including dining release, re-pick from the new position and kitchen navigation. Kitchen placement timed out after 30 seconds. Exact-state replay found its first valid pose at approximately 30 seconds (minimum joint clearance 0.107 rad), then two valid candidates within 60 seconds. The bounded search now permits 60 seconds and reports budget exhaustion explicitly instead of treating it as proof of no feasible support. No geometric or contact threshold changed. The canonical-wrist experiment was diagnostic only and was not adopted. Next native sequence: `budget-delivery-status.json`, case `delivery-v19`.
+
 The entries below are chronological history and include superseded tuning values and completed process IDs.
 
 ## Current implementation (under validation; not promoted)
