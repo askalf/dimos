@@ -151,7 +151,11 @@ class EmbeddingJob:
     def __init__(
         self,
         on_finished: Callable[[EmbeddingJob], None] | None = None,
-        name: str = "siglipify",
+        # "the indexer", not "siglipify": either indexer can be the one running, and
+        # only one of the two can read a recording whose colour is compressed. The
+        # progress line went to the viewer saying "starting siglipify" over a run of the
+        # in-process indexer, which is the wrong thing to go looking at when it stalls.
+        name: str = "the indexer",
         done: str = "embeddings added",
     ) -> None:
         self.name = name

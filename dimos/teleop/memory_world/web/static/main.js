@@ -945,7 +945,7 @@ async function pollEmbeddings() {
 
 embedBtn.addEventListener('click', async () => {
     embedBtn.disabled = true;
-    setStatus('Adding embeddings with siglipify — this takes a while on a long recording');
+    setStatus('Adding embeddings — this takes a while on a long recording');
     try {
         const response = await fetch(embeddingsUrl, { method: 'POST' });
         if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
