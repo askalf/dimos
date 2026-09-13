@@ -397,20 +397,16 @@ def test_a_detection_without_depth_still_reports_the_2d_box(recording: SqliteSto
     assert found.note == "no usable depth inside the box"
 
 
-def test_every_episode_is_detected_in_one_forward_pass(recording: SqliteStore, monkeypatch) -> None:
-    """Two episodes, two images, but only one trip through the detector.
-
-    This is the whole point of the round: the detector costs the same whether it is
-    shown one frame or eight, so showing it the whole round at once is most of a
-    query's detector time. It replaces an older contract where episodes trickled out
-    one at a time -- that only ever bought a progress bar.
-    """
+def test_a_batch_takes_every_episode_through_one_forward_pass(
+    recording: SqliteStore, monkeypatch
+) -> None:
+    """When a batch is worth having, the round of episodes goes through it together."""
     frames = [frame_at(ts, 0.9) for ts in (10.0, 10.25)] + [
         frame_at(ts, 0.4) for ts in (30.0, 30.25)
     ]
     monkeypatch.setattr("dimos.mapping.hyperspace.frames.hot_frames", lambda *a, **k: frames)
     boxes = StubBoxes((28.0, 20.0, 36.0, 28.0))
-    config = DetectConfig(world_frame=WORLD)
+    config = DetectConfig(world_frame=WORLD, batch=8)
     answers = list(
         find(
             recording,
@@ -424,6 +420,37 @@ def test_every_episode_is_detected_in_one_forward_pass(recording: SqliteStore, m
     assert [answer.rank for answer in answers] == [1, 2]
     assert boxes.calls == 2, "one image per episode"
     assert boxes.passes == 1, "and both of them in the same forward pass"
+
+
+def test_without_a_batch_an_answer_arrives_before_the_next_is_started(
+    recording: SqliteStore, monkeypatch
+) -> None:
+    """The default path hands back each answer as it settles.
+
+    Waiting for the whole round would put the first answer after twelve detector calls
+    instead of one, and at a batch of one the wait buys nothing.
+    """
+    frames = [frame_at(ts, 0.9) for ts in (10.0, 10.25)] + [
+        frame_at(ts, 0.4) for ts in (30.0, 30.25)
+    ]
+    monkeypatch.setattr("dimos.mapping.hyperspace.frames.hot_frames", lambda *a, **k: frames)
+    boxes = StubBoxes((28.0, 20.0, 36.0, 28.0))
+    config = DetectConfig(world_frame=WORLD)
+    assert config.batch == 1, "the default this test is about"
+    answers = find(
+        recording,
+        recording,
+        "a square",
+        config=config,
+        frames=RecordingFrames(recording, config=config),
+        boxes=boxes,
+    )
+    first = next(answers)
+    assert first.rank == 1
+    assert boxes.calls == 1, "the second episode has not been shown to the detector yet"
+    rest = list(answers)
+    assert [answer.rank for answer in rest] == [2]
+    assert boxes.calls == 2
 
 
 def test_an_episode_that_answered_is_not_shown_a_second_frame(

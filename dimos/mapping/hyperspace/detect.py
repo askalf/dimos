@@ -432,13 +432,41 @@ def detect_episodes(
     keep_images: bool = False,
     first_rank: int = 1,
 ) -> list[Detection]:
-    """Detect over several episodes at once, a round of attempts at a time.
+    """Every episode's answer, in rank order. See `stream_episodes` for the order of work."""
+    return list(
+        stream_episodes(
+            episodes,
+            query,
+            frames,
+            boxes,
+            config=config,
+            keep_images=keep_images,
+            first_rank=first_rank,
+        )
+    )
 
-    Every episode's best frame goes to the detector together, then the second-best
-    frame of only those still unanswered, and so on. This is the same work as asking
-    one episode at a time -- an episode that answers on its first frame is never asked
-    again -- but it arrives in `attempts` forward passes rather than one per frame,
-    which is where the per-call cost lives.
+
+def stream_episodes(
+    episodes: Sequence[Episode],
+    query: str,
+    frames: RecordingFrames,
+    boxes: Owlv2Boxes,
+    *,
+    config: DetectConfig,
+    keep_images: bool = False,
+    first_rank: int = 1,
+) -> Iterator[Detection]:
+    """Answers as they settle, in rank order.
+
+    A detector call costs the same whether it is shown one frame or several, so when a
+    batch is worth having the episodes go through it together: every unanswered one's
+    next-best frame in a single pass, then the round after that. Nothing can be said
+    about any of them until the round returns, so the answers arrive in a burst.
+
+    At a batch of one -- the default, because batching measured slower on this
+    hardware -- there is nothing to gather, and waiting would buy only a longer silence.
+    So each episode is finished and handed back before the next one starts, and the
+    first answer arrives after one detector call rather than after twelve.
     """
     tries = [
         _Try(
@@ -458,6 +486,27 @@ def detect_episodes(
         for rank, episode in enumerate(episodes, first_rank)
     ]
 
+    if config.batch <= 1:
+        for one in tries:
+            _attempt_rounds([one], query, frames, boxes, config=config, keep_images=keep_images)
+            yield one.finish()
+        return
+
+    _attempt_rounds(tries, query, frames, boxes, config=config, keep_images=keep_images)
+    for one in tries:
+        yield one.finish()
+
+
+def _attempt_rounds(
+    tries: Sequence[_Try],
+    query: str,
+    frames: RecordingFrames,
+    boxes: Owlv2Boxes,
+    *,
+    config: DetectConfig,
+    keep_images: bool,
+) -> None:
+    """Take every unsettled episode through its next frame, until they run out."""
     for round_ in range(max(1, config.attempts)):
         pending: list[tuple[_Try, Frame, Image]] = []
         for attempt_of in tries:
@@ -489,7 +538,6 @@ def detect_episodes(
                 attempt_of.answer = attempt
             else:
                 attempt_of.flat = attempt_of.flat or attempt
-    return [attempt_of.finish() for attempt_of in tries]
 
 
 def _place(
@@ -607,7 +655,13 @@ def find(
     if timings is not None:
         timings["episodes"] = time.monotonic() - at
     at = time.monotonic()
-    answers = detect_episodes(found, query, frames, boxes, config=config, keep_images=keep_images)
+    first: float | None = None
+    for answer in stream_episodes(
+        found, query, frames, boxes, config=config, keep_images=keep_images
+    ):
+        if first is None:
+            first = time.monotonic() - at
+        yield answer
     if timings is not None:
         timings["detect"] = time.monotonic() - at
-    yield from answers
+        timings["first_result"] = first or 0.0
