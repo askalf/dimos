@@ -434,3 +434,24 @@ same task ordering, 30 action steps, and the corrected positioning search.
 This is evaluation only. Check its status.json and each result.json; do not
 interpret a completed training job as an approved interactive release.
 Left grasp stability, two-hand sequences and reliable release remain open.
+
+### September 12, 18:52 Pacific: matched results and failure traces
+
+The matched positioning evaluation completed: previous policies 3/8 full
+sequences, interactive-refinement policies 4/8. Neither set had any initial
+base-positioning failures. The new policies passed 5/8 picks and 4/5 attempted
+placements. Remaining new-policy failures: right pick on 361000, both picks on
+361002, and left table placement on 361003. That last placement released the
+object but did not satisfy all physical placement criteria; it is not the
+closed-jaw failure seen in the earlier integrated test. Do not conflate them.
+
+No training is running. Started detached diagnostic
+`jobs/primitive-failure-traces-v1`, which compares ACT and the demonstration
+controller on those exact four failing tasks, with per-step actions, measured
+joints, TCP/object geometry and initial/final MuJoCo snapshots. For the placement
+case, both controllers start after a fresh ACT pick and identical placement
+selection. This comparison is diagnostic only, never an ACT fallback in the
+interactive skills. Its status.json, results.json and individual trace.json
+files retain the evidence. Preview artifacts and the remote checkpoint remain
+unchanged. Next: inspect grasp-centering/lift behavior and the exact placement
+criterion that fails before choosing further correction data or tuning.
