@@ -628,7 +628,7 @@ export class Tour {
         const ui = this.ui;
         if (!ui || this.index < 0) return;
         const station = this.stations[this.index];
-        ui.kicker.textContent = `How it works · ${this.index + 1} of ${this.stations.length}`;
+        ui.kicker.textContent = `Dimos Spatial Reasoning · ${this.index + 1} of ${this.stations.length}`;
         ui.title.textContent = station.title;
         ui.body.innerHTML = station.body();
         ui.dots.innerHTML = this.stations.map((_, i) => `<i class="${i === this.index ? 'on' : ''}"></i>`).join('');
