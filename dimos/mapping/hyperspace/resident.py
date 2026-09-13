@@ -49,11 +49,13 @@ READ_CHUNK = 50_000
 # multiply is worth starting, small enough that the promotion is half a gigabyte.
 SCORE_CHUNK = 100_000
 
-# What the vectors are held as. Half precision because the index is what has to fit:
-# grocery's three models are 34 GB at single precision and 17 at half, and the scores
-# it produces are a similarity used to rank and threshold, not a measurement -- the
-# matmul accumulates in float32 either way.
-HELD_AS = np.float16
+# What the vectors are held as. Single precision, because that is what the machine
+# multiplies: half precision halves the index -- grocery's three models are 29 GB
+# against 14 -- but CPUs have no half-precision arithmetic and BLAS no half-precision
+# path, so every block has to be promoted before it can be multiplied. Measured on
+# grocery, that promotion is about a second a query. Memory is the cheaper side of
+# that trade here; on a machine where it is not, this is the line to change.
+HELD_AS = np.float32
 
 
 @dataclass
@@ -95,11 +97,12 @@ class ResidentPatches:
         Exact, over every patch, rather than over whatever an approximate index would
         have returned.
 
-        Done a block at a time, cast up to single precision as it goes. Numpy has no
-        fast half-precision matrix multiply -- it falls back to something thirty times
-        slower than the single-precision one, measured, which turned a 0.2 s search
-        into 18 s -- while a block of a hundred thousand rows costs half a gigabyte to
-        promote and runs at full speed. The storage stays halved either way.
+        Done a block at a time, and promoted to single precision if it is not already
+        stored that way. Numpy has no fast half-precision matrix multiply -- it falls
+        back to something thirty times slower, measured, which once turned a 0.2 s
+        search into 18 s -- so a half-precision index has to be promoted to be usable
+        at all, and blocks keep that from costing the whole index in memory at once.
+        At single precision the block is a view and the loop costs nothing.
         """
         # The query and the backgrounds go through together: one pass over the index
         # rather than one for the words and another for the room.
