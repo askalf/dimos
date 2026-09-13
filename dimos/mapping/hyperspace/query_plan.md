@@ -270,6 +270,59 @@ Not yet designed: how a group is SCORED once it exists. It should use the match 
 and the agreement between models, and a big box should count for less than a small one
 at the same score.
 
+## Measured on the rebuilt grocery.db, four models, 8.5M patch rows
+
+3,462 embedding frames, every model over the same frames: base-224 (196 patches),
+base-256 (256), base-naflex@1024 (1008), so400m-naflex@1024 (1008).
+
+| | |
+|---|---|
+| load the four text towers | 1.8 s, once per process |
+| encode the text | 16.0 s |
+| search all four vec streams | 24.6 s |
+| read the winning rows' vectors back | 7.5 s |
+| **a whole query** | **48 s** |
+
+Nothing is loaded up front any more: the old path unpickled 6.3 GB of embedding frames
+before it could score anything, and this reads only the rows that won.
+
+Two of the three costs are avoidable. **Encoding is sixteen seconds for six prompts,
+and five of them are the fixed background list** -- identical for every query, so they
+belong in a cache; that alone is most of it, and running the tower on the GPU rather
+than the CPU is the rest. **Reading 16,000 winning vectors back takes 7.5 s** through
+one `rowid IN (...)`, which wants chunking.
+
+Search is the floor, and it scales with rows exactly as brute force should: 678k rows
+2.4 s, 3.5M rows 8.1 s, and so400m's wider vectors 11.2 s for the same row count.
+
+Which points at the real lever: **the patches only have to rank frames.** One cheap
+model does that -- base-224 alone is 2.4 s of search against 24.6 s for all four, and
+on "a basket" the top ten episodes were the same either way, agreed by all four models.
+The expensive models are then something to switch on when comparing, not a toll every
+query pays.
+
+## Frames first, geometry second
+
+Jeff's 2026-09-12 proposal, and it removes most of the grouping problem. Rather than
+placing every hot patch in the world and hoping the pyramids overlap: rank *frames* by
+the text, split them into episodes on a gap in time, take the best frame of each
+episode, run an open-vocabulary detector (OWLv2) on that one image with the same words,
+and turn its 2D box plus that frame's depth into a 3D box. Results come out per episode,
+so they can be emitted as they are found.
+
+What it costs: OWLv2 measured on real grocery frames on an RTX 5070 Laptop, 1280x720,
+five prompts -- base-patch16 **725 ms a frame** (155M params, resized to 960x960; 7 ms
+of that is the text side and cacheable, 340 ms is CPU preprocessing, 434 ms the
+forward), large-patch14 **2,729 ms** (438M, 1008x1008, and it returned fewer boxes at
+the same threshold, so the two cannot be compared at a fixed one).
+
+What it buys: no overlap margin to tune, no group score to invent, and no need for
+per-patch depth to be accurate -- the box comes from the detector and the depth image,
+not from a pyramid. Cross-model agreement still works, as *which models voted for this
+episode*, which needs nothing to coincide in space.
+
+Both paths share the first step, so they can be compared rather than chosen between.
+
 ## Still open
 
 - Refine on the sparse set instead of a dense box, or capped the way memory_world caps
