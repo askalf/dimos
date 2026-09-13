@@ -18,6 +18,7 @@ vectors, and asking for the object lights up its voxel."""
 
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 
@@ -795,3 +796,74 @@ def test_dropping_a_flat_index_takes_its_thumbnails_too(store: SqliteStore) -> N
     cli.drop_index(store)
     assert not cli.index_is_finished(store)
     assert cli.thumbnail_stream_for("") not in store.list_streams()
+
+
+def test_hot_frames_reads_the_flat_layout_and_ranks_the_frames(store: SqliteStore) -> None:
+    """The shared first step, against a real vec0 index rather than a fixture.
+
+    The stub's grid has exactly one patch on the object and everything else on the
+    background axis, so a correct read of the flat layout finds one hit per keyframe --
+    and each hit has to carry its own frame, stamp, ray and depth, because in this
+    layout there is no keyframe row to look them up in.
+    """
+    from dimos.mapping.hyperspace.frames import (
+        BACKGROUND_PROMPTS,
+        episodes,
+        hot_frames,
+        member_streams,
+    )
+
+    class StubTowers:
+        """`TextTowers`' interface, without a checkpoint to download."""
+
+        def query(self, spec: str, text: str) -> np.ndarray:
+            del spec
+            return StubModel.embed_text(text)
+
+        def background(self, spec: str) -> np.ndarray:
+            del spec
+            return np.stack([StubModel.embed_text(prompt) for prompt in BACKGROUND_PROMPTS])
+
+        def close(self) -> None:
+            pass
+
+    ingestor = fill(store, ring(4, 2.5), flat=True)
+    assert [tag for tag, _ in member_streams(store)] == ["stub"]
+
+    frames = hot_frames(store, "object", towers=StubTowers())
+    assert len(frames) == ingestor.stats["kept"], "every kept frame saw the object"
+    assert all(len(frame.hits) == 1 for frame in frames), "one patch per frame is on it"
+    assert [frame.ts for frame in frames] == sorted(frame.ts for frame in frames)
+    first = frames[0]
+    assert first.frame == CAMERA
+    assert first.members == {"stub"}
+    assert first.best > 0.5
+    assert np.isfinite(first.hits[0].depth)
+
+    # The frames are whole seconds apart, so every gap wider than one splits them all.
+    stamps = [frame.ts for frame in frames]
+    gaps = [b - a for a, b in itertools.pairwise(stamps)]
+    assert len(episodes(frames, gap_s=0.5)) == len(frames)
+    assert len(episodes(frames, gap_s=max(gaps))) == 1
+
+
+def test_hot_frames_finds_nothing_for_words_the_recording_does_not_contain(
+    store: SqliteStore,
+) -> None:
+    """A query that matches nothing returns nothing, rather than the least-bad patch."""
+    from dimos.mapping.hyperspace.frames import BACKGROUND_PROMPTS, hot_frames
+
+    class StubTowers:
+        def query(self, spec: str, text: str) -> np.ndarray:
+            del spec
+            return StubModel.embed_text(text)
+
+        def background(self, spec: str) -> np.ndarray:
+            del spec
+            return np.stack([StubModel.embed_text(prompt) for prompt in BACKGROUND_PROMPTS])
+
+        def close(self) -> None:
+            pass
+
+    fill(store, ring(4, 2.5), flat=True)
+    assert hot_frames(store, "something else entirely", towers=StubTowers()) == []
