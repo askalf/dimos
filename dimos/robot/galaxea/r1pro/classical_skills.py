@@ -135,6 +135,7 @@ class R1ProClassicalSkills(Module):
                 )
             try:
                 report["final"] = self._sim.primitive_state()
+                report["snapshot"] = self._sim.save_classical_state()
                 output = (
                     FilePath(self._sim.prepare_primitive_session()["output"])
                     / f"action-{self._counter:03d}.json"
@@ -432,6 +433,11 @@ class R1ProClassicalSkills(Module):
         before = self._sim.primitive_state()
         if before.get("error"):
             raise RuntimeError(before["error"])
+        if len(points) == 1:
+            # The SDK may return a single pose when start and goal coincide.
+            # Represent its hold explicitly; the caller still verifies TCP
+            # staging and contacts before proceeding to the next phase.
+            points = [points[0], points[0]]
         carrying = any(row.get("held_by") for row in before.get("objects", []))
         generator = JointTrajectoryGenerator(
             num_joints=20,
@@ -461,6 +467,11 @@ class R1ProClassicalSkills(Module):
                 None,
             )
         fresh, stamp, stable = time.monotonic(), -1.0, 0
+        settle_velocity = (
+            0.0025
+            if report.get("phase") in ("stage_pregrasp", "approach", "preplace", "lower_to_support")
+            else 0.01
+        )
         while time.monotonic() < deadline:
             self._pause(0.05)
             state = self._sim.primitive_state()
@@ -474,7 +485,21 @@ class R1ProClassicalSkills(Module):
                 )
                 velocities = state.get("joint_velocities", {})
                 moving = max(abs(velocities.get(n, 0.0)) for n in R1PRO_PICK_PLACE_JOINTS[:18])
-                stable = stable + 1 if error <= 0.02 and moving <= 0.03 else 0
+                commands = state.get("joint_commands")
+                delivered = (
+                    commands is None
+                    or max(
+                        abs(commands[n] - points[-1][i])
+                        for i, n in enumerate(R1PRO_PICK_PLACE_JOINTS)
+                    )
+                    <= 1e-5
+                )
+                # Millimetre contact moves need a settled mechanism. A 0.03
+                # rad/s endpoint can still move the TCP several mm per second
+                # while the next IK query assumes its measured pose is static.
+                stable = (
+                    stable + 1 if delivered and error <= 0.02 and moving <= settle_velocity else 0
+                )
             if protected_grasp is not None and not state["objects"][protected_grasp]["grasped"]:
                 raise RuntimeError("Selected object lost two-finger contact during transfer")
             if time.monotonic() - fresh > 2:
@@ -485,6 +510,15 @@ class R1ProClassicalSkills(Module):
             if task_state == TrajectoryState.COMPLETED and stable >= 3:
                 # Gripper commands terminate against the object; joint error is
                 # not a grasp test. The caller verifies actual finger contacts.
+                report.setdefault("trajectory_checks", []).append(
+                    dict(
+                        phase=report.get("phase"),
+                        target=points[-1],
+                        commanded=state.get("joint_commands"),
+                        measured=state["joint_positions"],
+                        tcp=state.get("tcp_poses"),
+                    )
+                )
                 return
         raise RuntimeError("Measured Cartesian trajectory did not finish")
 
@@ -505,23 +539,37 @@ class R1ProClassicalSkills(Module):
         """Confirm the intended physical support before releasing, within a 10 mm descent."""
         expected = set(chosen["region"]["support_geoms"])
         target = None
-        for step in range(11):
+        initial_z = None
+        for step in range(21):
             self._pause(0.2)
             state = self._sim.primitive_state()
             row = state["objects"][chosen["index"]]
+            actual = np.asarray(state["tcp_poses"][chosen["arm"]], dtype=float)
+            if initial_z is None:
+                initial_z = float(actual[2, 3])
+            report.setdefault("support_samples", []).append(
+                dict(
+                    step=step,
+                    tcp=state.get("tcp_poses", {}).get(chosen["arm"]),
+                    object_position=row.get("position"),
+                    support_geoms=row["support_geoms"],
+                    commanded_target=None if target is None else target.tolist(),
+                )
+            )
             supports = set(row["support_geoms"])
             if supports & expected:
                 if not row["upright"]:
                     raise RuntimeError("Object tipped before release")
                 report["support_before_release"] = sorted(supports & expected)
-                report["support_descent_m"] = step * 0.001
+                report["support_descent_m"] = initial_z - float(actual[2, 3])
                 return
             if supports:
                 raise RuntimeError("Object contacted a different surface before release")
-            if step < 10:
-                if target is None:
-                    target = np.asarray(state["tcp_poses"][chosen["arm"]], dtype=float).copy()
-                target[2, 3] -= 0.001
+            if step < 20:
+                target = actual.copy()
+                target[2, 3] -= 0.0005
+                if initial_z - float(target[2, 3]) > 0.01:
+                    break
                 self._line(chosen["index"], chosen["arm"], target.tolist(), report)
         raise RuntimeError("No intended support contact within the bounded descent; holding grip")
 

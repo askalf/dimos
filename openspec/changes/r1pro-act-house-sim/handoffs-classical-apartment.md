@@ -76,3 +76,37 @@ Latest detached batch at this edit: `/tmp/r1pro-classical-bootstrap/verified-sta
 - The finer support descent starts from measured TCP, advances 1 mm at a time, and remains limited to 10 mm. Collision diagnostics name the offending geometry and save a replayable state on failure.
 
 Current supervisors: `/tmp/r1pro-classical-bootstrap/arrival-status.json` (v6), then `/tmp/r1pro-classical-bootstrap/integration-status.json` (supervisor PID3391484 at launch, queued v7 bimanual, full delivery/re-pick, carton, cup). Do not mistake an older success for validation of a later source version. Full agent/HumanCLI language-provider testing remains unperformed; local MCP is the verified command path. The new launch instructions are in `dimos/robot/galaxea/r1pro/CLASSICAL_APARTMENT.md`, still marked under validation.
+
+
+## Contact/route diagnosis and queued validation
+
+Local checkpoint `8bbe24f35e` follows the preview, with preload preservation and height-aware retreat; neither checkpoint is pushed. Further changes below are still under validation.
+
+- `cup-v7` (seed 282527381) completed native MCP cup pick, hold, tray placement, physical support, release and retreat. Both picks passed again in `bimanual-v7` and `bimanual-v8`, but left placement still failed support seeking; do not advertise full bimanual readiness.
+- `delivery-v7` completed pick and native dining navigation, then missed the measured preplace tolerance. Its terminal arm velocity was still 0.014 rad/s. The prior endpoint gate allowed 0.03 rad/s, too loose for millimetre contact corrections. It now requires delivered actuator targets and <=0.0025 rad/s for three fresh samples. A focused regression covers both conditions.
+- Exact runtime MuJoCo model and qpos/qvel/ctrl snapshots are now saved per action. Support samples and commanded/measured trajectory endpoints are included in action reports. `bimanual-v8` replay showed no initial table contact; two smaller, settled descents established force-backed contact with the correct worktable. The runtime now plans each 0.5 mm descent from fresh measured TCP rather than accumulating unexecuted offsets; at most 20 steps and 10 mm measured travel, with contact/collision checks retained.
+- Candidate search now removes near-duplicate generated grasps, prioritizes body poses that center the target in the selected arm's workspace, and considers upright placement yaw changes. A recorded dining search that previously found no placement now found three feasible poses in 15 seconds. Native execution remains the acceptance gate.
+- Empty arms had stayed extended during kitchen travel. The saved native route clipped furniture at those arms. A collision-checked compact empty-arm posture makes the same route pass the full-body sweep in replay (`fold-diagnosis.log`); loaded-hand behavior is unchanged.
+- 11 classical skill regressions passed after the endpoint/contact changes; mypy passed the seven classical sources before the last endpoint/empty-arm edits. Re-run final checks after native verification.
+
+Current detached supervisor is `/tmp/r1pro-classical-bootstrap/settling.py` (PID3427032 at launch), status `settling-status.json`. It waits for `tracking-status.json` (delivery-v8) then runs bimanual-v9, carton-v9, delivery-v9 on private MCP10026/Zenoh19492. No ACT training, external LLM test, or user desktop-process changes. Logs and results live under `/tmp/r1pro-classical-bootstrap`; each result records loaded source hashes.
+
+
+The saved `delivery-v8` scene exposed an over-conservative joint filter: requiring 4% of every joint range rejected a whole-body solution whose smallest absolute clearance was 0.1086 rad (>6 degrees). Placement now requires at least 0.06 rad absolute clearance (twice the maximum accepted compensation offset), while still ranking normalized margin. The old 0.2% wrist-stop pose remains rejected. The same saved scene now yields three complete placement/retreat plans in 5.25 seconds (`place-margin-result.json`).
+
+`bimanual-v9` has completed both hand-specific picks and the left placement, preserving the right hold. The left item reached force-backed worktable support after 0.70 mm measured extra descent, then released and retreated successfully. The right placement is still running at this edit. No readiness claim until remaining native tests finish.
+
+The workstation `.env` is an ignored symlink to the user's existing `/home/mustafa/dimos/.env`, so the separate demo CLI reuses configured provider credentials/settings without requiring shell exports. No credential values were printed or copied into version control. No external model request was made.
+
+
+`bimanual-v9` right placement then exposed a separate adapter edge case: SDK RRT returned a single waypoint for an already-reached posture, while the trajectory generator requires two. The classical executor now explicitly represents that single-pose hold with two identical points; the measured TCP staging check still runs. Added regression coverage. The whole bimanual sequence must be repeated with this fix.
+
+
+73 focused tests (classical skills/planning/perception/selection, shared physical state, navigation, provider, blueprint registry) passed. Mypy passed all seven classical implementation files. A parallel full-stack test was attempted after checking GPU headroom, but host RAM/swap became the actual bottleneck: 31 GiB RAM and all 15 GiB swap used; Zenoh watchdog overruns and a 66-second response to a 20-second wait caused the kitchen harness to time out. That run is not evidence of a completed kitchen trip. Its native full-body route did pass and navigation began. The extra stack exited; subsequent native tests are strictly sequential.
+
+`bimanual-v10` stopped during gripper closure and explicit recovery completed successfully. Closure contact oscillations were about 0.003 rad/s, so precise 0.0025 rad/s settling now applies to staging/approach/support descent; grasp closure and other moves use 0.01 rad/s plus physical contact/hold verification. All phases still require delivered actuator targets, fresh simulator state, and completed trajectories.
+
+Queued sequential checks: `final-status.json`, supervisor PID3444321 (`final_checks.py`), waits for delivery-v9 to finish and then runs bimanual-v11, carton-v11, layout-v11 with explicit recovery-on-failure. Private MCP10026/Zenoh19492. The prior second-port bimanual-v10 process has exited. Do not run another full model stack concurrently on this 31 GiB host.
+
+
+`delivery-v9` exposed that folding only the occupied hand is insufficient: the empty hand can still clip furniture. Carry preparation now folds both hands, preserving each measured grasp transform. The exact rejected dining route passes with that posture in replay (`fold-loaded.log`, three SDK waypoints, native route full-body sweep passed). This is planning replay evidence; physical loaded transport with the new both-arm posture is queued for validation after the current sequence.

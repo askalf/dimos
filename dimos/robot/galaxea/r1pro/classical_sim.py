@@ -19,6 +19,7 @@ from pathlib import Path
 import time
 from typing import Any, Protocol, cast
 
+import mujoco
 import numpy as np
 
 from dimos.core.core import rpc
@@ -40,6 +41,7 @@ from dimos.simulation.engines.mujoco_engine import MujocoEngine
 
 
 class ClassicalSimSpec(ApartmentSimSpec, Protocol):
+    def save_classical_state(self) -> str: ...
     def classical_carry_posture(self) -> list[list[float]]: ...
     def classical_align(
         self, index: int, arm: str, target: list[list[float]]
@@ -59,6 +61,28 @@ class ClassicalSimSpec(ApartmentSimSpec, Protocol):
 
 class R1ProClassicalSim(R1ProApartmentSim):
     """Keep the physical apartment while replacing ACT with measured Cartesian plans."""
+
+    @rpc
+    def save_classical_state(self) -> str:
+        """Record exact physical state and runtime model parameters for replay, including failures."""
+        if self._engine is None:
+            raise RuntimeError("Simulation is not ready")
+        output = self.config.output / f"classical-state-{time.time_ns()}.npz"
+        with self._engine._lock:
+            model_path = self.config.output / "classical-model.mjb"
+            if not model_path.exists():
+                mujoco.mj_saveModel(self._engine.model, str(model_path), None)
+            scene = self._state(self._engine)
+            np.savez(
+                output,
+                qpos=scene.data.qpos,
+                qvel=scene.data.qvel,
+                ctrl=scene.data.ctrl,
+                time=scene.data.time,
+                selected_left=scene.arms["left"].selected,
+                selected_right=scene.arms["right"].selected,
+            )
+        return str(output)
 
     def _publish_shm_and_lcm(self, engine: MujocoEngine) -> None:
         with engine._lock:
@@ -131,6 +155,16 @@ class R1ProClassicalSim(R1ProApartmentSim):
             scores.append(candidate.score)
         if not poses:
             return []
+        np.savez(
+            self.config.output / f"classical-grasps-{time.time_ns()}.npz",
+            poses=poses,
+            scores=scores,
+            qpos=scene.data.qpos,
+            qvel=scene.data.qvel,
+            ctrl=scene.data.ctrl,
+            index=index,
+            arm=arm,
+        )
         planner = ClassicalGraspPlanner(scene)
         return [
             asdict(plan)

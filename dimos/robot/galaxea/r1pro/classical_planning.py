@@ -70,6 +70,39 @@ class ClassicalGraspPlanner(ObjectReachability):
             margins.append(min(joints[column] - lower, upper - joints[column]) / (upper - lower))
         return float(min(margins))
 
+    def _joint_clearance(self, arm: Arm, joints: NDArray[Any]) -> float:
+        """Minimum distance to an arm stop, in radians rather than range percentage."""
+        return min(
+            float(min(joints[column] - limits[0], limits[1] - joints[column]))
+            for column in active_indices(arm)[:-1]
+            for limits in [self.model.joint(R1PRO_PICK_PLACE_JOINTS[column]).range]
+        )
+
+    def _body_poses(self, target: NDArray[Any], arm: Arm) -> list[NDArray[np.float64]]:
+        """Try the current stance, then center the target in the arm's working area."""
+        current = self.transport.start
+        candidates = stance_candidates(target, current, arm)
+        preferred = np.array([0.42, 0.32 if arm == "left" else -0.32])
+
+        def cost(pose: NDArray[Any]) -> float:
+            c, s = np.cos(pose[2]), np.sin(pose[2])
+            local = np.array([[c, s], [-s, c]]) @ (target[:2] - pose[:2])
+            return float(
+                np.linalg.norm(local - preferred)
+                + 0.15 * np.linalg.norm(pose[:2] - current[:2])
+                + 0.03 * abs(pose[2] - current[2])
+            )
+
+        result = [current.copy()]
+        for pose in sorted(candidates, key=cost):
+            if any(
+                np.linalg.norm(pose[:2] - old[:2]) < 0.02 and abs(pose[2] - old[2]) < 0.02
+                for old in result
+            ):
+                continue
+            result.append(pose)
+        return result
+
     def _collisions(
         self, *, selected: int, arm: Arm, allow_selected_contact: bool = False
     ) -> list[str]:
@@ -306,7 +339,13 @@ class ClassicalGraspPlanner(ObjectReachability):
         raise RuntimeError("; ".join(failures))
 
     def evaluate_place(
-        self, index: int, arm: Arm, target: NDArray[Any], pose: NDArray[Any]
+        self,
+        index: int,
+        arm: Arm,
+        target: NDArray[Any],
+        pose: NDArray[Any],
+        *,
+        yaw_offset: float = 0,
     ) -> dict[str, Any]:
         """Prove approach, support contact, finger opening and retreat at a candidate stance."""
         if self.rows[index]["held_by"] != arm:
@@ -317,10 +356,12 @@ class ClassicalGraspPlanner(ObjectReachability):
         for torso in (False, True):
             self.initialize_probe(pose)
             site = self.probe.site(f"{arm}_tcp")
+            c, s = np.cos(yaw_offset), np.sin(yaw_offset)
+            turn = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
             tcp = np.eye(4)
-            tcp[:3, :3] = site.xmat.reshape(3, 3)
-            tcp[:3, 3] = (
-                target + site.xpos - self.probe.body(self.scene.layout.objects[index].name).xpos
+            tcp[:3, :3] = turn @ site.xmat.reshape(3, 3)
+            tcp[:3, 3] = target + turn @ (
+                site.xpos - self.probe.body(self.scene.layout.objects[index].name).xpos
             )
             above = tcp.copy()
             above[2, 3] = max(
@@ -330,7 +371,12 @@ class ClassicalGraspPlanner(ObjectReachability):
             try:
                 ready = self.solve_pose(arm, above, torso=torso)
                 margin = self._joint_margin(arm, ready)
-                if margin < 0.04:
+                clearance = self._joint_clearance(arm, ready)
+                # The joint ranges differ substantially. Requiring 4% of each
+                # range rejected poses with >10 degrees of available motion.
+                # Keep at least 0.06 rad away from the physical stop (twice the
+                # maximum accepted load-compensation bias) on every arm joint.
+                if clearance < 0.06:
                     raise RuntimeError("Placement posture leaves insufficient joint-limit margin")
                 self.probe.qpos[self.qids] = ready
                 self._forward()
@@ -348,6 +394,7 @@ class ClassicalGraspPlanner(ObjectReachability):
                     np.linalg.norm(pose[:2] - self.transport.start[:2])
                     + 0.15 * abs(pose[2] - self.transport.start[2])
                     - 0.5 * margin
+                    + 0.02 * abs(yaw_offset)
                 )
                 return dict(
                     index=index,
@@ -358,6 +405,8 @@ class ClassicalGraspPlanner(ObjectReachability):
                     preplace=above.tolist(),
                     ready_joints=ready.tolist(),
                     joint_margin=margin,
+                    joint_clearance_rad=clearance,
+                    yaw_offset=yaw_offset,
                     cost=cost,
                 )
             except RuntimeError as exc:
@@ -376,20 +425,33 @@ class ClassicalGraspPlanner(ObjectReachability):
             key=lambda p: float(np.linalg.norm(p[:2] - self.initial.site(f"{arm}_tcp").xpos[:2])),
         )
         for target in ordered[:24]:
-            for pose in stance_candidates(target, self.transport.start, arm)[:8]:
-                if time.monotonic() > deadline:
-                    return sorted(results, key=lambda row: row["cost"])
-                try:
-                    results.append(self.evaluate_place(index, arm, target, pose))
-                except (ValueError, RuntimeError):
-                    continue
-                if len(results) >= 3:
-                    return sorted(results, key=lambda row: row["cost"])
+            for pose in self._body_poses(target, arm)[:8]:
+                # Placement may turn an upright item about gravity. A fixed
+                # wrist heading can otherwise force a joint against its stop.
+                for yaw in (0.0, -np.pi / 2, np.pi / 2, np.pi):
+                    if time.monotonic() > deadline:
+                        return sorted(results, key=lambda row: row["cost"])
+                    try:
+                        results.append(
+                            self.evaluate_place(index, arm, target, pose, yaw_offset=yaw)
+                        )
+                    except (ValueError, RuntimeError):
+                        continue
+                    if len(results) >= 3:
+                        return sorted(results, key=lambda row: row["cost"])
         return sorted(results, key=lambda row: row["cost"])
 
-    def posture_path(self, index: int, arm: Arm, positions: list[float]) -> list[list[float]]:
+    def posture_path(
+        self,
+        index: int,
+        arm: Arm,
+        positions: list[float],
+        *,
+        allow_target_contact: bool = True,
+    ) -> list[list[float]]:
         """Use the SDK RRT with actual apartment/cargo collisions during its search."""
         self.initialize_local_probe(index, arm)
+        self.allow_target_contact = allow_target_contact
         kin = self.kinematics
         start = kin.seed(self.probe)
         mapping = dict(zip(R1PRO_PICK_PLACE_JOINTS, positions, strict=True))
@@ -421,18 +483,25 @@ class ClassicalGraspPlanner(ObjectReachability):
         return points
 
     def carry_posture(self) -> list[list[float]]:
-        """Retract held hands for travel while preserving measured grasp orientations."""
-        held = [(i, row["held_by"]) for i, row in enumerate(self.rows) if row["held_by"]]
-        if not held:
-            return []
-        index, arm = held[0]
+        """Retract hands for travel while preserving measured grasp orientations."""
+        held = [
+            (i, cast("Arm", row["held_by"])) for i, row in enumerate(self.rows) if row["held_by"]
+        ]
+        index: int
+        arm: Arm
+        if held:
+            index, arm = held[0]
+        else:
+            index, arm = 0, "right"
+        hands = list(ARMS)
         failures = []
         for forward, lateral in ((0.28, 0.28), (0.32, 0.30), (0.36, 0.32)):
             self.initialize_local_probe(index, arm)
+            self.allow_target_contact = bool(held)
             base = self.probe.body("base_link")
             rotation, origin = base.xmat.reshape(3, 3).copy(), base.xpos.copy()
             try:
-                for _, side in held:
+                for side in hands:
                     site = self.probe.site(f"{side}_tcp")
                     tcp = np.eye(4)
                     tcp[:3, :3] = site.xmat.reshape(3, 3)
@@ -445,7 +514,12 @@ class ClassicalGraspPlanner(ObjectReachability):
                     self._forward()
                 if self._collisions(selected=index, arm=arm):
                     raise RuntimeError("Carrying posture is obstructed")
-                return self.posture_path(index, arm, self.probe.qpos[self.qids].tolist())
+                return self.posture_path(
+                    index,
+                    arm,
+                    self.probe.qpos[self.qids].tolist(),
+                    allow_target_contact=bool(held),
+                )
             except RuntimeError as exc:
                 failures.append(str(exc))
         raise RuntimeError("No clear compact carrying posture: " + "; ".join(failures))
@@ -503,10 +577,22 @@ class ClassicalGraspPlanner(ObjectReachability):
                             )
                         )
             proposals.sort(key=lambda item: item[0])
-            for base in stance_candidates(target, self.transport.start, side):
+            diverse: list[tuple[float, NDArray[Any], float, str]] = []
+            for proposal in proposals:
+                matrix = proposal[1]
+                if any(
+                    np.linalg.norm(matrix[:3, :3] - existing[1][:3, :3]) < 0.3
+                    and np.linalg.norm(matrix[:3, 3] - existing[1][:3, 3]) < 0.02
+                    for existing in diverse
+                ):
+                    continue
+                diverse.append(proposal)
+                if len(diverse) >= 24:
+                    break
+            for base in self._body_poses(target, side):
                 # Bound each body pose's allocation so a bad dock does not
                 # exhaust the entire reachability search on hundreds of grasps.
-                for _, tcp, score, refinement in proposals[:12]:
+                for _, tcp, score, refinement in diverse[:12]:
                     if time.monotonic() > deadline:
                         break
                     try:

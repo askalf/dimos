@@ -117,6 +117,35 @@ def test_aborted_trajectory_is_not_success_even_at_target(skills, mocker):
         skills._drive([[0.0] * 20, [0.001] * 18 + [0.0, 0.0]], {})
 
 
+@pytest.mark.parametrize("unsettled", ["velocity", "command"])
+@pytest.mark.parametrize("point_count", [1, 2])
+def test_completed_task_waits_for_delivered_and_settled_endpoint(
+    skills, mocker, unsettled, point_count
+):
+    positions = dict.fromkeys(R1PRO_PICK_PLACE_JOINTS, 0.0)
+    states = [dict(active=None, objects=[])]
+    for tick in range(1, 7):
+        states.append(
+            dict(
+                error=None,
+                sim_time=float(tick),
+                joint_positions=positions,
+                joint_commands=dict.fromkeys(
+                    positions, 0.005 if tick <= 3 and unsettled == "command" else 0.0
+                ),
+                joint_velocities=dict.fromkeys(
+                    positions, 0.01 if tick <= 3 and unsettled == "velocity" else 0.0
+                ),
+            )
+        )
+    skills._sim.primitive_state.side_effect = states
+    mocker.patch.object(skills, "_pause")
+
+    skills._drive([[0.0] * 20] * point_count, dict(phase="preplace"))
+
+    assert skills._sim.primitive_state.call_count == 7
+
+
 @pytest.mark.parametrize("supports", [[], ["wrong_table"]])
 def test_missing_intended_support_never_opens_hand(skills, mocker, supports):
     skills._sim.primitive_state.return_value = {
@@ -130,13 +159,16 @@ def test_missing_intended_support_never_opens_hand(skills, mocker, supports):
         skills._seek_support(chosen, {})
     skills._control.execute_trajectory.assert_not_called()
     if not supports:
-        assert len(line.call_args_list) == 10
-        assert line.call_args.args[2][2][3] == pytest.approx(-0.01)
+        # An under-tracking arm must not accumulate unexecuted descents into
+        # a target that penetrates the support in the geometric planner.
+        assert len(line.call_args_list) == 20
+        assert all(call.args[2][2][3] == pytest.approx(-0.0005) for call in line.call_args_list)
 
 
 def test_confirmed_support_finishes_without_further_descent(skills, mocker):
     skills._sim.primitive_state.return_value = {
-        "objects": [{"support_geoms": ["table"], "upright": True}]
+        "objects": [{"support_geoms": ["table"], "upright": True}],
+        "tcp_poses": {"right": np.eye(4).tolist()},
     }
     mocker.patch.object(skills, "_pause")
     line = mocker.patch.object(skills, "_line")
