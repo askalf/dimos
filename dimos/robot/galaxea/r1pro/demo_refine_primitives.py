@@ -28,7 +28,9 @@ from dimos.robot.galaxea.r1pro.primitive_training_job import TrainingStages
 from dimos.robot.galaxea.r1pro.primitive_workspace import save_workspaces
 
 
-def merge_demonstrations(rehearsal: Path, corrections: Path, output: Path) -> None:
+def merge_demonstrations(
+    rehearsal: Path, corrections: Path, output: Path, *, require_other_hand: bool = False
+) -> None:
     original = json.loads((rehearsal / "manifest.json").read_text())
     fresh = json.loads((corrections / "manifest.json").read_text())
     for field in ("profile", "arm", "primitive", "fps", "joints", "images"):
@@ -53,6 +55,15 @@ def merge_demonstrations(rehearsal: Path, corrections: Path, output: Path) -> No
                     "initial_state": str((folder / row["initial_state"]).resolve()),
                 }
             )
+    # Workspace extensions can add new single-hand poses while retaining the
+    # already verified occupied-hand context in rehearsal. Requiring that every
+    # correction batch repeat it would discard the benefit of retaining data.
+    # This gate does not establish success with both hands at a new height.
+    held_examples = sum(bool(row.get("other_hand_object")) for row in rows)
+    if require_other_hand and held_examples < 4:
+        raise ValueError(
+            "Need at least four verified other-hand-held demonstrations in merged data"
+        )
     output.mkdir(parents=True, exist_ok=True)
     save_manifest(
         output / "manifest.json",
@@ -63,6 +74,7 @@ def merge_demonstrations(rehearsal: Path, corrections: Path, output: Path) -> No
             "correction_source": str(corrections.resolve()),
             "rehearsal_episodes": len(original["episodes"]),
             "correction_episodes": len(fresh["episodes"]),
+            "other_hand_held_episodes": held_examples,
         },
     )
 
@@ -146,15 +158,10 @@ def run(args: argparse.Namespace) -> None:
             (p, a) for a in ARMS for p in (PRIMITIVES if train_all else ("place",))
         ):
             name = f"{primitive}-{arm}"
-            if train_all:
-                fresh = json.loads((collection_dir / name / "manifest.json").read_text())
-                held_examples = sum(bool(row.get("other_hand_object")) for row in fresh["episodes"])
-                if held_examples < 4:
-                    raise ValueError(
-                        f"Need at least four other-hand-held demonstrations for {name}"
-                    )
             merged = job / "merged" / name
-            merge_demonstrations(args.rehearsal / name, collection_dir / name, merged)
+            merge_demonstrations(
+                args.rehearsal / name, collection_dir / name, merged, require_other_hand=train_all
+            )
             dataset, initialization, training = (
                 job / parent / name for parent in ("datasets", "initializations", "training")
             )

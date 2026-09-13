@@ -702,3 +702,23 @@ monitoring instead of doing expensive full inventory checks every 500 Hz physics
 step. The full swept route check remains. Agent prompt asks for one recovery
 inspection after a failed action requiring recovery, without retrying the grasp,
 changing the hand/target, releasing an unsupported object or resetting progress.
+
+
+### September 13: physical reach smoke and serialized incremental training
+
+Updated 2026-09-13T02:58-07:00.
+
+Reachability/collection fixes are saved as `7957c165b7` on the rebased development branch. The 27 focused reachability, placement, workspace, apartment-skill and refinement tests passed; changed production files passed mypy. The subsequent rehearsal-context gate tests passed 9/9. User checkout and preview weights have not been replaced.
+
+Physical smoke `apartment-reach-smoke-v4` (PID 2779835) passed right-hand pick and placement at worktable, kitchen and dining_table on seed 381000. Left pick passed all three; left worktable/kitchen placement passed, while left dining placement rejected its fixed-torso corridor and preserved the hold. Seed 381001 is still running. These are physical demonstrations, not ACT evaluation results. Failed states and rejected data remain saved separately.
+
+`apartment-appearance-refine-v1` (PID 2750703) finished right-pick fine-tuning and moved to right-place. It will train/export all four profiles, run bench comparisons, then four local MCP apartment checks. No external LLM is called.
+
+Two detached continuations are queued under the shared recordings jobs directory:
+
+- `apartment-reach-collection-v1` (PID 2788456): waits for completed v4 smoke with at least one accepted pick/place for each hand at all three supports, then collects seeds 381100 through 381107, three choices per layout and both hands.
+- `apartment-reach-refine-v1` (PID 2790331): waits for the previous training AND its native checks to finish, and for appearance/reach collection completion. Freezes unique new accepted examples with source hashes and finite-frame/primitive-boundary checks. Requires at least eight new episodes and two per support per profile; retains prior occupied-hand rehearsal. Fine-tunes existing weights for 4000 updates per profile, then runs six hand/support MCP cases plus a carry/re-pick sequence across dining and kitchen. It records results and does not promote a preview automatically.
+
+Incremental refinement now checks occupied-hand coverage in combined verified rehearsal and corrections; it no longer requires every new-height batch to reproduce four fresh occupied-hand examples. This reuses previous data, but does not claim two occupied hands generalize to new heights: that remains a required runtime check. Duplicate or unsuccessful examples and batches with fewer than eight new examples are still rejected.
+
+Default scene package resolution is valid in the user worktree via its existing `dimos/data/scene_packages` symlink. The temporary development worktree now has the same untracked data link; no user path was hardcoded into production configuration. Training and long collection remain detached; do not start native policy stacks while learner environments are being updated.

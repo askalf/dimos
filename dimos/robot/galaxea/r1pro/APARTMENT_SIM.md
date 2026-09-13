@@ -33,11 +33,27 @@ scripted actions through the local MCP interface without calling an external
 LLM. It accepts a scene package and seed for reproducible checks. Review the
 saved result; command acceptance and IK success are not ACT success.
 
-Current collection status:
+Training status (the first apartment refinement, followed by the queued
+reachability/height refinement):
+
+```bash
+cat /home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/apartment-appearance-refine-v1/status.json
+cat /home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/apartment-reach-refine-v1/status.json
+```
+
+Collection status:
 
 ```bash
 cat /home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/apartment-appearance-v2/collection/status.json
+cat /home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/apartment-reach-collection-v1/status.json
 ```
+
+The detached jobs retain logs, source manifests and checkpoints. Later training
+reuses the previous weights and verified demonstrations, adding only new episode
+keys. The reachability collection waits for physical pick and placement evidence
+for each hand at all three supports. Training and native policy evaluation run
+serially. A completed training status is not a published or validated demo;
+review the separate `apartment-results.json` before changing the preview bundle.
 
 See [the handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-random-objects.md)
 for job evidence and unfinished work.

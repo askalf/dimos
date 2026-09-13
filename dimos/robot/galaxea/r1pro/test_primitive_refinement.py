@@ -80,6 +80,27 @@ def test_merge_rejects_contaminated_training_data(collections, tmp_path, problem
     assert not (tmp_path / "merged/manifest.json").exists()
 
 
+@pytest.mark.parametrize("held_count", [0, 3, 4])
+def test_workspace_extension_retains_verified_occupied_hand_rehearsal(
+    collections, tmp_path, held_count
+):
+    original, corrections = collections
+    manifest = json.loads((original / "manifest.json").read_text())
+    for row in manifest["episodes"][:held_count]:
+        row["other_hand_object"] = "task_object_2"
+    (original / "manifest.json").write_text(json.dumps(manifest))
+    output = tmp_path / "merged"
+    if held_count < 4:
+        with pytest.raises(ValueError, match="other-hand-held"):
+            merge_demonstrations(original, corrections, output, require_other_hand=True)
+        assert not output.exists()
+    else:
+        merge_demonstrations(original, corrections, output, require_other_hand=True)
+        merged = json.loads((output / "manifest.json").read_text())
+        assert merged["other_hand_held_episodes"] == 4
+        assert len(merged["episodes"]) == 16
+
+
 def test_interactive_layout_keeps_tray_occupants_and_identity_when_spreading_table_objects():
     original = sample_layout(360001, occupied=2)
     arranged = bilateral_layout(original)
