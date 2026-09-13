@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
+import time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -570,6 +571,8 @@ def find(
     frames: RecordingFrames | None = None,
     boxes: Owlv2Boxes | None = None,
     keep_images: bool = False,
+    resident: Any = None,
+    timings: dict[str, float] | None = None,
 ) -> Iterator[Detection]:
     """The whole chain: text in, one detection per episode out, in rank order.
 
@@ -587,13 +590,24 @@ def find(
     config = config or DetectConfig()
     frames = frames or RecordingFrames(recording, config=config)
     boxes = boxes or Owlv2Boxes(config)
-    matched = hot_frames(store, query, towers=towers, models=models)
+    at = time.monotonic()
+    matched = hot_frames(store, query, towers=towers, models=models, resident=resident)
+    if timings is not None:
+        timings["search"] = time.monotonic() - at
+        timings["frames_matched"] = float(len(matched))
     if not matched:
         return
+    at = time.monotonic()
     found = ranked_episodes(
         matched,
         gap_s=config.episode_gap_s,
         min_frames=config.min_episode_frames,
         limit=config.max_episodes,
     )
-    yield from detect_episodes(found, query, frames, boxes, config=config, keep_images=keep_images)
+    if timings is not None:
+        timings["episodes"] = time.monotonic() - at
+    at = time.monotonic()
+    answers = detect_episodes(found, query, frames, boxes, config=config, keep_images=keep_images)
+    if timings is not None:
+        timings["detect"] = time.monotonic() - at
+    yield from answers

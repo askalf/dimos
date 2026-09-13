@@ -90,6 +90,12 @@ def main(
     threshold: float = typer.Option(0.15, "--threshold", help="OWLv2's per-box acceptance score"),
     attempts: int = typer.Option(3, "--attempts", help="frames of an episode to try"),
     batch: int = typer.Option(1, "--batch", help="frames per detector forward pass"),
+    resident: bool = typer.Option(
+        True,
+        "--resident/--no-resident",
+        help="hold the patch index in memory: a slow start, then exact queries at the "
+        "speed of the arithmetic. --no-resident searches through sqlite instead.",
+    ),
     checkpoint: str = typer.Option("", "--owl", help="an OWLv2 checkpoint other than base"),
     band_m: float = typer.Option(
         0.5, "--depth-band", help="depth spread that is still the object (m)"
@@ -152,6 +158,20 @@ def main(
     typer.echo(f"index: {index_path}  models {wanted} of {available}")
     typer.echo(f"detector: {config.checkpoint} on {config.device or 'auto'}")
 
+    held = None
+    if resident:
+        from dimos.mapping.hyperspace.resident import ResidentIndex
+
+        held = ResidentIndex()
+        spent = held.warm(
+            store, [(tag, name) for tag, name in member_streams(store) if tag in wanted]
+        )
+        loaded = [held.get(name) for _, name in member_streams(store) if held.get(name)]
+        typer.echo(
+            f"resident: {sum(p.rows for p in loaded)} patches, "
+            f"{sum(p.megabytes for p in loaded):.0f} MB, loaded in {spent:.1f}s"
+        )
+
     summary: dict[str, Any] = {"recording": str(recording_path), "queries": {}}
     # Read once: the same scene backs every query's page, and it is ~700 thumbnail
     # rows placed by tf.
@@ -160,6 +180,7 @@ def main(
         typer.echo(f"\n{text!r}")
         started = time.monotonic()
         found = []
+        spent: dict[str, float] = {}
         for detection in find(
             store,
             recording,
@@ -170,6 +191,8 @@ def main(
             frames=frames,
             boxes=boxes,
             keep_images=True,
+            resident=held,
+            timings=spent,
         ):
             typer.echo(report(detection))
             found.append(detection)
@@ -179,6 +202,12 @@ def main(
         typer.echo(
             f"  {len(found)} episodes, {placed} placed in {places} distinct place(s), "
             f"{sum(1 for d in found if not d.found)} refused, {took:.1f}s"
+        )
+        typer.echo(
+            f"  time: search {spent.get('search', 0):.3f}s"
+            f" + episodes {spent.get('episodes', 0):.3f}s"
+            f" + detector {spent.get('detect', 0):.3f}s"
+            f"  ({int(spent.get('frames_matched', 0))} frames matched)"
         )
         for detection in found:
             if detection.duplicate_of is not None:

@@ -847,6 +847,84 @@ def test_hot_frames_reads_the_flat_layout_and_ranks_the_frames(store: SqliteStor
     assert len(episodes(frames, gap_s=max(gaps))) == 1
 
 
+def test_the_resident_index_answers_exactly_what_sqlite_did(store: SqliteStore) -> None:
+    """Held in memory, the search is the same search -- same frames, same hits.
+
+    It is not merely the same shape: a patch's stamp, ray, grid and depth all have to
+    survive the move out of sqlite, because those are what place it in the world later.
+    """
+    from dimos.mapping.hyperspace.frames import BACKGROUND_PROMPTS, hot_frames, member_streams
+    from dimos.mapping.hyperspace.resident import ResidentIndex
+
+    class StubTowers:
+        def query(self, spec: str, text: str) -> np.ndarray:
+            del spec
+            return StubModel.embed_text(text)
+
+        def background(self, spec: str) -> np.ndarray:
+            del spec
+            return np.stack([StubModel.embed_text(prompt) for prompt in BACKGROUND_PROMPTS])
+
+        def close(self) -> None:
+            pass
+
+    fill(store, ring(4, 2.5), flat=True)
+    through_sqlite = hot_frames(store, "object", towers=StubTowers())
+
+    held = ResidentIndex()
+    held.warm(store, list(member_streams(store)))
+    in_memory = hot_frames(store, "object", towers=StubTowers(), resident=held)
+
+    assert [frame.ts for frame in in_memory] == [frame.ts for frame in through_sqlite]
+    assert [frame.frame for frame in in_memory] == [frame.frame for frame in through_sqlite]
+    for here, there in zip(in_memory, through_sqlite, strict=True):
+        assert len(here.hits) == len(there.hits)
+        for mine, theirs in zip(here.hits, there.hits, strict=True):
+            assert mine.cell == theirs.cell
+            assert mine.grid == theirs.grid
+            assert mine.ray == pytest.approx(theirs.ray)
+            assert mine.depth == pytest.approx(theirs.depth, nan_ok=True)
+            assert mine.score == pytest.approx(theirs.score, abs=1e-5)
+
+
+def test_the_resident_index_is_loaded_once_and_reused(store: SqliteStore) -> None:
+    """Paying the read twice would defeat the whole point of holding it."""
+    from dimos.mapping.hyperspace.frames import member_streams
+    from dimos.mapping.hyperspace.resident import ResidentIndex
+
+    fill(store, ring(4, 2.5), flat=True)
+    members = list(member_streams(store))
+    held = ResidentIndex()
+    held.warm(store, members)
+    first = held.of(store, *members[0])
+    again = held.of(store, *members[0])
+    assert again is first, "the second ask must not re-read the index"
+    assert first.rows == first.vectors.shape[0] == len(first.ts) == len(first.depth)
+
+
+def test_resident_hot_rows_are_ranked_and_capped(store: SqliteStore) -> None:
+    """`hot` is the whole filter: above the threshold, best first, no more than asked."""
+    from dimos.mapping.hyperspace.frames import BACKGROUND_PROMPTS, member_streams
+    from dimos.mapping.hyperspace.resident import ResidentIndex
+
+    fill(store, ring(4, 2.5), flat=True)
+    held = ResidentIndex()
+    members = list(member_streams(store))
+    held.warm(store, members)
+    patches = held.of(store, *members[0])
+
+    query = StubModel.embed_text("object")
+    background = np.stack([StubModel.embed_text(prompt) for prompt in BACKGROUND_PROMPTS])
+    picked, scored = patches.hot(query, background, threshold=0.0)
+    assert len(picked) and np.all(scored > 0.0)
+    assert list(scored) == sorted(scored, reverse=True), "strongest first"
+
+    capped, _ = patches.hot(query, background, threshold=0.0, limit=1)
+    assert len(capped) == 1 and capped[0] == picked[0], "the cap keeps the best, not the first"
+    none, _ = patches.hot(query, background, threshold=10.0)
+    assert len(none) == 0, "nothing clears an impossible threshold"
+
+
 def test_hot_frames_finds_nothing_for_words_the_recording_does_not_contain(
     store: SqliteStore,
 ) -> None:

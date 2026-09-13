@@ -245,8 +245,13 @@ def hot_frames(
     top_k: int = DEFAULT_TOP_K,
     threshold: float = DEFAULT_THRESHOLD,
     device: str = "cpu",
+    resident: Any = None,
 ) -> list[Frame]:
     """Frames that matched *text*, in time order.
+
+    *resident* is a `ResidentIndex` holding the patch arrays in memory. Given one, the
+    search is exact and costs a matrix multiply; without one it is vec0's approximate
+    top-k followed by a read of the winning vectors, which is fifty times slower.
 
     *models* names the member tags to search; the default is every model in the store.
     One cheap model is usually enough to rank frames -- on grocery, base-224 alone gave
@@ -263,6 +268,30 @@ def hot_frames(
             spec = spec_of(tag)
             query = towers.query(spec, text)
             background = towers.background(spec)
+
+            held = resident.of(store, tag, name) if resident is not None else None
+            if held is not None:
+                # Exact, over every patch: no approximate index stands between the
+                # query and the answer, so there is nothing to read back either.
+                picked, scored = held.hot(query, background, threshold=threshold, limit=top_k)
+                for index, score in zip(picked, scored, strict=True):
+                    key = (held.camera_frames[held.frame_of[index]], float(held.ts[index]))
+                    frame = frames.get(key)
+                    if frame is None:
+                        frame = frames[key] = Frame(frame=key[0], ts=key[1])
+                    frame.hits.append(
+                        Hit(
+                            member=tag,
+                            frame=key[0],
+                            ts=key[1],
+                            cell=int(held.cell[index]),
+                            grid=(int(held.grid[index][0]), int(held.grid[index][1])),
+                            ray=(float(held.ray[index][0]), float(held.ray[index][1])),
+                            depth=float(held.depth[index]),
+                            score=float(score),
+                        )
+                    )
+                continue
 
             hits = store.stream(name, dict).search(Embedding(vector=query), k=top_k).to_list()
             if not hits:
