@@ -103,6 +103,7 @@ class VisualAnswers:
 
         def _ensure_store(self) -> Any: ...
         def _ensure_visual_index(self) -> VisualMemoryIndex: ...
+        def _ensure_world_cache(self) -> Any: ...
         def _reopen_recording(self) -> None: ...
         def _query_is_current(self, query_id: str) -> bool: ...
         def _camera_hfov(self) -> float: ...
@@ -248,13 +249,31 @@ class VisualAnswers:
         )
 
     def _adopt_embeddings(self) -> None:
-        """Pick up the stream siglipify just wrote and load the index from it."""
-        if self.config.store_path.endswith(".mcap"):
+        """Pick up the stream the indexer just wrote and load the index from it."""
+        reopened = self.config.store_path.endswith(".mcap")
+        if reopened:
             self._reopen_recording()  # drops the index with the store it read
         else:
             with self._store_lock, self._index_lock:  # store first, like every index user
                 self._drop_visual_index()
         self._build_visual_index()
+        if reopened:
+            # A reopen clears every world cache, `_map_xyz` among them -- and `_map_xyz`
+            # is the map the ROUTE PLANNER walks over. Nothing rebuilt it until the next
+            # viewer connected, so on the demo's own path (add embeddings, ask, press
+            # Navigate) the answer came back and Navigate then answered 503 "the map is
+            # still building" for ever, over a map that was fully built and drawn on
+            # screen in front of you. Measured live on grocery.mcap; a reload fixed it,
+            # which is exactly what makes it look like a client problem.
+            #
+            # Rebuilt HERE, on the job's own thread, because this is where the cache was
+            # invalidated and this thread is already off the request path. The cloud
+            # comes back from the replay's last keyframe in about a second; the capture
+            # markers are the slow part, and an answer needs those too.
+            try:
+                self._ensure_world_cache()
+            except (Exception, SystemExit):  # a refusal is a SystemExit, not an Exception
+                logger.exception("could not rebuild the world cache after the reopen")
 
     def _drop_visual_index(self) -> None:
         """Under the store and index locks: a search holding the old index would read

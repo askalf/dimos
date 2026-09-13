@@ -337,6 +337,38 @@ def test_an_mcap_goes_to_the_indexer_that_can_read_it(recorded, expect_siglipify
     )
 
 
+def test_adopting_embeddings_puts_the_planner_s_map_back() -> None:
+    """A reopen clears `_map_xyz`, and `_map_xyz` is the map Navigate walks over.
+
+    On an mcap the finished index is picked up by reopening the recording, which drops
+    every world cache with the store that built them. Nothing rebuilt them until the next
+    viewer connected -- so on the demo's own path (add embeddings, ask, press Navigate)
+    the answer came back and Navigate answered 503 "the map is still building" for ever,
+    over a map drawn on screen in front of you. Measured live on grocery.mcap.
+    """
+    from dimos.teleop.memory_world.visual_answers import VisualAnswers
+
+    done: list[str] = []
+
+    class Host(VisualAnswers):
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(store_path="/nowhere/grocery.mcap")
+
+        def _reopen_recording(self) -> None:
+            done.append("reopen")
+
+        def _build_visual_index(self) -> None:
+            done.append("index")
+
+        def _ensure_world_cache(self):  # type: ignore[no-untyped-def]
+            done.append("world_cache")
+
+    Host()._adopt_embeddings()
+
+    assert "world_cache" in done, "the reopen left the planner with no map"
+    assert done.index("reopen") < done.index("world_cache"), "rebuilt before it was cleared"
+
+
 # ---- the answer, end to end -------------------------------------------------------
 
 
