@@ -159,8 +159,9 @@ def main(
     typer.echo(f"detector: {config.checkpoint} on {config.device or 'auto'}")
 
     # Everything a query needs is loaded before one is asked, so the first answer costs
-    # what the tenth does. Both of these are lazy by default and would otherwise land
-    # on whoever asked first: about four seconds of text tower and five of detector.
+    # what the tenth does. All three are lazy by default and would otherwise land on
+    # whoever asked first -- and the third is not a model at all, it is the recording's
+    # transforms and by-stamp index.
     at = time.monotonic()
     for tag in wanted:
         towers.background(spec_of(tag))
@@ -175,13 +176,12 @@ def main(
         from dimos.mapping.hyperspace.resident import ResidentIndex
 
         held = ResidentIndex()
-        spent = held.warm(
-            store, [(tag, name) for tag, name in member_streams(store) if tag in wanted]
-        )
-        loaded = [held.get(name) for _, name in member_streams(store) if held.get(name)]
+        members = [(tag, name) for tag, name in member_streams(store) if tag in wanted]
+        spent = held.warm(store, members)
+        loaded = [held.of(store, tag, name) for tag, name in members]
         typer.echo(
-            f"resident: {sum(p.rows for p in loaded)} patches, "
-            f"{sum(p.megabytes for p in loaded):.0f} MB, loaded in {spent:.1f}s"
+            f"resident: {sum(patches.rows for patches in loaded)} patches, "
+            f"{sum(patches.megabytes for patches in loaded):.0f} MB, loaded in {spent:.1f}s"
         )
 
     summary: dict[str, Any] = {"recording": str(recording_path), "queries": {}}
