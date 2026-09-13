@@ -87,7 +87,7 @@ def refine_apartment_route(checker: PlanarTransport, path: list[list[float]]) ->
     """Retain the native route and exact endpoints; execute only fully checked sweeps.
 
     KronkNav's circular graph clearance can miss wrist-camera protrusions in a
-    tight passage. Try small parallel offsets of its interior waypoints, bounded
+    tight passage. Search small local offsets of its interior waypoints, bounded
     to ten centimetres. This cannot substitute a different room-level route.
     """
     poses = np.asarray(path, dtype=float)
@@ -107,15 +107,53 @@ def refine_apartment_route(checker: PlanarTransport, path: list[list[float]]) ->
         return checked(poses)
     except RuntimeError:
         pass
+    # Layered corridor search: each native waypoint keeps its yaw and may move
+    # by at most 10 cm. Penalize changes in offset to avoid introducing a kink.
+    # A whole-path translation cannot clear obstacles on alternating sides.
     deadline = time.monotonic() + 15
-    for radius in (0.025, 0.05, 0.075, 0.1):
-        for direction in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            if time.monotonic() >= deadline:
-                raise RuntimeError("No clear full-body route within the native path corridor")
-            adjusted = poses.copy()
-            adjusted[1:-1, :2] += radius * np.asarray(direction)
-            try:
-                return checked(adjusted)
-            except RuntimeError:
-                continue
-    raise RuntimeError("No clear full-body route within ten centimetres of the native path")
+    offsets = np.array(
+        [(0.0, 0.0)]
+        + [
+            (radius * x, radius * y)
+            for radius in (0.025, 0.05, 0.075, 0.1)
+            for x, y in ((-1, 0), (1, 0), (0, -1), (0, 1))
+        ]
+    )
+    layers = [poses[0:1]]
+    costs = np.zeros(1)
+    parents: list[NDArray[np.int64]] = []
+    for index in range(1, len(poses)):
+        candidates = np.tile(poses[index], (1 if index == len(poses) - 1 else len(offsets), 1))
+        if index != len(poses) - 1:
+            candidates[:, :2] += offsets
+        current_costs = np.full(len(candidates), np.inf)
+        predecessors = np.full(len(candidates), -1, dtype=np.int64)
+        previous = layers[-1]
+        previous_offsets = previous[:, :2] - poses[index - 1, :2]
+        for node, candidate in enumerate(candidates):
+            offset = candidate[:2] - poses[index, :2]
+            changes = np.linalg.norm(previous_offsets - offset, axis=1)
+            scores = costs + np.linalg.norm(offset) + 4 * changes
+            # At most 5 cm of offset change per native edge; every swept edge
+            # still needs to clear the complete robot and measured cargo.
+            scores[changes > 0.05 + 1e-9] = np.inf
+            for parent in np.argsort(scores):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("No clear full-body route within the native path corridor")
+                if not np.isfinite(scores[parent]):
+                    break
+                if checker.clear_pose_segment(previous[parent], candidate):
+                    current_costs[node] = scores[parent]
+                    predecessors[node] = parent
+                    break
+        if not np.isfinite(current_costs).any():
+            raise RuntimeError("No clear full-body route within ten centimetres of the native path")
+        layers.append(candidates)
+        parents.append(predecessors)
+        costs = current_costs
+    node = int(np.argmin(costs))
+    result = [layers[-1][node]]
+    for index in range(len(parents) - 1, -1, -1):
+        node = int(parents[index][node])
+        result.append(layers[index][node])
+    return [[float(value) for value in pose] for pose in reversed(result)]

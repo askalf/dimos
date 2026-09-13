@@ -66,7 +66,8 @@ go_to navigates while preserving all held items; it does not release them.
 Call wait_for_action until an accepted action completes before starting the next action.
 If an action fails, report its phase and error; recover_action once if recovery_required.
 Never reset the scene or silently retry a failed physical grasp. Reset only on explicit request.
-All grasps and placements are classical; no ACT policies are running. Keep answers brief."""
+GraspGenX proposes learned grasps; DimOS classical planning executes picks and placements.
+No ACT policy is running. Keep answers brief."""
 
 
 def build_classical_apartment(*, agent: bool = False) -> Blueprint:

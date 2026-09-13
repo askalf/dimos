@@ -11,9 +11,11 @@ The user reported good interactive grasping/placement, then navigation failed. S
 
 Saved-state physics replay reproduced contact at base (-0.2601, -1.3129), very near the user's (-0.2568, -1.3126). Geometric shortening had reduced the native route to a handful of sharp corners. Maximum cross-track error was 15.6 cm on the shortened route, exceeding its 2 cm collision allowance. Preserving native waypoints passed the return route. With 6 cm clearance the replay passed again; combined pose deviation stayed below 1.53 cm. A separate replay of the old route with the new 4 cm tracking guard stopped before collision.
 
-The patch preserves native waypoints, makes collision clearance configurable (classical transit uses 6 cm; other callers retain 2 cm), monitors combined translation/yaw displacement against a 4 cm allowance, and saves commanded routes before execution. It does not change live geometry or contact thresholds. 27 route/transport regressions and 21 execution/navigation tests passed; strict mypy passes all six changed implementation files.
+The patch preserves native waypoints, makes collision clearance configurable (classical transit uses 6 cm; other callers retain 2 cm), monitors combined translation/yaw displacement against a 4 cm allowance, and saves commanded routes before execution. It does not change live geometry or contact thresholds. 31 route/transport regressions and 21 execution/navigation tests passed; strict mypy passes all six changed implementation files.
 
-Detached native validation: `/tmp/r1pro-nav-return/stack-status.json`, supervisor PID3617509 at launch. It repeats the user's six commands and adds explicit worktable placement after returning. Private MCP10026/Zenoh19492; no external LLM request and no user-process commands. The handoff below describes the prior delivered baseline until this run finishes.
+The first stricter full-stack run rejected a kitchen arrival with only 5.6 cm clearance. A bounded nearby approach search now checks the entire shortest arrival turn; a 5 cm lateral adjustment passed the saved scene. A subsequent dining route required different local offsets along the corridor, so the previous uniform route shift was replaced with a bounded layered search. Every edge retains the full-body/cargo clearance, native sampling and exact endpoints. The saved dining route passes physical/controller replay in 16.49 simulation seconds, with maximum combined tracking deviation 1.35 cm.
+
+Detached native validation: `/tmp/r1pro-nav-return/stack-v3-status.json`, supervisor PID3642450 at launch. It repeats the user's six commands and adds explicit worktable placement after returning. Private MCP10026/Zenoh19492; no external LLM request and no user-process commands. The handoff below describes the prior delivered baseline until this run finishes.
 
 ## Current verified state
 
@@ -24,8 +26,8 @@ Main was fetched again before publication. The only new upstream change was Real
 - **Desktop startup passed after relocation:** `/tmp/r1pro-classical-bootstrap/relocated-startup/result.json` and `promotion-status.json`. Real GLFW MuJoCo window, all native modules, GraspGenX, five objects and local MCP inventory; clean shutdown. No external model request.
 - **Launch:** follow `dimos/robot/galaxea/r1pro/CLASSICAL_APARTMENT.md`. Use `.classical-venv/bin/dimos run r1pro-classical-apartment-sim-agent`, then `.classical-venv/bin/dimos humancli` in a second terminal from this checkout. Zenoh and full viewer are defaults; no shell exports or environment activation required.
 - **Validation:** 73 earlier focused tests; subsequent execution/navigation/state checks passed as recorded below. Final numerical-limit regression: 5 passed, strict mypy passed both affected sources, and all commit hooks passed. Do not sum overlapping test batches into a unique test count.
-- **No background work remains:** delivery and promotion supervisors completed; test stacks shut down. No training is running. Other user processes were not stopped by this work.
-- **Pending:** the external language-provider/HumanCLI round trip was not run. Automatic approval review rejected sending simulated inventory/tool context to the configured provider, and the user-facing approval question remains unanswered. Local MCP physical actions are verified. Do not send a prompt until that approval arrives.
+- **Background work:** the baseline delivery/promotion supervisors completed. The navigation validation at the top is the only current automated test stack; no training is running. Other user processes were not stopped by this work.
+- **HumanCLI:** the user has now run interactive picks and placements successfully. Automated tests continue to use local MCP without an external language-provider request. Earlier approval notes below describe our unrun provider test, not availability of the interactive demo.
 
 ## Scope and remaining limits
 

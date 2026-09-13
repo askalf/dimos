@@ -21,7 +21,7 @@ import mujoco
 import numpy as np
 import pytest
 
-from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach
+from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach, refine_apartment_route
 from dimos.robot.galaxea.r1pro.grasping_blueprint import R1ProGraspingSim
 from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.object_packing_scene import sample_layout
@@ -263,3 +263,50 @@ def test_approach_moves_a_tight_nominal_dock_to_preserve_tracking_clearance(chec
     assert not np.allclose(transit[:2], [0.73, 0])
     assert wide.clear_pose_segment(transit, docking)
     assert abs(docking[2] - transit[2]) <= np.pi
+
+
+@pytest.fixture
+def corridor_checker():
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco><worldbody>
+      <body name="base_link" pos="0 0 .3">
+        <joint name="r1pro/base_x" type="slide" axis="1 0 0"/>
+        <joint name="r1pro/base_y" type="slide" axis="0 1 0"/>
+        <joint name="r1pro/base_yaw" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size=".05"/>
+      </body>
+      <body name="left_obstacle" pos=".35 .08 .3">
+        <geom type="box" size=".05 .05 .1"/>
+      </body>
+      <body name="right_obstacle" pos=".75 -.08 .3">
+        <geom type="box" size=".05 .05 .1"/>
+      </body>
+      <body name="task_bin" pos="0 0 .6">
+        <geom type="box" size=".1 .1 .01" contype="0" conaffinity="0"/>
+      </body>
+    </worldbody><actuator>
+      <position name="r1pro/base_x" joint="r1pro/base_x"/>
+      <position name="r1pro/base_y" joint="r1pro/base_y"/>
+      <position name="r1pro/base_yaw" joint="r1pro/base_yaw"/>
+    </actuator></mujoco>""")
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    return PlanarTransport(model, data, cargo_bodies=(), carry_tray=False, sweep_spacing=0.01)
+
+
+def test_native_corridor_can_clear_obstacles_on_alternating_sides(corridor_checker):
+    path = [[float(x), 0, 0] for x in np.linspace(0, 1.1, 23)]
+
+    result = np.asarray(refine_apartment_route(corridor_checker, path))
+
+    np.testing.assert_allclose(result[[0, -1]], [path[0], path[-1]])
+    assert len(result) == len(path) + 1
+    assert result[:, 1].min() < -0.04
+    assert result[:, 1].max() > 0.04
+    assert np.max(np.linalg.norm(result[1:, :2] - np.asarray(path)[:, :2], axis=1)) <= 0.1
+    assert all(corridor_checker.clear_pose_segment(a, b) for a, b in pairwise(result))
+
+
+def test_corridor_refinement_rejects_an_obstructed_endpoint(corridor_checker):
+    with pytest.raises(RuntimeError, match="No clear full-body route"):
+        refine_apartment_route(corridor_checker, [[0, 0, 0], [0.35, 0.08, 0]])
