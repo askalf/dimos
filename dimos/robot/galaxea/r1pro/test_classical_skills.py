@@ -15,6 +15,7 @@
 """Classical commands preserve grip force and cancellation across state transitions."""
 
 from concurrent.futures import CancelledError
+import json
 
 import numpy as np
 import pytest
@@ -147,9 +148,11 @@ def test_completed_task_waits_for_delivered_and_settled_endpoint(
     skills._sim.primitive_state.side_effect = states
     mocker.patch.object(skills, "_pause")
 
-    skills._drive([[0.0] * 20] * point_count, dict(phase="preplace"))
+    report = dict(phase="preplace")
+    skills._drive([list(np.zeros(20))] * point_count, report)
 
     assert skills._sim.primitive_state.call_count == 7
+    assert json.loads(json.dumps(report))["last_trajectory_tracking"]["commands_delivered"] is True
 
 
 @pytest.mark.parametrize("supports", [[], ["wrong_table"]])

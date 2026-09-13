@@ -6,7 +6,7 @@ Branch: `feat/r1pro-classical-apartment`, forked from `feat/r1pro-primitives-int
 
 ## Latest checkpoint
 
-Local commits: `b9f2afd7d5`, `8bbe24f35e`, `d83bed46a7`; not pushed. A fresh fetch confirmed `origin/main` is already an ancestor (135 ahead, 0 behind), so no rebase is needed.
+Local commits: `b9f2afd7d5`, `8bbe24f35e`, `d83bed46a7`, `43adedb0e4`; not pushed. A fresh fetch confirmed `origin/main` is already an ancestor (135 ahead, 0 behind), so no rebase is needed.
 
 - **Passed native MCP:** `bimanual-v11`, both hand-specific picks followed by independent worktable placements; the other hand retained its object. `delivery-v11` picked and carried the bottle to dining; placement then exposed a planner timeout. `cup-v7` is an earlier successful cup-to-tray run.
 - **Current fixes under test:** 25-second precise base settling; short collision-checked body translations/turns bypass room navigation; both arms fold before travel. Rigid collision probes now omit force solving, with matching transforms/contacts in regression and saved apartment checks.
@@ -14,6 +14,16 @@ Local commits: `b9f2afd7d5`, `8bbe24f35e`, `d83bed46a7`; not pushed. A fresh fet
 - **Tests:** 47 focused local-positioning/navigation/execution regressions passed, then 14 execution tests passed with the empty-plan guard. Mypy passes all five changed implementation files after adding three existing MuJoCo API signatures to local stubs.
 - **Running sequential detached tests:** `local-final-status.json` (carton-v12, cup-v12), then `transfer-final-status.json` (delivery-v12: pick → dining → place → re-pick → kitchen → place). All under `/tmp/r1pro-classical-bootstrap`; only one full stack at a time. Host RAM, not GPU memory, limits parallelism.
 - **Still unverified:** full inter-room place/re-pick delivery and language-provider HumanCLI round trip. External agent testing requires the pending user approval; no prompt has been sent. The old desktop ACT process remains untouched. Do not claim arbitrary household assets or all randomized layouts are reliable from these fixed seeds.
+
+Latest native results: `carton-v12` passed automatic hand selection, full kitchen navigation, precise body staging, pickup and kitchen placement. `cup-v12` passed left pickup, a local base turn and tray placement. `bimanual-v13` passed both requested-hand picks followed by independent placements with the new upright transfer planner; the other hold remained intact.
+
+`delivery-v12` picked and carried to dining, then reached the preplace pose with the new transfer planner. The final contact descent hit its 10-second wall-time settling deadline; recovery preserved the bottle and completed. Exact-state replay (`replay-delivery-support.log`) reached force-backed dining support after one fresh 0.5 mm command and four simulation seconds of settling. The timeout is now 25 seconds, with unchanged velocity/position/contact gates and added tracking diagnostics. Fourteen execution regressions pass after that change. Current detached job: `settled-delivery-status.json`, supervisor PID3495692, case `delivery-v14` (same complete six-action delivery/re-pick sequence). All other latest supervisors completed.
+
+Live MCP tools were inspected: independent get_scene/get_surfaces/pick_object/place_object/go_to/stop_action/recover_action/reset_scene/wait_for_action, plus server utilities; no ACT tool is exposed. HumanCLI's external provider round trip remains untested pending approval.
+
+`delivery-v14` again reached dining, but a different redundant joint posture from the Cartesian transfer left the fixed-torso lowering leg just outside IK convergence (1.09 mm error). Current Cartesian segments can use bounded torso assistance with the other hand's pose preserved when the fixed-torso solve fails. Commands retain static preload for all moving joints and preserve gripper targets. The exact saved failing descent now plans in 3.73 seconds with <0.05 rad torso-joint changes. Physics replay and `delivery-v15` are running; status `adaptive-delivery-status.json`, supervisor PID3503769. The previous supervisors completed.
+
+Tracking diagnostics initially included a NumPy boolean that JSON could not serialize; native action execution continued but one navigation evidence file was not written in v14. Diagnostics now cast scalar types, and the execution regression uses NumPy planner endpoints and checks JSON serialization. Fourteen tests and mypy on both changed implementation files pass. No motion/contact success threshold was relaxed.
 
 The entries below are chronological history and include superseded tuning values and completed process IDs.
 

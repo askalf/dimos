@@ -460,7 +460,9 @@ class R1ProClassicalSkills(Module):
             raise RuntimeError(f"Cartesian trajectory rejected: {accepted}")
         report["motion_started"] = True
         duration = trajectory.points[-1].time_from_start
-        deadline = time.monotonic() + duration + 10
+        # The apartment's contact solver can run slower than wall time. Give
+        # loaded mechanisms time to settle without relaxing endpoint checks.
+        deadline = time.monotonic() + duration + 25
         active = before.get("active")
         protected_grasp = None
         if active and report.get("phase") in ("lift", "preplace", "lower_to_support"):
@@ -506,6 +508,13 @@ class R1ProClassicalSkills(Module):
                 # while the next IK query assumes its measured pose is static.
                 stable = (
                     stable + 1 if delivered and error <= 0.02 and moving <= settle_velocity else 0
+                )
+                report["last_trajectory_tracking"] = dict(
+                    phase=report.get("phase"),
+                    joint_error_rad=float(error),
+                    max_joint_velocity=float(moving),
+                    commands_delivered=bool(delivered),
+                    stable_samples=stable,
                 )
             if protected_grasp is not None and not state["objects"][protected_grasp]["grasped"]:
                 raise RuntimeError("Selected object lost two-finger contact during transfer")

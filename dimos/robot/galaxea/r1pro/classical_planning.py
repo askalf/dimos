@@ -174,25 +174,36 @@ class ClassicalGraspPlanner(ObjectReachability):
         # closure targets in execution. Commanding the measured contact width
         # would remove the grip force as soon as a new arm segment starts.
         points = [self._arm_command(self.probe.qpos[self.qids], arm)]
+        whole_body = False
         steps = max(2, int(np.ceil(np.linalg.norm(target[:3, 3] - start) / 0.004)))
         for t in np.linspace(0, 1, steps + 1)[1:]:
             pose = target.copy()
             pose[:3, 3] = start + t * (target[:3, 3] - start)
             before = self.probe.qpos[self.qids].copy()
-            goal = self.solve_pose(arm, pose)
+            try:
+                goal = self.solve_pose(arm, pose)
+            except RuntimeError:
+                # A transfer can reach the same TCP pose with a different
+                # redundant joint posture. Reassess each measured descent;
+                # small torso assistance keeps the remaining corridor reachable.
+                goal = self.solve_pose(arm, pose, torso=True, preserve_other=True)
+                whole_body = True
             if np.max(np.abs(goal - before)) > 0.20:
                 raise RuntimeError("Cartesian sweep has discontinuous IK")
             if not self._sweep(goal, index, arm):
                 raise RuntimeError(f"Cartesian sweep rejected: {self.sweep_error}")
-            points.append(self._arm_command(goal, arm))
+            points.append(self._arm_command(goal, arm, whole_body=whole_body))
         return points
 
-    def _arm_command(self, joints: NDArray[Any], arm: Arm) -> list[float]:
+    def _arm_command(
+        self, joints: NDArray[Any], arm: Arm, *, whole_body: bool = False
+    ) -> list[float]:
         """Keep static load compensation on moving joints and targets on stationary joints."""
         command = [
             float(self.scene.data.actuator(name).ctrl[0]) for name in R1PRO_PICK_PLACE_JOINTS
         ]
-        for column in active_indices(arm)[:-1]:
+        columns = range(18) if whole_body else active_indices(arm)[:-1]
+        for column in columns:
             measured = float(self.scene.data.qpos[self.qids[column]])
             bias = command[column] - measured
             if abs(bias) > 0.03:
@@ -470,7 +481,7 @@ class ClassicalGraspPlanner(ObjectReachability):
             timeout=20.0,
             max_iterations=5000,
         )
-        if not result.path:
+        if not result.is_success() or not result.path:
             raise RuntimeError(
                 f"DimOS apartment posture planning failed: {result.status}: {result.message}"
             )

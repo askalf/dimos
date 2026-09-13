@@ -51,7 +51,7 @@ Repeat `wait_for_action` until its state is terminal. Inspect `get_surfaces` bef
 6. Close, verify force-backed contact on both pads, lift and verify the hold.
 7. On a separate place request, intersect empty support space with a feasible body/arm posture; descend, confirm the requested support, open and retreat.
 
-KronkNav consumes the full apartment point cloud. Its route must also pass a check of the robot's complete swept geometry, including the held objects and wrist cameras. The DimOS holonomic task executes the accepted path. A compact carrying posture is planned before travel. Base limits are 0.3 m/s and 0.4 rad/s; loaded torso changes use lower joint speed and acceleration to retain the grasp.
+KronkNav consumes the full apartment point cloud. Its route must also pass a check of the robot's complete swept geometry, including the held objects and wrist cameras. The DimOS holonomic task executes the accepted path. A compact carrying posture folds both arms before travel. Loaded placement transfers use Cartesian IK to preserve the object attitude and the other hand, with full collision checks. Base limits are 0.3 m/s and 0.4 rad/s; loaded torso changes use lower joint speed and acceleration to retain the grasp.
 
 Simulation instance labels, object geometry and virtual multiview depth viewpoints are used deliberately. This validates planning/control integration, not real-camera semantic perception. The current assets are procedural bottles, cups, cartons, glue sticks and toy blocks. Arbitrary household meshes, floor/bed placement, tray transport and hand-to-hand transfers are outside this branch's tested scope.
 
