@@ -41,7 +41,7 @@ from dimos.mapping.hyperspace.detect import (
     find,
     merge_duplicates,
 )
-from dimos.mapping.hyperspace.frames import TextTowers, member_streams
+from dimos.mapping.hyperspace.frames import TextTowers, member_streams, spec_of
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -157,6 +157,18 @@ def main(
 
     typer.echo(f"index: {index_path}  models {wanted} of {available}")
     typer.echo(f"detector: {config.checkpoint} on {config.device or 'auto'}")
+
+    # Everything a query needs is loaded before one is asked, so the first answer costs
+    # what the tenth does. Both of these are lazy by default and would otherwise land
+    # on whoever asked first: about four seconds of text tower and five of detector.
+    at = time.monotonic()
+    for tag in wanted:
+        towers.background(spec_of(tag))
+    text_warm = time.monotonic() - at
+    typer.echo(
+        f"warm: text towers {text_warm:.1f}s, detector {boxes.warm():.1f}s, "
+        f"recording {frames.warm():.1f}s"
+    )
 
     held = None
     if resident:

@@ -268,6 +268,26 @@ class RecordingFrames:
         self._tf_stream = tf_stream
         self._tf_loaded = False
 
+    def warm(self) -> float:
+        """Do the first lookup's work now, while nobody is waiting on an answer.
+
+        A recording's transforms are read in one pass the first time anything is placed
+        -- a quarter of a million rows on sf_office -- and the image streams build their
+        by-stamp lookup on first use. Together that was three seconds charged to whoever
+        asked the first question. Returns the seconds spent.
+        """
+        started = time.monotonic()
+        self.load_tf()
+        for name in (self.color_stream, self.depth_stream):
+            if name not in self.recording.list_streams():
+                continue
+            first = self.recording.streams[name].order_by("ts").limit(1).to_list()
+            if first:
+                self.recording.streams[name].at(
+                    float(first[0].ts), tolerance=self.config.depth_max_dt
+                ).to_list()
+        return time.monotonic() - started
+
     def load_tf(self) -> None:
         if self._tf_loaded or self._tf_stream not in self.recording.list_streams():
             self._tf_loaded = True
@@ -337,6 +357,20 @@ class Owlv2Boxes:
                 settings["device"] = self.config.device
             self._detector = Owlv2Detector(**settings)
         return self._detector
+
+    def warm(self) -> float:
+        """Load the weights and run one frame through, before anyone is waiting.
+
+        Building the detector is lazy twice over -- the object defers the model, and the
+        model defers the weights until something is detected -- so the first real query
+        of a process paid about five seconds that had nothing to do with it. A blank
+        frame costs one forward pass and moves that cost to startup, where a wait is
+        free. Returns the seconds spent, for a caller that wants to say so.
+        """
+        started = time.monotonic()
+        blank = Image.from_numpy(np.zeros((32, 32, 3), dtype=np.uint8), frame_id="warmup", ts=0.0)
+        self.best_many([blank], "a thing")
+        return time.monotonic() - started
 
     def best(
         self, image: Image, text: str
