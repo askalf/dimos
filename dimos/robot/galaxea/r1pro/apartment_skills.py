@@ -167,9 +167,14 @@ class R1ProApartmentSkills(R1ProPrimitiveSkills):
 
     def _prepare_posture(self, selection: dict[str, Any], report: dict[str, Any]) -> None:
         stance = selection["reachability"]
-        if not stance["torso_changed"]:
-            return
         positions = stance["ready_joints"]
+        actual = self._sim.primitive_state()["joint_positions"]
+        error = max(
+            abs(actual[name] - positions[i]) for i, name in enumerate(R1PRO_PICK_PLACE_JOINTS[:18])
+        )
+        report["initial_posture_error_rad"] = error
+        if error <= 0.02:
+            return
         groups = {"torso": (0, 4), "left_arm": (4, 11), "right_arm": (11, 18)}
         plan = self._manipulation.plan_to_joints(
             {
@@ -208,15 +213,30 @@ class R1ProApartmentSkills(R1ProPrimitiveSkills):
                 or time.monotonic() >= deadline
             ):
                 raise RuntimeError(f"DimOS posture execution failed: {execution}")
-        actual = self._sim.primitive_state()["joint_positions"]
-        if (
-            max(
+        # The coordinator finishes the trajectory's clock before the physical
+        # position servos necessarily settle. Require fresh measured samples at
+        # the goal before handing the arm to ACT.
+        deadline = time.monotonic() + 5
+        stable = 0
+        last_sample = float("-inf")
+        while time.monotonic() < deadline:
+            self._pause(0.05)
+            state = self._sim.primitive_state()
+            if state["error"]:
+                raise RuntimeError(state["error"])
+            actual = state["joint_positions"]
+            error = max(
                 abs(actual[name] - positions[i])
                 for i, name in enumerate(R1PRO_PICK_PLACE_JOINTS[:18])
             )
-            > 0.02
-        ):
-            raise RuntimeError("Measured posture did not reach the assessed ACT starting pose")
+            report["final_posture_error_rad"] = error
+            if state["sim_time"] <= last_sample:
+                continue
+            last_sample = state["sim_time"]
+            stable = stable + 1 if error <= 0.02 else 0
+            if stable >= 3:
+                return
+        raise RuntimeError("Measured posture did not reach the assessed ACT starting pose")
 
     @skill
     def pick_object(self, object: str = "nearest", arm: str = "auto") -> str:

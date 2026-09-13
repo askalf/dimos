@@ -18,8 +18,14 @@ import json
 
 import pytest
 
-from dimos.manipulation.manipulation_spec import ExecutionResult, ExecutionStatus
+from dimos.manipulation.manipulation_spec import (
+    ExecutionResult,
+    ExecutionStatus,
+    PlanResult,
+    PlanStatus,
+)
 from dimos.robot.galaxea.r1pro.apartment_skills import R1ProApartmentSkills
+from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
 
 
 @pytest.fixture
@@ -89,3 +95,73 @@ def test_place_auto_requires_one_unambiguous_held_object(skills):
     assert json.loads(skills.place_object("kitchen"))["accepted"]
     assert json.loads(skills.wait_for_action(5))["success"]
     assert skills._execute.call_args.args[:4] == ("place", "left", -1, "kitchen")
+
+
+@pytest.mark.parametrize(("arm", "index"), [("left", 4), ("right", 11)])
+def test_arm_positioning_cannot_be_skipped_when_torso_is_unchanged(skills, arm, index):
+    positions = [0.0] * 20
+    positions[index] = 0.5
+    skills._sim.primitive_state.return_value["joint_positions"] = dict.fromkeys(
+        R1PRO_PICK_PLACE_JOINTS, 0.0
+    )
+    skills._manipulation.plan_to_joints.return_value = PlanResult(
+        PlanStatus.FAILED, "blocked approach"
+    )
+    selection = dict(
+        object="object_1",
+        reachability=dict(torso_changed=False, ready_joints=positions, arm=arm),
+    )
+
+    with pytest.raises(RuntimeError, match="blocked approach"):
+        skills._prepare_posture(selection, {})
+
+    goals = skills._manipulation.plan_to_joints.call_args.args[0]
+    assert goals[f"{arm}_arm"].position[0] == 0.5
+    skills._manipulation.execute.assert_not_called()
+
+
+def test_measured_ready_posture_needs_no_motion_even_with_stale_torso_flag(skills):
+    positions = [0.1] * 20
+    skills._sim.primitive_state.return_value["joint_positions"] = dict(
+        zip(R1PRO_PICK_PLACE_JOINTS, positions, strict=True)
+    )
+    selection = dict(reachability=dict(torso_changed=True, ready_joints=positions))
+    report = {}
+
+    skills._prepare_posture(selection, report)
+
+    assert report["initial_posture_error_rad"] == 0.0
+    skills._manipulation.plan_to_joints.assert_not_called()
+
+
+def test_trajectory_completion_waits_for_fresh_measured_posture_samples(skills, mocker):
+    positions = [0.1] * 20
+    parked = dict(joint_positions=dict.fromkeys(R1PRO_PICK_PLACE_JOINTS, 0.0))
+    settled = dict(zip(R1PRO_PICK_PLACE_JOINTS, positions, strict=True))
+    lagging = {**settled, "r1pro/right_arm_joint7": 0.07}
+    skills._sim.primitive_state.side_effect = [
+        parked,
+        dict(error=None),  # The trajectory timer finishes.
+        dict(error=None, sim_time=1.0, joint_positions=lagging),
+        dict(error=None, sim_time=1.1, joint_positions=settled),
+        dict(error=None, sim_time=1.1, joint_positions=settled),  # Repeated sample.
+        dict(error=None, sim_time=1.2, joint_positions=settled),
+        dict(error=None, sim_time=1.3, joint_positions=settled),
+    ]
+    mocker.patch.object(skills, "_pause")
+    skills._manipulation.execute.return_value = ExecutionResult(ExecutionStatus.ACCEPTED)
+    skills._manipulation.wait_for_execution.return_value = ExecutionResult(
+        ExecutionStatus.COMPLETED
+    )
+    selection = dict(
+        object="object_1",
+        reachability=dict(torso_changed=False, ready_joints=positions, arm="right"),
+    )
+    report = {}
+
+    skills._prepare_posture(selection, report)
+
+    assert report["final_posture_error_rad"] == 0.0
+    assert skills._sim.primitive_state.call_count == 7
+    skills._apartment.validate_apartment_posture.assert_called_once()
+    skills._manipulation.execute.assert_called_once()

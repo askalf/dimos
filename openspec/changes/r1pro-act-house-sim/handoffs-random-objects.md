@@ -745,6 +745,56 @@ Updated 2026-09-13T03:18-07:00.
 
 Source fixes are committed through `a4094ffcad`. Corrected smoke v5 completed with all 12 primitives accepted (three picks and three placements per hand, spanning worktable, dining_table and kitchen). Bulk reach collection passed that coverage gate and is running as parent 2802944 / child 2812837 on seeds 381100-381107; its first new right-hand pick/place pair passed. Appearance fine-tuning finished both right-hand models and is now training pick-left. The next refiner remains queued as PID 2806466.
 
+## Apartment deployment failure and measured staging fixes — 2026-09-13
+
+The status above is superseded: both refiners finished. `apartment-appearance-refine-v1`
+failed 4/4 apartment deployment cases; `apartment-reach-refine-v1` failed 8/8.
+Neither policy bundle was promoted. The earlier 12/12 result was the classical
+demonstration teacher, not ACT deployment success.
+
+The user's desktop run on seed 282527379 selected `object_2` (right-side bottle)
+and timed out. Its action evidence is in
+`recordings/r1pro-primitives/2f3a301e8aa34803b5ba8fb1e15fea68/action-001.json`.
+Reachability produced a correct ready pose, but `_prepare_posture` returned when
+`torso_changed` was false. This also skipped a substantial required arm movement.
+Execution now compares all 18 measured arm/torso joints with the ready pose.
+After the timed trajectory finishes, it requires three fresh simulator samples
+within the existing 0.02 rad tolerance, with a five-second settling deadline.
+This fixes a second premature rejection at trajectory completion; tolerance was
+not loosened. Failure still prevents ACT from starting.
+
+Seven focused apartment skill tests pass, covering either arm with an unchanged
+torso, measured readiness despite a stale torso flag, settling and duplicate
+samples, and existing hand-selection behavior. Ruff and production-file mypy
+pass. Source remains in `/tmp/dimos-r1pro-primitives`; a running desktop process
+needs restarting to import the changes.
+
+Actual deployments with the unchanged ACT weights:
+
+- `apartment-posture-retest-v1`: right reached the object but failed the immediate
+  settling check; left reached the correct ready pose, then ACT timed out.
+- `apartment-posture-retest-v2`: both staging and settling fixes active. Right
+  started ACT at approximately (0.3201, -0.4986, 0.9403), above the bottle at
+  (0.3200, -0.5000, 0.7585); maximum joint error was 0.0059 rad. Left staging
+  error was 0.0080 rad. Both ACT picks still timed out. Planned placements were
+  not reached. These fixes do not establish grasp reliability.
+- `apartment-posture-retest-v3`: isolated diagnostic comparison, currently running
+  as detached PID 3180144. Copied artifacts use measured simulator joint limits
+  for action clipping. Original weights/artifacts are unchanged, as are copied
+  normalization means/stds. Copies are marked `DIAGNOSTIC_ONLY.txt` and must not
+  be promoted. The original right-pick action range caps joint 1 at -0.0885 rad,
+  while the assessed valid starting pose has joint 1 at +0.0493 rad. This is a
+  concrete deployment constraint; the comparison must establish its effect.
+
+The user requested a smaller grasp learning problem: DimOS geometry, reachability,
+and classical approach to a measured pregrasp, followed by a short ACT contact,
+closure and lift skill. They want a 100–200 classical demonstration pilot and
+real everyday object assets, with held-out poses and objects to measure transfer.
+They then explicitly asked to test basic fixes first. No replacement training or
+large collection has been started during this correction. Preserve existing
+datasets/checkpoints. Next steps depend on the deployment comparison; do not
+describe geometry feasibility or teacher success as learned-policy success.
+
 An additional offline probe replayed a verified two-hand grasp and checked the previously saved empty-hand KronkNav route. Full robot/cargo checking rejected the reused path while both grasps remained intact (`/tmp/r1pro-two-held-route-result.json`). This was not a fresh loaded-footprint KronkNav request. The queued native two-held/two-stop case must establish that fresh planning and actual controller execution work; do not count the earlier empty-hand navigation result as two-held-object evidence.
 
 No apartment ACT preview has been promoted, no branch push performed, and the user worktree code remains unchanged. All long jobs are detached with durable scripts, manifests, logs and status files in the shared recordings directory. Inspect `apartment-appearance-refine-v1/status.json` for the current learner and `apartment-reach-refine-v1/status.json` for the queued next phase.
