@@ -1,24 +1,24 @@
 # Classical R1Pro apartment
 
-A separate interactive demo on `feat/r1pro-classical-apartment`. The robot uses GraspGenX and DimOS planning; no ACT policy runs in this stack. Transport and varied-layout validation are still in progress. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-classical-apartment.md) for measured results and remaining failures.
+A separate interactive demo on `feat/r1pro-classical-apartment`. The robot uses GraspGenX and DimOS planning; no ACT policy runs in this stack. Native MCP validation passed the complete pick → dining delivery → placement → re-pick → kitchen delivery → placement sequence. Separate tests passed both-hand manipulation, carton handling and cup placement. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-classical-apartment.md) for evidence and scope.
 
 ## This workstation
 
 Close the previous demo with Ctrl-C before starting another stack on the default MCP port. The isolated runtime has already been installed; no environment exports are needed:
 
 ```bash
-cd /tmp/dimos-r1pro-primitives
+cd /home/mustafa/dimos-wt/r1pro-classical-apartment
 .classical-venv/bin/dimos run r1pro-classical-apartment-sim-agent
 ```
 
 In a second terminal:
 
 ```bash
-cd /tmp/dimos-r1pro-primitives
+cd /home/mustafa/dimos-wt/r1pro-classical-apartment
 .classical-venv/bin/dimos humancli
 ```
 
-The agent uses your existing configured provider credentials. The full MuJoCo viewer opens. A new launch randomizes the seed, object properties and positions across the worktable, kitchen and dining table. `reset_scene` repeats the current seed. Pick and place are independent commands; the robot starts idle.
+The agent uses your existing configured provider credentials. The full MuJoCo viewer opens; desktop startup was verified from this checkout. The external language-provider round trip has not been tested; physical actions were tested through local MCP. A new launch randomizes the seed, object properties and positions across the worktable, kitchen and dining table. `reset_scene` repeats the current seed. Pick and place are independent commands; the robot starts idle.
 
 Examples, using the colors and IDs present in the current scene:
 
@@ -54,6 +54,8 @@ Repeat `wait_for_action` until its state is terminal. Inspect `get_surfaces` bef
 KronkNav consumes the full apartment point cloud. Its route must also pass a check of the robot's complete swept geometry, including the held objects and wrist cameras. The DimOS holonomic task executes the accepted path. A compact carrying posture folds both arms before travel. Loaded placement transfers use Cartesian IK to preserve the object attitude and the other hand, with full collision checks. Base limits are 0.3 m/s and 0.4 rad/s; loaded torso changes use lower joint speed and acceleration to retain the grasp.
 
 Simulation instance labels, object geometry and virtual multiview depth viewpoints are used deliberately. This validates planning/control integration, not real-camera semantic perception. The current assets are procedural bottles, cups, cartons, glue sticks and toy blocks. Arbitrary household meshes, floor/bed placement, tray transport and hand-to-hand transfers are outside this branch's tested scope.
+
+The full delivery passed on seed `282527379`; cup coverage also includes seed `282527381`. This is measured scenario coverage, not a success-rate claim across every random layout. Placement search is bounded to 60 seconds and reports timeout separately from geometric infeasibility.
 
 All object attachments are confined to planning copies. Live objects are held and supported through MuJoCo contact physics.
 

@@ -1,10 +1,30 @@
-# Classical apartment continuation — 2026-09-13
+# Classical apartment handoff — 2026-09-13
 
-The user explicitly changed direction from ACT to classical execution using GraspGen and requested a separate branch. This supersedes earlier requirements that ACT perform grasps/placements. Do not restart ACT training.
+The user switched from ACT to classical manipulation with GraspGen and requested a separate branch. No ACT training or policy executes in this demo.
 
-Branch: `feat/r1pro-classical-apartment`, forked from `feat/r1pro-primitives-integration` at `b698b416cb` in `/tmp/dimos-r1pro-primitives`. The original branch/ACT checkpoints remain unchanged. Current local origin/main (`09a5e67043`) was already an ancestor at start; no rebase was needed against that reference. The user's `/home/mustafa/dimos` Alfred checkout is untouched.
+Branch: `feat/r1pro-classical-apartment`. Permanent checkout: `/home/mustafa/dimos-wt/r1pro-classical-apartment`. The former `/tmp/dimos-r1pro-primitives` path is a compatibility symlink. The existing ACT branch/checkpoints and Alfred checkout were not modified. The isolated runtime's launchers and package path were relocated with the worktree.
 
-## Latest checkpoint
+## Current verified state
+
+- **Complete native delivery passed:** `/tmp/r1pro-classical-bootstrap/delivery-v19/result.json`, six successful actions: right pick of object_2, dining navigation, dining placement, re-pick from its new position, kitchen navigation, kitchen placement. The bottle was upright and held during both trips, then upright, settled, released and supported by the correct furniture after each placement. Both placements recorded force-backed intended support before opening; kitchen needed 0.70 mm additional descent. Source checkpoint: `f351049fac`.
+- **Other successful native scenarios:** `bimanual-v13` picked with both hands then placed independently while retaining the other hold; `carton-v12` navigated to the kitchen and picked/placed a carton; `cup-v12` used the left hand, turned the base locally, and placed in the tray. These earlier scenarios predate the numerical-limit and placement-budget changes; the full six-action run uses both final fixes.
+- **Desktop startup passed after relocation:** `/tmp/r1pro-classical-bootstrap/relocated-startup/result.json` and `promotion-status.json`. Real GLFW MuJoCo window, all native modules, GraspGenX, five objects and local MCP inventory; clean shutdown. No external model request.
+- **Launch:** follow `dimos/robot/galaxea/r1pro/CLASSICAL_APARTMENT.md`. Use `.classical-venv/bin/dimos run r1pro-classical-apartment-sim-agent`, then `.classical-venv/bin/dimos humancli` in a second terminal from this checkout. Zenoh and full viewer are defaults; no shell exports or environment activation required.
+- **Validation:** 73 earlier focused tests; subsequent execution/navigation/state checks passed as recorded below. Final numerical-limit regression: 5 passed, strict mypy passed both affected sources, and all commit hooks passed. Do not sum overlapping test batches into a unique test count.
+- **No background work remains:** delivery and promotion supervisors completed; test stacks shut down. No training is running. Other user processes were not stopped by this work.
+- **Pending:** the external language-provider/HumanCLI round trip was not run. Automatic approval review rejected sending simulated inventory/tool context to the configured provider, and the user-facing approval question remains unanswered. Local MCP physical actions are verified. Do not send a prompt until that approval arrives.
+
+## Scope and remaining limits
+
+The pipeline strictly resolves object descriptions, raycasts segmented object geometry, proposes real GraspGenX grasps, ranks body/arm reachability, stages through DimOS IK/planning, and executes independent pick/hold/place commands. KronkNav uses the apartment cloud and the DimOS holonomic controller executes paths after full robot/cargo collision checks. Live holding and support use contact physics; attachments exist only in planning copies.
+
+Perception deliberately uses simulation instance labels and virtual multiview depth. Assets are procedural bottles, cups, cartons, glue sticks and toy blocks, with randomized properties and support locations. Verified runs cover seeds 282527379 and 282527381, not an arbitrary-layout success rate. Kitchen, dining table, worktable and tray placement are implemented. Bed/floor placement, tray carrying, hand-to-hand transfers and arbitrary household meshes are not validated in this branch.
+
+Recent failure fixes: preserve grip force/static load compensation; settle actual delivered commands and measured posture; adapt Cartesian descent with torso assistance; measure slip in gripper coordinates through base turns; normalize only sub-microradian joint-limit overshoot; and distinguish bounded placement-search timeout from no feasible support. None removes collision, hold or support checks.
+
+All remaining entries are chronological development history with superseded statuses, paths, process IDs and tuning values.
+
+## Historical checkpoints
 
 Local commits: `b9f2afd7d5`, `8bbe24f35e`, `d83bed46a7`, `43adedb0e4`; not pushed. A fresh fetch confirmed `origin/main` is already an ancestor (135 ahead, 0 behind), so no rebase is needed.
 
