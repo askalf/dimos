@@ -106,6 +106,10 @@ class Episode:
     """A run of frames with no long quiet in the middle of it: one look at one thing."""
 
     frames: list[Frame]
+    # When the agreement step chose this episode, it also said which frame it agreed
+    # hardest in. That beats total match weight at picking the frame to detect in: the
+    # weight counts every hot cell, including the floor ones the agreement threw out.
+    heat: dict[float, float] | None = None
 
     @property
     def start(self) -> float:
@@ -127,6 +131,8 @@ class Episode:
         is large and centred is a better image to detect in than one where a corner of
         it clips the edge with a slightly higher peak.
         """
+        if self.heat:
+            return max(self.frames, key=lambda frame: self.heat.get(frame.ts, 0.0))
         return max(self.frames, key=lambda frame: frame.weight)
 
     @property
@@ -140,6 +146,8 @@ class Episode:
 
     def by_weight(self) -> list[Frame]:
         """Frames best-first, for a caller that wants to try more than one."""
+        if self.heat:
+            return sorted(self.frames, key=lambda frame: -self.heat.get(frame.ts, 0.0))
         return sorted(self.frames, key=lambda frame: -frame.weight)
 
 

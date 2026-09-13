@@ -242,16 +242,22 @@ class StubBoxes:
     def answer(self) -> tuple[tuple[float, float, float, float], float] | None:
         return None if self.box is None else (self.box, self.score)
 
-    def best_many(
+    def all_many(
         self, images: Sequence[Image], text: str
-    ) -> list[tuple[tuple[float, float, float, float], float] | None]:
+    ) -> list[list[tuple[tuple[float, float, float, float], float]]]:
         del text
         self.passes += 1
         answers = []
         for _ in images:
             self.calls += 1
-            answers.append(self.answer())
+            found = self.answer()
+            answers.append([] if found is None else [found])
         return answers
+
+    def best_many(
+        self, images: Sequence[Image], text: str
+    ) -> list[tuple[tuple[float, float, float, float], float] | None]:
+        return [found[0] if found else None for found in self.all_many(images, text)]
 
     def best(
         self, image: Image, text: str
@@ -690,6 +696,41 @@ def placed(rank: int, score: float, centre: tuple[float, float, float]) -> Detec
         frame=WORLD, centre=centre, extent=(0.2, 0.2, 0.2), pixels=50, depth_m=1.0
     )
     return detection
+
+
+class FindsTwoThings(StubBoxes):
+    """A photograph with two of the thing in it, which is what OWLv2 really returns."""
+
+    def all_many(self, images, text):  # type: ignore[no-untyped-def]
+        del text
+        self.passes += 1
+        answers = []
+        for _ in images:
+            self.calls += 1
+            answers.append([((28.0, 20.0, 36.0, 28.0), 0.8), ((4.0, 4.0, 12.0, 12.0), 0.6)])
+        return answers
+
+
+def test_two_things_in_one_photograph_are_two_answers(recording: SqliteStore, monkeypatch) -> None:
+    """Keeping only the strongest box lost every second instance sharing a view."""
+    frames = [frame_at(ts, 0.9) for ts in (10.0, 10.25)]
+    monkeypatch.setattr("dimos.mapping.hyperspace.frames.hot_frames", lambda *a, **k: frames)
+    boxes = FindsTwoThings((28.0, 20.0, 36.0, 28.0))
+    config = DetectConfig(world_frame=WORLD)
+    answers = list(
+        find(
+            recording,
+            recording,
+            "a square",
+            config=config,
+            frames=RecordingFrames(recording, config=config),
+            boxes=boxes,
+        )
+    )
+    assert len(answers) == 2, "one episode, two things seen in it"
+    assert [answer.score for answer in answers] == [0.8, 0.6], "strongest is the episode's"
+    assert len({answer.rank for answer in answers}) == 2, "and the second gets its own rank"
+    assert all(answer.box3d is not None for answer in answers)
 
 
 def test_a_second_look_sharpens_the_place_instead_of_adding_a_box() -> None:

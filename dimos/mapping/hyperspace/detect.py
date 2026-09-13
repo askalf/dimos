@@ -66,6 +66,10 @@ class DetectConfig:
     # usually right, but an object can be half out of the frame at the moment it scores
     # highest, and the next look is free of that.
     attempts: int = 3
+    # Boxes to keep from one photograph. The detector returns every box over its
+    # threshold and a frame really can hold two of the thing asked for; past a handful
+    # they are the same shelf seen as several.
+    per_frame: int = 4
     # Frames handed to the detector in one forward pass. One, because batching was
     # measured on this Mac and LOST: OWLv2 pads every frame to 960x960, so the cost is
     # per pixel and there is little per-call overhead to amortize, while the bigger
@@ -411,25 +415,36 @@ class Owlv2Boxes:
     def best_many(
         self, images: Sequence[Image], text: str
     ) -> list[tuple[tuple[float, float, float, float], float] | None]:
-        """``best`` over many images, in as few forward passes as the cap allows.
+        """The strongest box per image, or None where the detector refused it."""
+        return [found[0] if found else None for found in self.all_many(images, text)]
 
-        One answer per image, in input order, so a caller can keep its own bookkeeping
-        beside the list. The images of one round are unrelated to each other -- this is
+    def all_many(
+        self, images: Sequence[Image], text: str
+    ) -> list[list[tuple[tuple[float, float, float, float], float]]]:
+        """Every box the detector accepted, strongest first, per image.
+
+        Two cones in one photograph are two answers. Keeping only the strongest made a
+        frame worth at most one thing, which quietly lost every second instance that
+        happened to share a view with a better one.
+
+        One list per image, in input order, so a caller can keep its own bookkeeping
+        beside it. The images of one round are unrelated to each other -- the batch is
         purely about paying the per-call overhead once instead of once per frame.
         """
-        answers: list[tuple[tuple[float, float, float, float], float] | None] = []
+        answers: list[list[tuple[tuple[float, float, float, float], float]]] = []
         size = max(1, self.config.batch)
         for start in range(0, len(images), size):
             chunk = list(images[start : start + size])
             for found in self.detector.query_detections_batch(
                 chunk, [text], threshold=self.config.threshold
             ):
-                if not found.detections:
-                    answers.append(None)
-                    continue
-                best = max(found.detections, key=lambda detection: detection.confidence)
-                x1, y1, x2, y2 = (float(v) for v in best.bbox)
-                answers.append(((x1, y1, x2, y2), float(best.confidence)))
+                here: list[tuple[tuple[float, float, float, float], float]] = []
+                for detection in sorted(
+                    found.detections, key=lambda detection: -detection.confidence
+                ):
+                    x1, y1, x2, y2 = (float(v) for v in detection.bbox)
+                    here.append(((x1, y1, x2, y2), float(detection.confidence)))
+                answers.append(here)
         return answers
 
 
@@ -477,13 +492,16 @@ class _Try:
     answer: Detection | None = None
     flat: Detection | None = None
     refusals: int = 0
+    # Other things the detector found in the same photograph. Two cones in one frame
+    # are two answers, and the second one is nobody else's episode to report.
+    beside: list[Detection] = field(default_factory=list)
 
     @property
     def settled(self) -> bool:
         return self.answer is not None
 
-    def finish(self) -> Detection:
-        return self.answer or self.flat or self.detection
+    def finish(self) -> list[Detection]:
+        return [self.answer or self.flat or self.detection, *self.beside]
 
 
 def place_of(
@@ -633,15 +651,22 @@ def stream_episodes(
         for rank, episode in enumerate(episodes, first_rank)
     ]
 
+    rank = first_rank + len(tries)
     if config.batch <= 1:
         for one in tries:
             _attempt_rounds([one], query, frames, boxes, config=config, keep_images=keep_images)
-            yield one.finish()
+            for answer in one.finish():
+                if answer.rank == 0:
+                    answer.rank, rank = rank, rank + 1
+                yield answer
         return
 
     _attempt_rounds(tries, query, frames, boxes, config=config, keep_images=keep_images)
     for one in tries:
-        yield one.finish()
+        for answer in one.finish():
+            if answer.rank == 0:
+                answer.rank, rank = rank, rank + 1
+            yield answer
 
 
 def _attempt_rounds(
@@ -668,23 +693,30 @@ def _attempt_rounds(
             pending.append((attempt_of, candidate, image))
         if not pending:
             break
-        found_in_round = boxes.best_many([image for _, _, image in pending], query)
+        found_in_round = boxes.all_many([image for _, _, image in pending], query)
         for (attempt_of, candidate, image), found in zip(pending, found_in_round, strict=True):
-            if found is None:
+            if not found:
                 attempt_of.refusals += 1
                 attempt_of.detection.note = f"detector refused {attempt_of.refusals} frame(s)"
                 continue
-            attempt = replace(
-                attempt_of.detection, ts=candidate.ts, camera_frame=candidate.frame, note=""
-            )
-            attempt.box2d, attempt.score = found
-            if keep_images:
-                attempt.image = image
-            _place(attempt, candidate, image, frames, config)
-            if attempt.box3d is not None:
-                attempt_of.answer = attempt
-            else:
-                attempt_of.flat = attempt_of.flat or attempt
+            for position, box in enumerate(found[: max(1, config.per_frame)]):
+                attempt = replace(
+                    attempt_of.detection, ts=candidate.ts, camera_frame=candidate.frame, note=""
+                )
+                attempt.box2d, attempt.score = box
+                if keep_images:
+                    attempt.image = image
+                _place(attempt, candidate, image, frames, config)
+                if position == 0:
+                    # The strongest box is this episode's answer; the rest are other
+                    # things in the same photograph and get ranks of their own later.
+                    if attempt.box3d is not None:
+                        attempt_of.answer = attempt
+                    else:
+                        attempt_of.flat = attempt_of.flat or attempt
+                elif attempt.box3d is not None:
+                    attempt.rank = 0
+                    attempt_of.beside.append(attempt)
 
 
 def _place(
