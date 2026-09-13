@@ -342,17 +342,31 @@ if (cloud.length) {
 bounds.getCenter(centre)
 const span = Math.max(bounds.getSize(new THREE.Vector3()).length(), 4)
 
+// Lit rather than flat, so a solid face still reads as a face and the boxes look
+// like objects sitting in the room instead of six lines.
+scene.add(new THREE.HemisphereLight(0xffffff, 0x14151c, 2.0))
+const sun = new THREE.DirectionalLight(0xffffff, 1.2)
+sun.position.set(1, 1.5, 2)
+scene.add(sun)
+
 const drawn = data.boxes.map(box => {
     // A second look at a place already found is drawn cooler, so the distinct answers
     // are the ones that stand out.
     const tone = box.duplicate_of ? 0x8a6a4a : 0xff8a2e
+    // How solid a box looks is how sure the detector was. A guess is a haze you can
+    // see straight through; a confident answer is nearly opaque.
+    const sure = Math.max(0, Math.min(1, box.score))
     const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(...box.extent),
-        new THREE.MeshBasicMaterial({ color: tone, transparent: true, opacity: 0.18 }))
+        new THREE.MeshLambertMaterial({
+            color: tone, transparent: true, opacity: 0.10 + 0.55 * sure,
+            // Without this a weak box in front hides a strong one behind it.
+            depthWrite: false, side: THREE.DoubleSide }))
     mesh.position.set(...box.centre)
+    mesh.renderOrder = 1 + sure
     const edges = new THREE.LineSegments(
         new THREE.EdgesGeometry(mesh.geometry),
-        new THREE.LineBasicMaterial({ color: tone }))
+        new THREE.LineBasicMaterial({ color: tone, transparent: true, opacity: 0.35 + 0.6 * sure }))
     edges.position.copy(mesh.position)
     scene.add(mesh); scene.add(edges)
     return mesh
@@ -448,6 +462,10 @@ sub.textContent = `${data.boxes.length} placed in ${places} distinct place(s)` +
     (data.refused.length ? `, ${data.refused.length} episode(s) the detector refused` : "") +
     (data.recording ? ` · ${data.recording}` : "")
 side.appendChild(sub)
+const legend = document.createElement("p")
+legend.className = "sub"
+legend.textContent = "A box is as solid as the detector was sure; a faint one is a guess."
+side.appendChild(legend)
 if (!data.boxes.length) {
     const none = document.createElement("p")
     none.className = "none"
