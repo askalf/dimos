@@ -45,6 +45,12 @@ logger = setup_logger()
 # load; the table is read start to finish either way.
 READ_CHUNK = 50_000
 
+# What the vectors are held as. Half precision because the index is what has to fit:
+# grocery's three models are 34 GB at single precision and 17 at half, and the scores
+# it produces are a similarity used to rank and threshold, not a measurement -- the
+# matmul accumulates in float32 either way.
+HELD_AS = np.float16
+
 
 @dataclass
 class ResidentPatches:
@@ -56,7 +62,7 @@ class ResidentPatches:
 
     tag: str
     stream: str
-    vectors: NDArray[np.float32]
+    vectors: NDArray[Any]
     camera_frames: list[str]
     frame_of: NDArray[np.int32]
     ts: NDArray[np.float64]
@@ -85,8 +91,11 @@ class ResidentPatches:
         The same quantity the sqlite path computes, over every patch rather than over
         whatever the approximate index happened to return.
         """
-        against = self.vectors @ query
-        against -= (self.vectors @ background.T).max(axis=1)
+        # float32 in, float32 out: the vectors are half precision to fit, but nothing
+        # is gained by doing the arithmetic there, and a half-precision sum over a
+        # thousand dimensions loses more than the storage saves.
+        against = (self.vectors @ query.astype(HELD_AS)).astype(np.float32)
+        against -= (self.vectors @ background.astype(HELD_AS).T).astype(np.float32).max(axis=1)
         return against
 
     def hot(
@@ -114,7 +123,7 @@ def _warn_if_it_will_not_fit(tag: str, rows: int, width: int) -> None:
     and a model that only just fits is a normal thing to want. But finding out by
     watching the machine die is not, so the number goes in the log first.
     """
-    wanted = rows * width * 4
+    wanted = rows * width * HELD_AS().itemsize
     try:
         import psutil
 
@@ -135,7 +144,7 @@ def _vectors_of(conn: Any, stream: str, width: int, rows: int) -> NDArray[np.flo
     Straight SQL against the virtual table -- slow, and deliberately so: the fast read
     is vec0's private chunk storage, which is not ours to depend on.
     """
-    out = np.empty((rows, width), dtype=np.float32)
+    out = np.empty((rows, width), dtype=HELD_AS)
     cursor = conn.execute(f'SELECT embedding FROM "{stream}_vec" ORDER BY rowid')
     at = 0
     while at < rows:

@@ -35,7 +35,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from dimos.mapping.hyperspace.ingest import patch_stream_for
-from dimos.models.embedding.base import Embedding
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
@@ -57,10 +56,6 @@ DEFAULT_TOP_K = 4000
 # frames step is a *recall* step whose job is to nominate images for the detector, and
 # the detector is what refuses.
 DEFAULT_THRESHOLD = 0.005
-
-# Rows per `rowid IN (...)`. One statement for sixteen thousand ids took 7.5 s; in
-# chunks it is a fraction of that, and SQLite has a hard limit on parameter count.
-VECTOR_CHUNK = 900
 
 
 @dataclass
@@ -223,27 +218,6 @@ class TextTowers:
         self._towers.clear()
 
 
-def stored_vectors(store: Any, stream_name: str, ids: Sequence[int]) -> NDArray[np.float32]:
-    """The vectors of these rows, in the order asked for.
-
-    Read straight off the vec0 shadow table. The store's own search returns payloads
-    and distances but not the vectors, and the contrast against the background prompts
-    needs the vectors themselves.
-    """
-    conn = store._registry_conn
-    found: dict[int, bytes] = {}
-    for start in range(0, len(ids), VECTOR_CHUNK):
-        chunk = list(ids[start : start + VECTOR_CHUNK])
-        marks = ",".join("?" * len(chunk))
-        found.update(
-            conn.execute(
-                f'SELECT rowid, embedding FROM "{stream_name}_vec" WHERE rowid IN ({marks})',
-                chunk,
-            )
-        )
-    return np.stack([np.frombuffer(found[int(i)], dtype=np.float32) for i in ids])
-
-
 def hot_frames(
     store: Any,
     text: str,
@@ -257,15 +231,16 @@ def hot_frames(
 ) -> list[Frame]:
     """Frames that matched *text*, in time order.
 
-    *resident* is a `ResidentIndex` holding the patch arrays in memory. Given one, the
-    search is exact and costs a matrix multiply; without one it is vec0's approximate
-    top-k followed by a read of the winning vectors, which is fifty times slower.
+    The search is a matrix multiply over every patch of every model named, held in
+    memory by *resident* -- exact, with no approximate index between the words and the
+    answer. Going through sqlite instead was measured at fifty times slower and is
+    gone; the index is loaded once, at startup or as a recording is ingested.
 
     *models* names the member tags to search; the default is every model in the store.
-    One cheap model is usually enough to rank frames -- on grocery, base-224 alone gave
-    the same top ten episodes as all four, for a tenth of the search -- so the expensive
-    ones are something to switch on when comparing rather than a toll every query pays.
     """
+    from dimos.mapping.hyperspace.resident import RESIDENT
+
+    held_by = resident or RESIDENT
     owned = towers is None
     towers = towers or TextTowers(device)
     frames: dict[tuple[str, float], Frame] = {}
@@ -277,53 +252,23 @@ def hot_frames(
             query = towers.query(spec, text)
             background = towers.background(spec)
 
-            held = resident.of(store, tag, name) if resident is not None else None
-            if held is not None:
-                # Exact, over every patch: no approximate index stands between the
-                # query and the answer, so there is nothing to read back either.
-                picked, scored = held.hot(query, background, threshold=threshold, limit=top_k)
-                for index, score in zip(picked, scored, strict=True):
-                    key = (held.camera_frames[held.frame_of[index]], float(held.ts[index]))
-                    frame = frames.get(key)
-                    if frame is None:
-                        frame = frames[key] = Frame(frame=key[0], ts=key[1])
-                    frame.hits.append(
-                        Hit(
-                            member=tag,
-                            frame=key[0],
-                            ts=key[1],
-                            cell=int(held.cell[index]),
-                            grid=(int(held.grid[index][0]), int(held.grid[index][1])),
-                            ray=(float(held.ray[index][0]), float(held.ray[index][1])),
-                            depth=float(held.depth[index]),
-                            score=float(score),
-                        )
-                    )
-                continue
-
-            hits = store.stream(name, dict).search(Embedding(vector=query), k=top_k).to_list()
-            if not hits:
-                continue
-            ids = [int(hit.id) for hit in hits]
-            vectors = stored_vectors(store, name, ids)
-            contrast = vectors @ query - (vectors @ background.T).max(axis=1)
-            for index in np.flatnonzero(contrast > threshold):
-                payload = hits[index].data
-                key = (payload["camera_frame"], float(payload["ts"]))
+            held = held_by.of(store, tag, name)
+            picked, scored = held.hot(query, background, threshold=threshold, limit=top_k)
+            for index, score in zip(picked, scored, strict=True):
+                key = (held.camera_frames[held.frame_of[index]], float(held.ts[index]))
                 frame = frames.get(key)
                 if frame is None:
                     frame = frames[key] = Frame(frame=key[0], ts=key[1])
-                rows, cols = (int(v) for v in payload["grid"])
                 frame.hits.append(
                     Hit(
                         member=tag,
                         frame=key[0],
                         ts=key[1],
-                        cell=int(payload["cell"]),
-                        grid=(rows, cols),
-                        ray=(float(payload["ray"][0]), float(payload["ray"][1])),
-                        depth=float(payload["depth"]),
-                        score=float(contrast[index]),
+                        cell=int(held.cell[index]),
+                        grid=(int(held.grid[index][0]), int(held.grid[index][1])),
+                        ray=(float(held.ray[index][0]), float(held.ray[index][1])),
+                        depth=float(held.depth[index]),
+                        score=float(score),
                     )
                 )
     finally:

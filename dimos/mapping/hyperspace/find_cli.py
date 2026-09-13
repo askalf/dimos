@@ -90,12 +90,6 @@ def main(
     threshold: float = typer.Option(0.15, "--threshold", help="OWLv2's per-box acceptance score"),
     attempts: int = typer.Option(3, "--attempts", help="frames of an episode to try"),
     batch: int = typer.Option(1, "--batch", help="frames per detector forward pass"),
-    resident: bool = typer.Option(
-        True,
-        "--resident/--no-resident",
-        help="hold the patch index in memory: a slow start, then exact queries at the "
-        "speed of the arithmetic. --no-resident searches through sqlite instead.",
-    ),
     checkpoint: str = typer.Option("", "--owl", help="an OWLv2 checkpoint other than base"),
     band_m: float = typer.Option(
         0.5, "--depth-band", help="depth spread that is still the object (m)"
@@ -171,18 +165,18 @@ def main(
         f"recording {frames.warm():.1f}s"
     )
 
-    held = None
-    if resident:
-        from dimos.mapping.hyperspace.resident import ResidentIndex
+    from dimos.mapping.hyperspace.resident import ResidentIndex
 
-        held = ResidentIndex()
-        members = [(tag, name) for tag, name in member_streams(store) if tag in wanted]
-        spent = held.warm(store, members)
-        loaded = [held.of(store, tag, name) for tag, name in members]
-        typer.echo(
-            f"resident: {sum(patches.rows for patches in loaded)} patches, "
-            f"{sum(patches.megabytes for patches in loaded):.0f} MB, loaded in {spent:.1f}s"
-        )
+    # The index is read once, here, and every query after is a matrix multiply. There
+    # is no second way to search: going through sqlite was fifty times slower.
+    held = ResidentIndex()
+    members = [(tag, name) for tag, name in member_streams(store) if tag in wanted]
+    spent = held.warm(store, members)
+    loaded = [held.of(store, tag, name) for tag, name in members]
+    typer.echo(
+        f"resident: {sum(patches.rows for patches in loaded)} patches, "
+        f"{sum(patches.megabytes for patches in loaded):.0f} MB, loaded in {spent:.1f}s"
+    )
 
     summary: dict[str, Any] = {"recording": str(recording_path), "queries": {}}
     # Read once: the same scene backs every query's page, and it is ~700 thumbnail
