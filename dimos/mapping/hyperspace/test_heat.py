@@ -84,6 +84,17 @@ def test_one_model_alone_does_not_make_a_box() -> None:
     assert len(found) == 1 and found[0].agreement == 2
 
 
+def test_asking_for_three_models_when_two_were_searched_still_answers() -> None:
+    """The demand is clamped to what is on offer, or two models would answer nothing."""
+    two = frame_of(
+        hit("small", cell=5, grid=(4, 4), score=1.0, depth=2.0),
+        hit("big", cell=5, grid=(4, 4), score=1.0, depth=2.0),
+        hit("small", cell=6, grid=(4, 4), score=1.0, depth=2.0),
+        hit("big", cell=6, grid=(4, 4), score=1.0, depth=2.0),
+    )
+    assert boxes_in(two, LOOKING_ALONG_Z, config=HeatConfig(min_members=3)) != []
+
+
 def test_two_blobs_in_one_frame_are_two_boxes() -> None:
     """Opposite corners of the grid are not one thing, however hot both are."""
     frame = frame_of(

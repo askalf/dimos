@@ -81,6 +81,9 @@ class DetectConfig:
     # Only bounds the work of placing them; a query with more candidates than this is
     # already answering about a very common thing.
     episode_pool: int = 500
+    # Ask several models where they agree, and take the candidates from that instead
+    # of from time-split episodes. Needs more than one model searched to mean anything.
+    agreement: bool = True
     # Group candidate episodes by roughly where they are and give every group a look
     # before any group gets a second one. Off means strongest-first, which spends the
     # detector on four looks at the nearest chair before it has seen the far one.
@@ -88,6 +91,9 @@ class DetectConfig:
     # Cells whose depth is within this of the strongest hit's are the same surface it
     # is on. What keeps a cone's cells and drops the floor under it.
     place_band_m: float = 0.3
+    # How the agreement step is turned, when it is the one choosing candidates.
+    # `HeatConfig`, kept loose to avoid importing it for every config built.
+    heat: Any = field(default=None)
     # How close two episodes have to be to count as the same place for that ordering.
     # Deliberately looser than the radius answers are merged at: this estimate comes
     # from patch rays before any detector has looked, and one cone at a metre placed
@@ -819,6 +825,52 @@ def merge_duplicates(detections: Sequence[Detection], merge_m: float = 0.75) -> 
     return len(places)
 
 
+def _agreed_candidates(
+    matched: Sequence[Frame],
+    frames: RecordingFrames,
+    *,
+    config: DetectConfig,
+    models: Sequence[str] | None,
+) -> list[Episode] | None:
+    """Candidates from where several models agree, or None if that is not on offer.
+
+    One model's hot cells are a tenth of the frame and mostly floor, so splitting them
+    on time and hoping gives the detector a lot of floor to refuse. Where three models
+    agree is a much smaller set, and each place arrives already knowing which frame it
+    was clearest in.
+    """
+    if not config.agreement or not matched:
+        return None
+    members = {hit.member for frame in matched for hit in frame.hits}
+    if len(members) < 2:
+        return None
+
+    from dimos.mapping.hyperspace import heat
+
+    settings = config.heat or heat.HeatConfig()
+    poses = {}
+    for frame in matched:
+        pose = frames.pose(frame.frame, frame.ts, config.world_frame)
+        if pose is not None:
+            poses[(frame.frame, frame.ts)] = pose
+    by_ts = {(frame.frame, frame.ts): frame for frame in matched}
+    found: list[Episode] = []
+    for place in heat.places_of(matched, poses, config=settings):
+        looks = {}
+        warmth = {}
+        for box in place.boxes:
+            key = (box.camera_frame, box.ts)
+            frame = by_ts.get(key)
+            if frame is None:
+                continue
+            looks[key] = frame
+            warmth[box.ts] = max(warmth.get(box.ts, 0.0), box.heat)
+        if looks:
+            found.append(Episode(frames=list(looks.values()), heat=warmth))
+    del models
+    return found
+
+
 def find(
     store: Any,
     recording: Any,
@@ -857,15 +909,19 @@ def find(
     if not matched:
         return
     at = time.monotonic()
-    found = ranked_episodes(
-        matched,
-        gap_s=config.episode_gap_s,
-        min_frames=config.min_episode_frames,
-        limit=config.episode_pool if config.spread_places else config.max_episodes,
-    )
-    if config.spread_places:
-        # Ordered before it is cut, or the cut is what decides which places are seen.
-        found = spread_by_place(found, frames, config=config)
+    agreed = _agreed_candidates(matched, frames, config=config, models=models)
+    if agreed is not None:
+        found = agreed
+    else:
+        found = ranked_episodes(
+            matched,
+            gap_s=config.episode_gap_s,
+            min_frames=config.min_episode_frames,
+            limit=config.episode_pool if config.spread_places else config.max_episodes,
+        )
+        if config.spread_places:
+            # Ordered before it is cut, or the cut decides which places are ever seen.
+            found = spread_by_place(found, frames, config=config)
     found = found[: config.max_episodes]
     if timings is not None:
         timings["episodes"] = time.monotonic() - at

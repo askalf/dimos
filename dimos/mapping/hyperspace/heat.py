@@ -79,7 +79,7 @@ class HeatConfig:
     # sf_office against the two cones that exist -- at 0.6 the blob is the hot core
     # only, 12 cm of a 40 cm cone, and one cone came back as five places; 0.3 gives a
     # 24 cm blob and one. Lower admits more of the frame without growing the thing.
-    relative: float = 0.3
+    relative: float = 0.2
     # And an absolute floor under it, because a fraction of a peak is still a fraction
     # when the peak is noise -- without this every frame yields a blob of whatever it
     # has most of.
@@ -87,9 +87,11 @@ class HeatConfig:
     # Blobs smaller than this are single hot cells, which is what the summing is meant
     # to be robust to.
     min_cells: int = 2
-    # A blob has to have heat from at least this many models. Two of three is the
-    # point: one model alone is what puts a box on the floor.
-    min_members: int = 2
+    # A blob has to have heat from at least this many models, clamped to how many were
+    # actually searched. Measured on sf_office: demanding all three rather than two of
+    # three cut the places from 18 to 3 with the cones untouched -- the ones it removes
+    # are exactly the places one model invented on its own.
+    min_members: int = 3
     # Cells whose depth is this far from the blob's nearest reading are a different
     # surface seen through the same blob, and do not stretch the box.
     depth_band_m: float = 0.6
@@ -103,7 +105,7 @@ class HeatConfig:
     # back as a 12 cm blob, and two such blobs on one cone miss each other by more than
     # either is wide. Scaling with the box keeps that from becoming a fixed radius by
     # another name -- a small thing stays small.
-    pad_fraction: float = 1.5
+    pad_fraction: float = 3.0
 
 
 def summed_heat(
@@ -207,6 +209,13 @@ def boxes_in(
     total, best, contributors = summed_heat(frame, members=members)
     if not total.size:
         return []
+    # Asking for three models when two were searched would answer nothing at all, so
+    # the demand is clamped to what is on offer -- but never below two, because one
+    # model agreeing with itself is the thing this step exists to refuse.
+    searched = len({hit.member for hit in frame.hits}) if members is None else len(set(members))
+    if searched < 2:
+        return []
+    wanted = min(config.min_members, searched)
     peak = float(total.max())
     cut = max(peak * config.relative, config.floor)
     mask = total >= cut
@@ -219,7 +228,7 @@ def boxes_in(
         voted: set[str] = set()
         for index in cells:
             voted |= contributors.get(index, set())
-        if len(voted) < config.min_members:
+        if len(voted) < wanted:
             continue
         depths = np.array([hit.depth for _, hit in usable])
         near = float(depths.min())

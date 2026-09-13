@@ -406,6 +406,26 @@ def test_a_detection_without_depth_still_reports_the_2d_box(recording: SqliteSto
     assert found.note == "no usable depth inside the box"
 
 
+def test_one_model_falls_back_to_episodes(recording: SqliteStore, monkeypatch) -> None:
+    """Agreement needs somebody to agree with; one model alone keeps the old path."""
+    frames = [frame_at(ts, 0.9) for ts in (10.0, 10.25)]
+    monkeypatch.setattr("dimos.mapping.hyperspace.frames.hot_frames", lambda *a, **k: frames)
+    boxes = StubBoxes((28.0, 20.0, 36.0, 28.0))
+    config = DetectConfig(world_frame=WORLD)
+    assert config.agreement, "on by default, and this test is that it still yields"
+    answers = list(
+        find(
+            recording,
+            recording,
+            "a square",
+            config=config,
+            frames=RecordingFrames(recording, config=config),
+            boxes=boxes,
+        )
+    )
+    assert answers, "one model is not a reason to answer nothing"
+
+
 def test_a_batch_takes_every_episode_through_one_forward_pass(
     recording: SqliteStore, monkeypatch
 ) -> None:
