@@ -19,12 +19,14 @@ All kinematic object attachments here live only in the planning snapshot.
 """
 
 from dataclasses import dataclass, replace
+from itertools import pairwise
 import time
 from typing import Any, cast
 
 import mujoco
 import numpy as np
 from numpy.typing import NDArray
+from scipy.spatial.transform import Rotation, Slerp
 
 from dimos.manipulation.planning.groups.models import PlanningGroupSelection
 from dimos.manipulation.planning.planners.rrt_planner import RRTConnectPlanner
@@ -468,7 +470,7 @@ class ClassicalGraspPlanner(ObjectReachability):
             timeout=20.0,
             max_iterations=5000,
         )
-        if result.path is None:
+        if not result.path:
             raise RuntimeError(
                 f"DimOS apartment posture planning failed: {result.status}: {result.message}"
             )
@@ -481,6 +483,65 @@ class ClassicalGraspPlanner(ObjectReachability):
             values = dict(zip(state.name, state.position, strict=True))
             points.append([values[name] for name in R1PRO_PICK_PLACE_JOINTS[:18]] + grippers)
         return points
+
+    def transfer_path(self, index: int, arm: Arm, target: NDArray[Any]) -> list[list[float]]:
+        """Stage held cargo with Cartesian IK, preserving its attitude and the other hand.
+
+        An unconstrained joint-space search struggles with the narrow set of
+        upright carrying configurations. Try direct and raised TCP corridors;
+        every joint edge still passes apartment, self and cargo collision checks.
+        """
+        failures = []
+        for clearance in (0.0, 0.06, 0.12):
+            for torso in (False, True):
+                self.initialize_local_probe(index, arm)
+                self.allow_target_contact = True
+                site = self.probe.site(f"{arm}_tcp")
+                start = np.eye(4)
+                start[:3, :3] = site.xmat.reshape(3, 3)
+                start[:3, 3] = site.xpos
+                command = np.array(
+                    [float(self.scene.data.actuator(n).ctrl[0]) for n in R1PRO_PICK_PLACE_JOINTS]
+                )
+                bias = command[:18] - self.initial.qpos[self.qids[:18]]
+                if np.max(np.abs(bias)) > 0.03:
+                    raise RuntimeError("Cargo must settle before planning a transfer")
+                points = [command.tolist()]
+                raised_start, raised_target = start.copy(), target.copy()
+                height = max(start[2, 3], target[2, 3]) + clearance
+                raised_start[2, 3] = raised_target[2, 3] = height
+                corridor = (
+                    [start, target]
+                    if not clearance
+                    else [start, raised_start, raised_target, target]
+                )
+                try:
+                    for a, b in pairwise(corridor):
+                        rotations = Slerp([0, 1], Rotation.from_matrix([a[:3, :3], b[:3, :3]]))
+                        angle = (
+                            Rotation.from_matrix(a[:3, :3]).inv() * Rotation.from_matrix(b[:3, :3])
+                        ).magnitude()
+                        count = max(
+                            2,
+                            int(np.ceil(np.linalg.norm(b[:3, 3] - a[:3, 3]) / 0.01)),
+                            int(np.ceil(angle / 0.05)),
+                        )
+                        for t in np.linspace(0, 1, count + 1)[1:]:
+                            pose = np.eye(4)
+                            pose[:3, :3] = rotations(t).as_matrix()
+                            pose[:3, 3] = a[:3, 3] + t * (b[:3, 3] - a[:3, 3])
+                            before = self.probe.qpos[self.qids].copy()
+                            goal = self.solve_pose(arm, pose, torso=torso, preserve_other=True)
+                            if np.max(np.abs(goal - before)) > 0.20:
+                                raise RuntimeError("Transfer IK is discontinuous")
+                            if not self._sweep(goal, index, arm):
+                                raise RuntimeError(f"Transfer sweep rejected: {self.sweep_error}")
+                            command[:18] = goal[:18] + bias
+                            points.append(command.tolist())
+                    return points
+                except RuntimeError as exc:
+                    failures.append(str(exc))
+        raise RuntimeError("No clear upright transfer corridor: " + "; ".join(failures))
 
     def carry_posture(self) -> list[list[float]]:
         """Retract hands for travel while preserving measured grasp orientations."""

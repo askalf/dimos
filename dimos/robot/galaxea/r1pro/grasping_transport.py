@@ -125,7 +125,15 @@ class PlanarTransport:
                 mujoco.mju_mulQuat(
                     self.probe.qpos[address + 3 : address + 7], quaternion, initial[3:7]
                 )
-            mujoco.mj_forward(self.model, self.probe)
+            if self.model.nflex:
+                mujoco.mj_forward(self.model, self.probe)
+            else:
+                # This rigid-body planning probe consumes only transforms and
+                # contacts. Solving forces for every static furniture contact
+                # is unnecessary; live simulation still runs full dynamics.
+                mujoco.mj_kinematics(self.model, self.probe)
+                mujoco.mj_comPos(self.model, self.probe)
+                mujoco.mj_collision(self.model, self.probe)
             if self.collisions(self.probe):
                 return False
         return True
@@ -189,6 +197,35 @@ class PlanarTransport:
                 continue
             return [self.start.tolist(), departure.tolist(), *path]
         raise RuntimeError("No collision-free departure turn and route to the destination")
+
+    def plan_stance(self, goal: list[float]) -> list[list[float]]:
+        """Plan a nearby body adjustment, including yaw, before room-level navigation."""
+        target = np.asarray(goal, dtype=float).copy()
+        if (
+            target.shape != (3,)
+            or not np.isfinite(target).all()
+            or np.linalg.norm(target[:2] - self.start[:2]) > 0.7
+        ):
+            raise ValueError("Local stance requires a finite goal within 70 cm")
+        target[2] = self.start[2] + math.atan2(
+            math.sin(target[2] - self.start[2]), math.cos(target[2] - self.start[2])
+        )
+        translated = np.r_[target[:2], self.start[2]]
+        turned = np.r_[self.start[:2], target[2]]
+        paths = [
+            [self.start, target],
+            [self.start, translated, target],
+            [self.start, turned, target],
+        ]
+        forward = np.array([math.cos(self.start[2]), math.sin(self.start[2])])
+        for distance in (0.1, 0.2, 0.3):
+            backed = self.start.copy()
+            backed[:2] -= distance * forward
+            paths.append([self.start, backed, np.r_[backed[:2], target[2]], target])
+        for path in paths:
+            if all(self.clear_pose_segment(a, b) for a, b in pairwise(path)):
+                return [pose.tolist() for pose in path]
+        raise RuntimeError("No collision-free local body adjustment to this stance")
 
     def plan(
         self,

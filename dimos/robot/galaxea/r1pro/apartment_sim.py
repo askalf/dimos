@@ -22,12 +22,14 @@ import time
 from typing import Any, cast
 
 import numpy as np
+from numpy.typing import NDArray
 from pydantic import Field
 
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.core.core import rpc
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.robot.galaxea.r1pro.apartment_route import refine_apartment_route
+from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.home_surfaces import station_name
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
 from dimos.robot.galaxea.r1pro.navigation_cloud import save_environment_cloud
@@ -179,13 +181,7 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
             if not any(np.linalg.norm(np.asarray(point) - target) < 0.005 for point in points):
                 raise RuntimeError("The selected placement spot is no longer empty and supported")
         planner = scene.transport_planner()
-        if (
-            abs(np.arctan2(np.sin(pose[2] - planner.start[2]), np.cos(pose[2] - planner.start[2])))
-            > 0.02
-        ):
-            raise RuntimeError("Navigate to the assessed approach heading before local positioning")
-        path = planner.plan(tuple(pose[:2]), resolution=0.025, max_distance=1.5, timeout=10)
-        path = planner.shorten_path([*path, pose.tolist()])
+        path = self._reachable_base_path(planner, pose)
         with engine._lock:
             if self._error:
                 raise RuntimeError(self._error)
@@ -223,6 +219,17 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
             region=asdict(placement) if placement else None,
             reachability=stance,
         )
+
+    def _reachable_base_path(
+        self, planner: PlanarTransport, pose: NDArray[Any]
+    ) -> list[list[float]]:
+        if (
+            abs(np.arctan2(np.sin(pose[2] - planner.start[2]), np.cos(pose[2] - planner.start[2])))
+            > 0.02
+        ):
+            raise RuntimeError("Navigate to the assessed approach heading before local positioning")
+        path = planner.plan(tuple(pose[:2]), resolution=0.025, max_distance=1.5, timeout=10)
+        return planner.shorten_path([*path, pose.tolist()])
 
     @rpc
     def prepare_object_navigation(

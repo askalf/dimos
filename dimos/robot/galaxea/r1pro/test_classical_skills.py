@@ -61,6 +61,12 @@ def test_cancelled_motion_never_reaches_the_coordinator(skills):
     skills._control.execute_trajectory.assert_not_called()
 
 
+def test_empty_plan_is_rejected_before_execution(skills):
+    with pytest.raises(RuntimeError, match="no executable waypoints"):
+        skills._drive([], {})
+    skills._control.execute_trajectory.assert_not_called()
+
+
 def test_scene_fault_prevents_motion(skills):
     skills._sim.primitive_state.return_value = dict(error="lost cargo")
     with pytest.raises(RuntimeError, match="lost cargo"):

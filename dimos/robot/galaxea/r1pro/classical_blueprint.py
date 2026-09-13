@@ -99,7 +99,7 @@ def build_classical_apartment(*, agent: bool = False) -> Blueprint:
                 "max_angular": 0.4,
                 "goal_tolerance": 0.005,
                 "orientation_tolerance": 0.005,
-                "settle_timeout": 10.0,
+                "settle_timeout": 25.0,
                 "stop_hold_s": 0.5,
             },
         ),

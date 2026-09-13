@@ -390,11 +390,16 @@ class R1ProClassicalSkills(Module):
         )
         report["initial_posture_error_rad"] = error
         index = int(selection["object"].removeprefix("object_")) - 1
+        target = np.asarray(stance.get("pregrasp", stance.get("preplace")))
         if error > 0.02:
-            points = self._sim.classical_posture(index, stance["arm"], positions)
+            points = self._sim.classical_posture(
+                index,
+                stance["arm"],
+                positions,
+                target.tolist() if report.get("phase") == "preplace" else None,
+            )
             report["posture_waypoints"] = len(points)
             self._drive(points, report)
-        target = np.asarray(stance.get("pregrasp", stance.get("preplace")))
         for attempt in range(3):
             actual_pose = np.asarray(self._sim.primitive_state()["tcp_poses"][stance["arm"]])
             position_error = float(np.linalg.norm(actual_pose[:3, 3] - target[:3, 3]))
@@ -430,6 +435,8 @@ class R1ProClassicalSkills(Module):
 
     def _drive(self, points: list[list[float]], report: dict[str, Any]) -> None:
         self._pause(0)
+        if not points:
+            raise RuntimeError("Planner returned no executable waypoints")
         before = self._sim.primitive_state()
         if before.get("error"):
             raise RuntimeError(before["error"])
@@ -629,10 +636,7 @@ class R1ProClassicalSkills(Module):
             report["grasp"] = chosen
             current = np.asarray(self._sim.primitive_state()["base_pose"])
             desired = np.asarray(chosen["base_pose"])
-            if (
-                np.linalg.norm(current[:2] - desired[:2]) > 0.7
-                or abs(current[2] - desired[2]) > 0.02
-            ):
+            if np.linalg.norm(current[:2] - desired[:2]) > 0.7:
                 self._phase("navigate", report)
                 self._navigate(f"object_{index + 1}", side, report, chosen["base_pose"])
             stance = dict(chosen, target=chosen["source_position"])
@@ -687,10 +691,7 @@ class R1ProClassicalSkills(Module):
             report["placement"] = chosen
             current = np.asarray(self._sim.primitive_state()["base_pose"])
             desired = np.asarray(chosen["base_pose"])
-            if (
-                np.linalg.norm(current[:2] - desired[:2]) > 0.7
-                or abs(current[2] - desired[2]) > 0.02
-            ):
+            if np.linalg.norm(current[:2] - desired[:2]) > 0.7:
                 self._phase("navigate", report)
                 destination = "worktable" if region in ("tray", "table") else region
                 self._navigate(destination, side, report, chosen["base_pose"])

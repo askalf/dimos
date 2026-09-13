@@ -4,6 +4,19 @@ The user explicitly changed direction from ACT to classical execution using Gras
 
 Branch: `feat/r1pro-classical-apartment`, forked from `feat/r1pro-primitives-integration` at `b698b416cb` in `/tmp/dimos-r1pro-primitives`. The original branch/ACT checkpoints remain unchanged. Current local origin/main (`09a5e67043`) was already an ancestor at start; no rebase was needed against that reference. The user's `/home/mustafa/dimos` Alfred checkout is untouched.
 
+## Latest checkpoint
+
+Local commits: `b9f2afd7d5`, `8bbe24f35e`, `d83bed46a7`; not pushed. A fresh fetch confirmed `origin/main` is already an ancestor (135 ahead, 0 behind), so no rebase is needed.
+
+- **Passed native MCP:** `bimanual-v11`, both hand-specific picks followed by independent worktable placements; the other hand retained its object. `delivery-v11` picked and carried the bottle to dining; placement then exposed a planner timeout. `cup-v7` is an earlier successful cup-to-tray run.
+- **Current fixes under test:** 25-second precise base settling; short collision-checked body translations/turns bypass room navigation; both arms fold before travel. Rigid collision probes now omit force solving, with matching transforms/contacts in regression and saved apartment checks.
+- **Dining transfer:** SDK RRT failures returned an empty list, so the adapter incorrectly reported a trajectory-length error. The adapter now preserves the real failure. Saved-state replay identified a constrained-upright search timeout. A new Cartesian IK transfer preserves cargo attitude and the other hand, checking every joint edge; it finds 34 waypoints in 2.28 seconds in that exact scene. Native execution is queued.
+- **Tests:** 47 focused local-positioning/navigation/execution regressions passed, then 14 execution tests passed with the empty-plan guard. Mypy passes all five changed implementation files after adding three existing MuJoCo API signatures to local stubs.
+- **Running sequential detached tests:** `local-final-status.json` (carton-v12, cup-v12), then `transfer-final-status.json` (delivery-v12: pick → dining → place → re-pick → kitchen → place). All under `/tmp/r1pro-classical-bootstrap`; only one full stack at a time. Host RAM, not GPU memory, limits parallelism.
+- **Still unverified:** full inter-room place/re-pick delivery and language-provider HumanCLI round trip. External agent testing requires the pending user approval; no prompt has been sent. The old desktop ACT process remains untouched. Do not claim arbitrary household assets or all randomized layouts are reliable from these fixed seeds.
+
+The entries below are chronological history and include superseded tuning values and completed process IDs.
+
 ## Current implementation (under validation; not promoted)
 
 - Separate `r1pro-classical-apartment-sim` / `r1pro-classical-apartment-sim-agent` blueprints. No ACT modules in the graph.

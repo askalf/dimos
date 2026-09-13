@@ -21,6 +21,7 @@ from typing import Any, Protocol, cast
 
 import mujoco
 import numpy as np
+from numpy.typing import NDArray
 
 from dimos.core.core import rpc
 from dimos.msgs.manipulation_msgs.GraspCandidateArray import GraspCandidateArray
@@ -30,6 +31,7 @@ from dimos.robot.galaxea.r1pro.apartment_sim import R1ProApartmentSim
 from dimos.robot.galaxea.r1pro.classical_perception import segmented_object_cloud
 from dimos.robot.galaxea.r1pro.classical_planning import ClassicalGraspPlanner
 from dimos.robot.galaxea.r1pro.grasping_sim import VIRTUAL_BASE_JOINTS
+from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.home_surfaces import station_name
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
 from dimos.robot.galaxea.r1pro.navigation_base import PlanarVelocityServo
@@ -47,7 +49,7 @@ class ClassicalSimSpec(ApartmentSimSpec, Protocol):
         self, index: int, arm: str, target: list[list[float]]
     ) -> list[list[float]]: ...
     def classical_posture(
-        self, index: int, arm: str, positions: list[float]
+        self, index: int, arm: str, positions: list[float], target: list[list[float]] | None = None
     ) -> list[list[float]]: ...
     def classical_object_cloud(self, index: int) -> PointCloud2: ...
     def assess_classical_pick(
@@ -61,6 +63,14 @@ class ClassicalSimSpec(ApartmentSimSpec, Protocol):
 
 class R1ProClassicalSim(R1ProApartmentSim):
     """Keep the physical apartment while replacing ACT with measured Cartesian plans."""
+
+    def _reachable_base_path(
+        self, planner: PlanarTransport, pose: NDArray[Any]
+    ) -> list[list[float]]:
+        yaw = np.arctan2(np.sin(pose[2] - planner.start[2]), np.cos(pose[2] - planner.start[2]))
+        if abs(yaw) > 0.02:
+            return planner.plan_stance(pose.tolist())
+        return super()._reachable_base_path(planner, pose)
 
     @rpc
     def save_classical_state(self) -> str:
@@ -213,12 +223,21 @@ class R1ProClassicalSim(R1ProApartmentSim):
         )
 
     @rpc
-    def classical_posture(self, index: int, arm: str, positions: list[float]) -> list[list[float]]:
+    def classical_posture(
+        self, index: int, arm: str, positions: list[float], target: list[list[float]] | None = None
+    ) -> list[list[float]]:
         if arm not in ARMS:
             raise ValueError("Choose left or right")
-        return ClassicalGraspPlanner(self._snapshot()).posture_path(
-            index, cast("Arm", arm), positions
-        )
+        planner = ClassicalGraspPlanner(self._snapshot())
+        if target is not None:
+            try:
+                return planner.transfer_path(index, cast("Arm", arm), np.asarray(target))
+            except RuntimeError as transfer_error:
+                try:
+                    return planner.posture_path(index, cast("Arm", arm), positions)
+                except RuntimeError as posture_error:
+                    raise RuntimeError(f"{transfer_error}; {posture_error}") from posture_error
+        return planner.posture_path(index, cast("Arm", arm), positions)
 
     @rpc
     def classical_line(self, index: int, arm: str, target: list[list[float]]) -> list[list[float]]:

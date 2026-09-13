@@ -73,6 +73,38 @@ def test_invalid_destination_is_not_repaired_into_a_partial_route(checker):
         checker.shorten_path([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]])
 
 
+@pytest.mark.parametrize("pose", [[0, 0.4, 0.3], [0.31, 0.0, 0.2], [0.5, 0.0, 1.2]])
+def test_rigid_collision_probe_matches_full_forward_dynamics(checker, pose):
+    clear = checker.clear_pose_segment(np.array(pose), np.array(pose))
+    full = mujoco.MjData(checker.model)
+    full.qpos[:] = checker.probe.qpos
+    mujoco.mj_forward(checker.model, full)
+
+    np.testing.assert_array_equal(checker.probe.contact.geom, full.contact.geom)
+    np.testing.assert_allclose(checker.probe.contact.dist, full.contact.dist, atol=1e-12)
+    np.testing.assert_allclose(checker.probe.geom_xpos, full.geom_xpos, atol=1e-12)
+    assert clear == (len(checker.collisions(full)) == 0)
+
+
+def test_nearby_turn_is_a_local_body_adjustment(checker):
+    goal = [-0.1, 0.1, -np.pi / 4]
+
+    path = checker.plan_stance(goal)
+
+    assert path == [[0.0, 0.0, 0.0], goal]
+    assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))
+
+
+def test_local_body_adjustment_does_not_replace_a_blocked_goal(checker):
+    with pytest.raises(RuntimeError, match="No collision-free local body adjustment"):
+        checker.plan_stance([0.5, 0.0, 0.4])
+
+
+def test_local_body_adjustment_requires_room_navigation_for_distant_goals(checker):
+    with pytest.raises(ValueError, match="within 70 cm"):
+        checker.plan_stance([2.0, 0.0, 0.0])
+
+
 def test_twist_base_can_plan_with_twenty_manipulation_joints(checker, mocker):
     sim = R1ProGraspingSim(dof=20)
     sim._engine = mocker.Mock(model=checker.model, data=checker.probe, _lock=threading.RLock())
