@@ -238,15 +238,26 @@ def boxes_html(
 
 _PAGE = """<!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>hyperspace answers</title>
 <style>
 :root { --ink:#e8e8ef; --dim:#9a9aa8; --edge:#2a2b36; --panel:#14151c; --hot:#ff8a2e; color-scheme: dark }
+* { box-sizing:border-box }
 body { margin:0; background:#0a0b10; color:var(--ink); overflow:hidden;
-       font:13px/1.5 ui-sans-serif,-apple-system,"Segoe UI",sans-serif }
-#scene { position:fixed; inset:0 }
-#side { position:fixed; top:0; right:0; width:330px; max-height:100vh; overflow:auto;
-        background:var(--panel); border-left:1px solid var(--edge); padding:16px 18px }
+       font:13px/1.5 ui-sans-serif,-apple-system,"Segoe UI",sans-serif; -webkit-text-size-adjust:100% }
+/* The canvas claims every touch gesture; without this the browser pans the page
+   instead of orbiting the scene. */
+#scene { position:fixed; inset:0; touch-action:none }
+#side { position:fixed; top:0; right:0; width:330px; height:100%; overflow:auto;
+        background:var(--panel); border-left:1px solid var(--edge); padding:16px 18px 24px;
+        transition:transform .22s ease; -webkit-overflow-scrolling:touch }
+#fold { position:fixed; top:10px; right:10px; z-index:3; cursor:pointer; appearance:none;
+        background:var(--panel); color:var(--ink); border:1px solid var(--edge); border-radius:9px;
+        padding:9px 13px; font:inherit; font-size:12.5px; min-height:38px;
+        transition:transform .22s ease }
+#fold b { color:var(--hot) }
+body:not(.folded) #fold { transform:translateX(-330px) }
+body.folded #side { transform:translateX(100%) }
 h1 { font-size:17px; margin:0 0 2px }
 h1 span { color:var(--hot) }
 .sub { color:var(--dim); margin:0 0 14px; font-size:12px }
@@ -255,12 +266,34 @@ h1 span { color:var(--hot) }
 .box:hover, .box.on { border-color:var(--hot); background:#1b1c25 }
 .box b { color:var(--hot) }
 .box .n { color:var(--dim); font-size:11.5px; display:block; margin-top:3px }
-.hint { position:fixed; left:14px; bottom:12px; color:var(--dim); font-size:11.5px }
+.hint { position:fixed; left:14px; bottom:calc(12px + env(safe-area-inset-bottom));
+        color:var(--dim); font-size:11.5px; pointer-events:none }
+.touch { display:none }
 .none { color:var(--dim); font-style:italic }
+/* On a phone the list is a sheet off the bottom edge rather than a column that eats
+   half the scene, and every tap target grows. */
+@media (max-width:720px) {
+    #side { top:auto; bottom:0; left:0; width:100%; height:auto; max-height:60dvh;
+            border-left:0; border-top:1px solid var(--edge); border-radius:14px 14px 0 0;
+            padding:16px 16px calc(20px + env(safe-area-inset-bottom));
+            box-shadow:0 -12px 32px rgba(0,0,0,.45) }
+    body.folded #side { transform:translateY(101%) }
+    body:not(.folded) #fold { transform:none }
+    #fold { padding:11px 15px; font-size:14px; min-height:44px }
+    .box { padding:12px 13px; font-size:14px; margin-bottom:10px }
+    .box .n { font-size:12.5px }
+    h1 { font-size:19px }
+    .sub { font-size:13px }
+    .hint .mouse { display:none }
+    .hint .touch { display:inline }
+    /* the sheet covers where the hint sits */
+    body:not(.folded) .hint { display:none }
+}
 </style>
 <div id="scene"></div>
+<button id="fold" type="button"></button>
 <div id="side"></div>
-<div class="hint">drag to orbit &middot; scroll to zoom &middot; shift-drag to pan &middot; click an answer to fly to it</div>
+<div class="hint"><span class="mouse">drag to orbit &middot; scroll to zoom &middot; shift-drag to pan &middot; click an answer to fly to it</span><span class="touch">drag to orbit &middot; pinch to zoom &middot; two fingers to pan</span></div>
 <script id="data" type="application/json">__DATA__</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
 <script>
@@ -268,12 +301,12 @@ const data = JSON.parse(document.getElementById("data").textContent)
 const host = document.getElementById("scene")
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
-renderer.setSize(innerWidth, innerHeight)
+renderer.setSize(host.clientWidth, host.clientHeight)
 host.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
 scene.background = new THREE.Color(0x0a0b10)
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.05, 800)
+const camera = new THREE.PerspectiveCamera(55, host.clientWidth / host.clientHeight, 0.05, 800)
 
 // The clouds travel as base64 float32 rather than as decimal text: a quarter of a
 // million points is 1.5 MB that way and 15 MB written out as JSON numbers.
@@ -338,36 +371,69 @@ function place() {
 }
 place()
 
-let dragging = null
-renderer.domElement.addEventListener("pointerdown", e => { dragging = { x: e.clientX, y: e.clientY, shift: e.shiftKey } })
-addEventListener("pointerup", () => { dragging = null })
-addEventListener("pointermove", e => {
-    if (!dragging) return
-    const dx = e.clientX - dragging.x, dy = e.clientY - dragging.y
-    dragging.x = e.clientX; dragging.y = e.clientY
-    if (dragging.shift) {
-        const right = new THREE.Vector3().crossVectors(
-            new THREE.Vector3().subVectors(camera.position, target).normalize(), camera.up).normalize()
-        const up = new THREE.Vector3().crossVectors(right,
-            new THREE.Vector3().subVectors(camera.position, target).normalize()).normalize()
-        target.addScaledVector(right, -dx * range * 0.0015)
-        target.addScaledVector(up, dy * range * 0.0015)
+function pan(dx, dy) {
+    const view = new THREE.Vector3().subVectors(camera.position, target).normalize()
+    const right = new THREE.Vector3().crossVectors(view, camera.up).normalize()
+    const up = new THREE.Vector3().crossVectors(right, view).normalize()
+    target.addScaledVector(right, -dx * range * 0.0015)
+    target.addScaledVector(up, dy * range * 0.0015)
+    place()
+}
+function zoom(factor) {
+    range = Math.min(span * 4, Math.max(0.5, range * factor))
+    place()
+}
+
+// One finger orbits, two fingers pinch and pan -- the same code serves a mouse, where
+// the second finger is the shift key.
+const touches = new Map()
+const surface = renderer.domElement
+function spread() {
+    if (touches.size < 2) return 0
+    const [a, b] = [...touches.values()]
+    return Math.hypot(a.x - b.x, a.y - b.y)
+}
+function middle() {
+    const all = [...touches.values()]
+    return { x: all.reduce((s, p) => s + p.x, 0) / all.length,
+             y: all.reduce((s, p) => s + p.y, 0) / all.length }
+}
+surface.addEventListener("pointerdown", event => {
+    surface.setPointerCapture(event.pointerId)
+    touches.set(event.pointerId, { x: event.clientX, y: event.clientY })
+})
+const lift = event => touches.delete(event.pointerId)
+surface.addEventListener("pointerup", lift)
+surface.addEventListener("pointercancel", lift)
+surface.addEventListener("pointermove", event => {
+    const held = touches.get(event.pointerId)
+    if (!held) return
+    const wasSpread = spread(), wasMiddle = middle()
+    held.x = event.clientX; held.y = event.clientY
+    const nowSpread = spread(), nowMiddle = middle()
+    const dx = nowMiddle.x - wasMiddle.x, dy = nowMiddle.y - wasMiddle.y
+    if (touches.size > 1) {
+        if (wasSpread > 0 && nowSpread > 0) zoom(wasSpread / nowSpread)
+        pan(dx, dy)
+    } else if (event.shiftKey) {
+        pan(dx, dy)
     } else {
         yaw -= dx * 0.006
         pitch = Math.min(Math.PI - 0.05, Math.max(0.05, pitch - dy * 0.006))
+        place()
     }
-    place()
 })
-renderer.domElement.addEventListener("wheel", e => {
-    e.preventDefault()
-    range = Math.min(span * 4, Math.max(0.5, range * (1 + Math.sign(e.deltaY) * 0.12)))
-    place()
+surface.addEventListener("wheel", event => {
+    event.preventDefault()
+    zoom(1 + Math.sign(event.deltaY) * 0.12)
 }, { passive: false })
-addEventListener("resize", () => {
-    camera.aspect = innerWidth / innerHeight
+function fit() {
+    camera.aspect = host.clientWidth / host.clientHeight
     camera.updateProjectionMatrix()
-    renderer.setSize(innerWidth, innerHeight)
-})
+    renderer.setSize(host.clientWidth, host.clientHeight)
+}
+addEventListener("resize", fit)
+addEventListener("orientationchange", fit)
 ;(function draw() { requestAnimationFrame(draw); renderer.render(scene, camera) })()
 
 // --- the list ---------------------------------------------------------------------
@@ -388,6 +454,19 @@ if (!data.boxes.length) {
     none.textContent = "Nothing was placed in 3D."
     side.appendChild(none)
 }
+
+// The list starts out of the way on a phone, where it would otherwise cover the thing
+// it is describing.
+const narrow = () => innerWidth <= 720
+const fold = document.getElementById("fold")
+function setFolded(shut) {
+    document.body.classList.toggle("folded", shut)
+    fold.innerHTML = shut ? `<b>${data.boxes.length}</b> answer${data.boxes.length === 1 ? "" : "s"}` : "hide"
+    fold.setAttribute("aria-expanded", String(!shut))
+}
+fold.onclick = () => setFolded(!document.body.classList.contains("folded"))
+setFolded(narrow())
+
 data.boxes.forEach((box, index) => {
     const card = document.createElement("div")
     card.className = "box"
@@ -402,6 +481,9 @@ data.boxes.forEach((box, index) => {
         target = drawn[index].position.clone()
         range = Math.max(1.5, Math.max(...box.extent) * 6)
         place()
+        // Flying somewhere you cannot see is no use: on a phone the sheet gets out of
+        // the way once it has been used.
+        if (narrow()) setFolded(true)
     }
     side.appendChild(card)
 })
