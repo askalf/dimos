@@ -884,6 +884,42 @@ def test_the_resident_index_carries_everything_a_patch_is_placed_by(
     assert first.score > 0.5, "half precision still separates the object from the room"
 
 
+def test_the_chunk_read_and_the_row_read_agree(store: SqliteStore) -> None:
+    """The fast read is sqlite-vec's own storage, so it has to be checked against SQL.
+
+    Fifty times faster is worth nothing if it returns different numbers, and the whole
+    reason it is allowed is that a mismatch can be caught here rather than in an answer.
+    """
+    from dimos.mapping.hyperspace.frames import member_streams
+    from dimos.mapping.hyperspace.resident import _from_chunks, _vectors_of
+
+    fill(store, ring(4, 2.5), flat=True)
+    _, stream = next(iter(member_streams(store)))
+    conn = store._registry_conn
+    rows = int(conn.execute(f'SELECT COUNT(*) FROM "{stream}"').fetchone()[0])
+    probe = conn.execute(f'SELECT embedding FROM "{stream}_vec" LIMIT 1').fetchone()
+    width = len(np.frombuffer(probe[0], dtype=np.float32))
+
+    quick = _from_chunks(conn, stream, width, rows)
+    assert quick is not None, "this store does have chunk storage"
+    slow = _vectors_of(conn, stream, width, rows)
+    assert quick.shape == slow.shape == (rows, width)
+    assert np.array_equal(quick, slow), "same vectors, same order"
+
+
+def test_a_store_without_chunk_storage_still_loads(store: SqliteStore) -> None:
+    """Refuse rather than lie: no chunk tables means the slow read, not a wrong answer."""
+    from dimos.mapping.hyperspace.frames import member_streams
+    from dimos.mapping.hyperspace.resident import _from_chunks
+
+    fill(store, ring(4, 2.5), flat=True)
+    _, stream = next(iter(member_streams(store)))
+    assert _from_chunks(store._registry_conn, "not_a_stream", 8, 4) is None
+    assert _from_chunks(store._registry_conn, stream, 8, 999999) is None, (
+        "a row count that does not match the layout is a refusal too"
+    )
+
+
 def test_the_resident_index_is_loaded_once_and_reused(store: SqliteStore) -> None:
     """Paying the read twice would defeat the whole point of holding it."""
     from dimos.mapping.hyperspace.frames import member_streams
