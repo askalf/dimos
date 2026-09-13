@@ -1,7 +1,8 @@
 # Teleop Stack
 
 Teleoperation modules for DimOS. Supports browser-based WebXR devices, including
-Meta Quest and PICO headsets, plus phone motion sensors.
+Meta Quest and PICO headsets, plus phone motion sensors. For native PICO
+full-body input through the public XRoboToolkit app, see [PICO setup](pico/README.md).
 
 ## Architecture
 
@@ -20,7 +21,7 @@ TeleopModule (WebXR or Phone)
 PoseStamped / TwistStamped / Buttons outputs
 ```
 
-Each teleop module embeds a `RobotWebInterface` (FastAPI + uvicorn) that:
+Each browser teleop module embeds a `RobotWebInterface` (FastAPI + uvicorn) that:
 - Serves the teleop web app at `/teleop`
 - Accepts WebSocket connections at `/ws`
 - Handles SSL certificate generation for HTTPS (required by mobile sensor APIs)

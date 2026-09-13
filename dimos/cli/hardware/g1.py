@@ -41,6 +41,7 @@ _LIFECYCLE_STATE_FIELDS = frozenset(
 
 
 class _G1CoordinatorHandle(Protocol):
+    def set_estop(self, estopped: bool) -> bool: ...
     def list_tasks(self) -> list[str]: ...
     def describe_task(self, task_name: str) -> dict[str, Any] | None: ...
     def task_invoke(self, task_name: str, method: str, kwargs: dict[str, Any]) -> Any: ...
@@ -145,7 +146,12 @@ def _require_armed_and_enabled(coordinator: _G1CoordinatorHandle, task_name: str
 
 
 def _fully_armed(state: dict[str, Any]) -> bool:
-    return bool(state.get("armed") and not state.get("arming") and not state.get("arm_pending"))
+    return bool(
+        state.get("armed")
+        and not state.get("arming")
+        and not state.get("arm_pending")
+        and not state.get("fault_reason")
+    )
 
 
 def _arm_and_wait(
@@ -156,6 +162,8 @@ def _arm_and_wait(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = _policy_state(coordinator, task_name)
+        if state.get("fault_reason"):
+            _abort(f"G1 damping stop is latched: {state['fault_reason']}; restart required")
         if _fully_armed(state):
             return state
         time.sleep(_ARM_POLL_SECONDS)
@@ -168,6 +176,8 @@ def _enable_motor_output(
     state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = state if state is not None else _policy_state(coordinator, task_name)
+    if current.get("fault_reason"):
+        _abort(f"G1 damping stop is latched: {current['fault_reason']}; restart required")
     if not _fully_armed(current):
         _abort("G1 is not fully armed; run `dimos hardware g1 arm` first")
     coordinator.set_dry_run(False)
@@ -258,6 +268,8 @@ def status() -> None:
         typer.echo(f"armed:       {bool(state.get('armed'))}")
         typer.echo(f"arming:      {bool(state.get('arming') or state.get('arm_pending'))}")
         typer.echo(f"dry_run:     {bool(state.get('dry_run'))}")
+        if state.get("fault_reason"):
+            typer.echo(f"fault:       {state['fault_reason']} (damping latched; restart required)")
         if "control_state" in state:
             typer.echo(f"control:     {state['control_state']}")
         if "reference_source" in state:
@@ -396,6 +408,32 @@ def ready() -> None:
         typer.echo("G1 reached the ready pose.")
     except (AttributeError, KeyError, RuntimeError) as exc:
         _abort(f"failed to move G1 to the ready pose: {exc}")
+    finally:
+        client.stop()
+
+
+@app.command()
+def estop() -> None:
+    """Latch SONIC damping. Restart the stack deliberately to recover."""
+    client = _connect()
+    try:
+        try:
+            connection = client.get_module("G1WholeBodyConnection")
+        except KeyError:
+            coordinator = _coordinator(client)
+            task_name = _lifecycle_task(coordinator)
+            description = coordinator.describe_task(task_name)
+            if description is None or "set_estop" not in description.get("commands", {}):
+                _abort("this G1 policy does not expose a latched damping stop")
+            coordinator.set_estop(True)
+        else:
+            # Bypass the coordinator's inference lock on real hardware.
+            stop = getattr(connection, "set_estop", None)
+            if not callable(stop) or not stop(True):
+                _abort("the running G1 connection did not acknowledge a damping stop")
+        typer.echo("G1 damping stop latched. Restart the stack deliberately to recover.")
+    except (AttributeError, KeyError, RuntimeError) as exc:
+        _abort(f"failed to latch G1 damping stop: {exc}")
     finally:
         client.stop()
 

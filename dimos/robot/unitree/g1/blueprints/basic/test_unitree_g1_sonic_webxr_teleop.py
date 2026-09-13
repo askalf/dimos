@@ -126,22 +126,41 @@ else:
 
 
 @pytest.mark.self_hosted
-def test_webxr_blueprint_uses_live_skeleton_only_rerun() -> None:
+@pytest.mark.parametrize("name", ["unitree-g1-sonic-webxr-teleop", "unitree-g1-sonic-pico-teleop"])
+def test_teleop_rerun_keeps_robot_feedback_and_factories_through_config_and_pickle(name) -> None:
     code = """
+import pickle
+import sys
+from dimos.core.coordination.blueprint_config.parser import BlueprintConfigParser
 from dimos.core.global_config import global_config
 global_config.update(simulation="mujoco", viewer="rerun")
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.robot.get_all_blueprints import get_blueprint_by_name
+from dimos.robot.unitree.g1.g1_rerun import G1_RERUN_ROOT
+from dimos.visualization.rerun.bridge import RerunBridgeModule
+from dimos.protocol.pubsub.impl.zenohpubsub import Topic
 
-blueprint = get_blueprint_by_name("unitree-g1-sonic-webxr-teleop")
-rerun = next(atom for atom in blueprint.blueprints if atom.module.__name__ == "RerunBridgeModule")
-assert rerun.kwargs["topics"] == {
+blueprint = get_blueprint_by_name(sys.argv[1])
+atom = next(atom for atom in blueprint.blueprints if atom.module is RerunBridgeModule)
+kwargs = BlueprintConfigParser(blueprint).parse().module_kwargs(atom.name)
+# Both CLI validation and deployment serialization used to lose visual factories.
+kwargs = pickle.loads(pickle.dumps(kwargs))
+assert kwargs["topics"] == {
+    "/g1/joints": "sensor_msgs.JointState",
+    "odom": "geometry_msgs.PoseStamped",
     "sonic_pose_reference": "visualization_msgs.SonicPoseReference",
 }
-assert rerun.kwargs["latest_only"] is True
-assert rerun.kwargs["newest_first"] is True
-assert rerun.kwargs["memory_limit"] == "32MB"
-assert rerun.kwargs["max_hz"] == {"world/sonic_pose_reference": 30.0}
-assert rerun.kwargs.get("static", {}) == {}
-assert rerun.kwargs.get("visual_override", {}) == {}
+assert kwargs["latest_only"] is True
+assert kwargs["newest_first"] is False
+assert kwargs["max_hz"]["world/g1/joints"] == 20.0
+assert kwargs["blueprint"]() is not None
+assert kwargs["static"][G1_RERUN_ROOT].root_path == G1_RERUN_ROOT
+assert kwargs["visual_override"]["world/g1/joints"].root_path == G1_RERUN_ROOT
+bridge = RerunBridgeModule(**kwargs)
+try:
+    assert bridge._get_entity_path(Topic("dimos/g1/joints")) == "world/g1/joints"
+    assert bridge._get_entity_path(Topic("dimos/odom", PoseStamped)) == "world/odom"
+finally:
+    bridge.stop()
 """
-    subprocess.run([sys.executable, "-c", code], check=True)
+    subprocess.run([sys.executable, "-c", code, name], check=True, timeout=30)

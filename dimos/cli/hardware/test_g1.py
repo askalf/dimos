@@ -86,9 +86,72 @@ def test_hardware_namespace_exposes_g1_operator_commands() -> None:
         "activate",
         "ready",
         "disable",
+        "estop",
         "sonic-doctor",
     ):
         assert command in result.output
+
+
+def test_estop_addresses_hardware_directly_without_waiting_for_policy(mocker):
+    client = mocker.Mock()
+    connection = mocker.Mock()
+    client.get_module.return_value = connection
+    mocker.patch.object(g1_cli, "_connect", return_value=client)
+
+    result = runner.invoke(g1_cli.app, ["estop"])
+
+    assert result.exit_code == 0, result.output
+    assert "damping stop latched" in result.output
+    client.get_module.assert_called_once_with("G1WholeBodyConnection")
+    connection.set_estop.assert_called_once_with(True)
+    client.stop.assert_called_once()
+
+
+def test_estop_reaches_simulated_sonic_through_coordinator(mocker):
+    coordinator = _coordinator("sonic_teleop")
+    coordinator.describe_task.side_effect = None
+    coordinator.describe_task.return_value = {
+        "commands": dict.fromkeys([*g1_cli._LIFECYCLE_COMMANDS, "set_estop"]),
+    }
+    coordinator.list_tasks.return_value = ["sonic_teleop"]
+    client = _Client(coordinator)
+    mocker.patch.object(g1_cli, "_connect", return_value=client)
+
+    result = runner.invoke(g1_cli.app, ["estop"])
+
+    assert result.exit_code == 0, result.output
+    coordinator.set_estop.assert_called_once_with(True)
+    assert client.stopped
+
+
+def test_estop_does_not_report_success_for_unsupported_controller(mocker):
+    coordinator = _coordinator()
+    client = _Client(coordinator)
+    mocker.patch.object(g1_cli, "_connect", return_value=client)
+
+    result = runner.invoke(g1_cli.app, ["estop"])
+
+    assert result.exit_code == 1
+    assert "does not expose a latched damping stop" in result.output
+    coordinator.set_estop.assert_not_called()
+    assert client.stopped
+
+
+def test_enable_rejects_latched_fault_even_if_armed_is_true(mocker):
+    coordinator = _coordinator("sonic_teleop")
+    coordinator.task_invoke.return_value = {
+        **_state(armed=True, dry_run=True),
+        "fault_reason": "joint overspeed",
+    }
+    client = _Client(coordinator)
+    mocker.patch.object(g1_cli, "_connect", return_value=client)
+
+    result = runner.invoke(g1_cli.app, ["enable"])
+
+    assert result.exit_code == 1
+    assert "joint overspeed" in result.output
+    coordinator.set_dry_run.assert_not_called()
+    assert client.stopped
 
 
 def test_sonic_doctor_reports_all_checks_without_connecting_to_robot(mocker) -> None:

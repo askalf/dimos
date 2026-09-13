@@ -19,6 +19,8 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import rerun as rr
+import rerun.blueprint as rrb
 
 from dimos.visualization.rerun.urdf_robot import (
     UrdfRobotJointStateRerunFactory,
@@ -27,6 +29,24 @@ from dimos.visualization.rerun.urdf_robot import (
 
 G1_RERUN_ROOT = "world/odom/g1"
 G1_RERUN_URDF = "g1_urdf/g1.fixed.urdf"
+
+
+def g1_sonic_rerun_blueprint() -> rrb.Blueprint:
+    """Robot feedback and the active human reference in a shared world view.
+
+    Keep the factory outside the runnable blueprint module so unpickling it in
+    a worker does not re-import and construct the robot control blueprint.
+    """
+    return rrb.Blueprint(
+        rrb.Spatial3DView(
+            origin="world",
+            name="G1 SONIC WBC",
+            background=rrb.Background(kind="SolidColor", color=[0, 0, 0]),
+            line_grid=rrb.LineGrid3D(plane=rr.components.Plane3D.XY.with_distance(0.0)),
+        ),
+        rrb.TimePanel(state="collapsed"),
+    )
+
 
 # Classic costmap palette, indexed by grid value + 1:
 # transparent unknown, blue free, orange occupied, red lethal.

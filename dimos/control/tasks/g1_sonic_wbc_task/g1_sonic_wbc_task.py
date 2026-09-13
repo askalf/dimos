@@ -31,6 +31,7 @@ carrying, jump...) are RPC-reachable via coordinator.task_invoke:
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 import math
@@ -58,6 +59,12 @@ from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import (
     SONIC_V1_1_PIPELINE,
     SonicPipeline,
     SonicTeleopPipeline,
+)
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import (
+    JOINT_VELOCITY_LIMIT,
+    SonicSafetyError,
+    check_joint_velocities,
+    damping_commands,
 )
 from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.logging_config import setup_logger
@@ -89,10 +96,13 @@ class G1SonicWBCTaskConfig:
     default_ramp_seconds: float = 3.0
     sonic_pipeline: SonicTeleopPipeline = SONIC_V1_1_PIPELINE
     pose_transition_seconds: float = 0.5
+    joint_velocity_limit: float = JOINT_VELOCITY_LIMIT
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.pose_transition_seconds) or self.pose_transition_seconds <= 0.0:
             raise ValueError("pose transition duration must be positive and finite")
+        if not math.isfinite(self.joint_velocity_limit) or self.joint_velocity_limit <= 0.0:
+            raise ValueError("joint velocity limit must be positive and finite")
 
 
 class SonicControlState(str, Enum):
@@ -101,6 +111,7 @@ class SonicControlState(str, Enum):
     INITIALIZING = "initializing"
     READY = "ready"
     CONTROL = "control"
+    FAULT = "fault"
 
 
 class G1SonicWBCTask(BaseControlTask):
@@ -167,6 +178,10 @@ class G1SonicWBCTask(BaseControlTask):
         self._cmd_lock = threading.Lock()
         self._cmd = np.zeros(3, dtype=np.float32)
         self._last_cmd_time = 0.0
+        self._fault_lock = threading.Lock()
+        self._fault_reason: str | None = None
+        self._fault_publisher: Callable[[str], None] | None = None
+        self._hold_targets: list[float] | None = None
 
     # -- ControlTask protocol ----------------------------------------------
 
@@ -182,11 +197,11 @@ class G1SonicWBCTask(BaseControlTask):
 
     @property
     def control_state(self) -> SonicControlState:
-        return self._control_state
+        return SonicControlState.FAULT if self.fault_reason is not None else self._control_state
 
     @property
     def policy_active(self) -> bool:
-        return self._control_state is SonicControlState.CONTROL
+        return self.control_state is SonicControlState.CONTROL
 
     def _refresh_state_caches(self, state: CoordinatorState) -> bool:
         all_present = True
@@ -208,16 +223,43 @@ class G1SonicWBCTask(BaseControlTask):
     def compute(self, state: CoordinatorState) -> JointCommandOutput | None:
         if not self._active:
             return None
+        if self.fault_reason is not None:
+            self._write_damping()
+            return None
+        try:
+            output = self._compute_policy(state)
+        except Exception as exc:
+            # The control boundary must fail closed on any policy/observation
+            # exception; the coordinator otherwise logs and repeats targets.
+            logger.exception("SONIC control fault", task=self._name)
+            self._trip_fault(str(exc))
+            return None
+        # An operator may have stopped us during inference. Do not return the
+        # completed policy result after that stop.
+        if self.fault_reason is not None:
+            self._write_damping()
+            return None
+        return output
+
+    def _compute_policy(self, state: CoordinatorState) -> JointCommandOutput | None:
+        if not self._active:
+            return None
 
         fresh = self._refresh_state_caches(state)
         if not self._state_seen and not fresh:
             return None
+        if not fresh:
+            raise SonicSafetyError("incomplete robot joint feedback")
+        check_joint_velocities(self._cached_dq_29.tolist(), self._config.joint_velocity_limit)
+        if not np.isfinite(self._cached_q_29).all():
+            raise SonicSafetyError("non-finite robot joint positions")
 
         current_29 = self._cached_q_29.copy()
 
         if self._control_state is SonicControlState.UNARMED:
             if not self._arm_pending:
                 self._last_targets = current_29.tolist()
+                self._hold_targets = self._last_targets.copy()
                 return JointCommandOutput(
                     joint_names=self._joint_names_list,
                     positions=self._last_targets,
@@ -244,6 +286,7 @@ class G1SonicWBCTask(BaseControlTask):
             )
             target = self._ramp_start + alpha * (self._default_29 - self._ramp_start)
             self._last_targets = target.tolist()
+            self._hold_targets = self._last_targets.copy()
             if alpha >= 1.0:
                 self._control_state = SonicControlState.READY
                 self._reset_policy_state()
@@ -257,6 +300,7 @@ class G1SonicWBCTask(BaseControlTask):
 
         if self._control_state is SonicControlState.READY:
             self._last_targets = self._default_29.tolist()
+            self._hold_targets = self._last_targets.copy()
             self._enter_control()
             return JointCommandOutput(
                 joint_names=self._joint_names_list,
@@ -270,7 +314,9 @@ class G1SonicWBCTask(BaseControlTask):
         # CONTROL: run the balancing policy continuously at the decimated rate.
         self._tick_count += 1
         if self._tick_count % self._config.decimation != 0:
-            if self._dry_run or self._last_targets is None:
+            if self._dry_run:
+                return self._hold_output()
+            if self._last_targets is None:
                 return None
             return JointCommandOutput(
                 joint_names=self._joint_names_list,
@@ -309,6 +355,8 @@ class G1SonicWBCTask(BaseControlTask):
             gravity_body=gravity,
         )
         self._record_policy_timing(time.perf_counter() - policy_started_at, policy_started_at)
+        if targets_29.shape != (NUM_JOINTS,) or not np.isfinite(targets_29).all():
+            raise SonicSafetyError("invalid SONIC motor targets")
         self._last_targets = targets_29.tolist()
 
         if (state.t_now - self._last_diag_log_t) >= 5.0:
@@ -324,13 +372,69 @@ class G1SonicWBCTask(BaseControlTask):
                     max_dq_rad=max_delta,
                 )
                 self._last_dry_run_log_t = state.t_now
-            return None
+            # Continue publishing the fixed hold so the hardware watchdog can
+            # distinguish healthy dry-run inference from a stalled task.
+            return self._hold_output()
 
+        self._hold_targets = self._last_targets.copy()
         return JointCommandOutput(
             joint_names=self._joint_names_list,
             positions=self._last_targets,
             mode=ControlMode.SERVO_POSITION,
         )
+
+    def _hold_output(self) -> JointCommandOutput:
+        if self._hold_targets is None:
+            raise SonicSafetyError("dry-run has no prepared hold target")
+        return JointCommandOutput(
+            joint_names=self._joint_names_list,
+            positions=self._hold_targets.copy(),
+            mode=ControlMode.SERVO_POSITION,
+        )
+
+    @property
+    def fault_reason(self) -> str | None:
+        with self._fault_lock:
+            return self._fault_reason
+
+    def set_fault_publisher(self, publisher: Callable[[str], None]) -> None:
+        """Connect the latched task fault to the robot-side motor publisher."""
+        with self._fault_lock:
+            self._fault_publisher = publisher
+
+    def _trip_fault(self, reason: str) -> None:
+        reason = reason or "SONIC control failure"
+        with self._fault_lock:
+            if self._fault_reason is not None:
+                return
+            self._fault_reason = reason[:256]
+        self._control_state = SonicControlState.FAULT
+        self._arm_pending = False
+        logger.error("SONIC damping stop latched; restart required", task=self._name, reason=reason)
+        self._write_damping()
+
+    def on_hardware_fault(self, reason: str) -> None:
+        """Mirror the final publisher's fault in policy lifecycle/status."""
+        self._trip_fault(reason)
+
+    def _write_damping(self) -> None:
+        # Also exercises the physical stop command in MuJoCo, using the same
+        # adapter API as hardware. The real DDS connection independently latches.
+        with self._fault_lock:
+            publisher, reason = self._fault_publisher, self._fault_reason
+        if publisher is not None and reason is not None:
+            # The hardware owns takeover and the final latch. Sending an
+            # ordinary damping target here could itself trigger takeover.
+            publisher(reason)
+        else:
+            self._adapter.write_motor_commands(damping_commands(NUM_JOINTS))
+
+    def set_estop(self, estopped: bool) -> None:
+        """Latch a damping stop; button release and runtime resets cannot clear it."""
+        if estopped:
+            self._trip_fault("operator stop")
+        elif self.fault_reason is not None:
+            raise RuntimeError("SONIC damping stop is latched; restart the stack to recover")
 
     def on_preempted(self, by_task: str, joints: frozenset[str]) -> None:
         if joints & self._joint_names_set:
@@ -467,6 +571,8 @@ class G1SonicWBCTask(BaseControlTask):
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
+        if self.fault_reason is not None:
+            raise RuntimeError("SONIC damping stop is latched; restart the stack to recover")
         self._active = True
         self._control_state = SonicControlState.UNARMED
         self._arm_pending = False
@@ -477,6 +583,7 @@ class G1SonicWBCTask(BaseControlTask):
         self._ramp_start = None
         self._stream_source_requested = False
         self._last_targets = None
+        self._hold_targets = None
         self._state_seen = False
         self._reset_policy_state()
         with self._cmd_lock:
@@ -503,6 +610,8 @@ class G1SonicWBCTask(BaseControlTask):
         logger.info("G1SonicWBCTask stopped", task=self._name)
 
     def arm(self, ramp_seconds: float | None = None) -> bool:
+        if self.fault_reason is not None:
+            raise RuntimeError("SONIC damping stop is latched; restart the stack to recover")
         if not self._active:
             logger.warning("G1SonicWBCTask arm() before start(); ignoring", task=self._name)
             return False
@@ -529,6 +638,8 @@ class G1SonicWBCTask(BaseControlTask):
         return True
 
     def disarm(self) -> bool:
+        if self.fault_reason is not None:
+            return False
         if not self._arm_pending and self._control_state not in (
             SonicControlState.INITIALIZING,
             SonicControlState.READY,
@@ -550,6 +661,8 @@ class G1SonicWBCTask(BaseControlTask):
         return True
 
     def reset_runtime_state(self, reactivate: bool | None = None) -> bool:
+        if self.fault_reason is not None:
+            return False
         was_armed = self._arm_pending or self._control_state in (
             SonicControlState.INITIALIZING,
             SonicControlState.READY,
@@ -590,14 +703,16 @@ class G1SonicWBCTask(BaseControlTask):
         logger.info("G1SonicWBCTask dry_run changed", task=self._name, dry_run=new_val)
 
     def state_snapshot(self) -> dict[str, Any]:
+        control_state = self.control_state
         snap: dict[str, Any] = {
             "active": self._active,
-            "armed": self._control_state is SonicControlState.CONTROL,
-            "arming": self._control_state is SonicControlState.INITIALIZING,
+            "armed": control_state is SonicControlState.CONTROL,
+            "arming": control_state is SonicControlState.INITIALIZING,
             "arm_pending": self._arm_pending,
             "arming_duration": self._arming_duration,
-            "control_state": self._control_state.value,
+            "control_state": control_state.value,
             "dry_run": self._dry_run,
+            "fault_reason": self.fault_reason,
         }
         snap.update(self._pipeline.snapshot())
         snap["reference_source"] = "stream" if snap.get("stream_active") else "planner"
@@ -700,6 +815,7 @@ class G1SonicWBCTaskParams(BaseConfig):
     decimation: int | None = None
     sonic_pipeline: SonicTeleopPipeline = SONIC_V1_1_PIPELINE
     pose_transition_seconds: float = Field(default=0.5, gt=0.0, allow_inf_nan=False)
+    joint_velocity_limit: float = Field(default=JOINT_VELOCITY_LIMIT, gt=0.0, allow_inf_nan=False)
 
 
 def _create_task(
@@ -746,6 +862,7 @@ def _create_task(
         default_ramp_seconds=params.default_ramp_seconds,
         sonic_pipeline=params.sonic_pipeline,
         pose_transition_seconds=params.pose_transition_seconds,
+        joint_velocity_limit=params.joint_velocity_limit,
     )
     if params.decimation is not None:
         kwargs["decimation"] = params.decimation

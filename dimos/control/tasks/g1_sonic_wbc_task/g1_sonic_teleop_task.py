@@ -174,6 +174,9 @@ class G1SonicTeleopTask(G1SonicWBCTask):
                 self._last_retarget_ms = (time.perf_counter() - retarget_started_at) * 1000.0
 
     def on_teleop_buttons(self, msg: Buttons, t_now: float) -> None:
+        if msg.left_primary and msg.left_secondary and msg.right_primary and msg.right_secondary:
+            self.set_estop(True)
+            return
         ax_combo = bool(
             msg.left_primary
             and msg.right_primary
@@ -200,7 +203,18 @@ class G1SonicTeleopTask(G1SonicWBCTask):
         super().on_twist_command(msg, t_now)
 
     def compute(self, state: CoordinatorState) -> JointCommandOutput | None:
+        try:
+            return self._compute_teleop(state)
+        except Exception as exc:
+            logger.exception("SONIC teleop control fault", task=self._name)
+            self._trip_fault(f"teleop control: {exc}")
+            return None
+
+    def _compute_teleop(self, state: CoordinatorState) -> JointCommandOutput | None:
         with self._teleop_lock:
+            if self.fault_reason is not None:
+                self._enter_off_locked("damping_stop")
+                return super().compute(state)
             self._sync_policy_lifecycle_locked()
             if self.policy_active:
                 self._prepare_teleop_locked(state.t_now, state.dt)

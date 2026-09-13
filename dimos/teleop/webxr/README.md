@@ -40,6 +40,10 @@ the certificate, then tap Connect.
 
 ### G1 SONIC full-body teleoperation
 
+For consumer PICO firmware without browser body-tracking access, the
+[native XRoboToolkit connector](../pico/README.md) provides the
+`unitree-g1-sonic-pico-teleop` blueprint using the public APK and PC service.
+
 Calibrate the PICO Motion Trackers, then test the complete workflow in MuJoCo:
 
 ```bash
@@ -100,6 +104,13 @@ press X+A. Press X+A again to return SONIC to planner control. This toggle is
 not an emergency stop. The Unitree physical stop remains the authoritative
 emergency control.
 
+For a latched SONIC damping stop, press **A+B+X+Y together** or run
+`dimos --transport zenoh hardware g1 estop`. The hardware writer also latches
+damping on measured overspeed and feedback/command timeouts. Releasing buttons,
+`disable`, and runtime resets do not clear it; recover with a deliberate stack
+restart after addressing the fault. Damping removes active balance. See the
+[shared SONIC safety behavior](../pico/README.md) and its offline-validation limits.
+
 Shut down in this order:
 
 ```bash
@@ -110,6 +121,7 @@ uv run dimos stop
 `disable` cancels trajectories, selects dry-run, and disarms SONIC into
 current-pose hold. It does not stop low-level motor commands; `dimos stop`
 performs that final step.
+If a damping stop is latched, graceful shutdown preserves the damping command.
 
 For hand teleop, remove the controllers. Pinch the thumb and index finger on
 the selected hand to engage it, move the wrist to control the arm, then pinch

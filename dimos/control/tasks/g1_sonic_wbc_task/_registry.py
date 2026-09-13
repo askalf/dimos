@@ -27,6 +27,7 @@ TASK_CONSUMES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 _SONIC_EXPOSES = [
+    "set_estop",
     "arm",
     "disarm",
     "set_dry_run",

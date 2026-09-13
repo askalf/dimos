@@ -46,6 +46,10 @@ from dimos.control.tasks.g1_sonic_wbc_task.sonic_onnx_runtime import (
     create_sonic_session,
     prepare_sonic_onnx_runtime,
 )
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import (
+    PLANNER_TIMEOUT_SECONDS,
+    SonicSafetyError,
+)
 from dimos.control.tasks.g1_sonic_wbc_task.streamed_motion import (
     StreamedMotion,
     StreamedMotionMerger,
@@ -1258,23 +1262,23 @@ class SonicPipeline:
     def _submit_planner(self) -> None:
         if self._planner_future is not None and not self._planner_future.done():
             return
-        try:
-            inputs = self._build_planner_inputs()
-        except Exception as exc:
-            logger.warning("SonicPipeline planner input build failed", error=repr(exc))
-            return
+        inputs = self._build_planner_inputs()
         self._planner_started_at = time.perf_counter()
         self._planner_future = self._planner_executor.submit(self._planner.run, None, inputs)
 
     def _check_planner_result(self) -> None:
-        if self._planner_future is None or not self._planner_future.done():
+        if self._planner_future is None:
+            return
+        if self._planner_started_at is not None and (
+            time.perf_counter() - self._planner_started_at >= PLANNER_TIMEOUT_SECONDS
+        ):
+            raise SonicSafetyError("planner inference timeout")
+        if not self._planner_future.done():
             return
         try:
             self._apply_planner_result(self._planner_future.result())
         except Exception as exc:
-            logger.warning("SonicPipeline planner inference failed", error=repr(exc))
-            if self._planner_transition_preparing:
-                self._needs_replan = True
+            raise SonicSafetyError("planner inference failed") from exc
         if self._planner_transition_preparing and not self._planner_transition_ready:
             self._needs_replan = True
         if self._planner_started_at is not None:
@@ -1288,9 +1292,9 @@ class SonicPipeline:
         qpos_30hz = result[0].squeeze()
         num_frames = int(result[1].item())
         if num_frames < 2:
-            return
+            raise SonicSafetyError("planner returned fewer than two frames")
         if self._nan_check("planner_qpos", qpos_30hz[:num_frames]):
-            return
+            raise SonicSafetyError("non-finite planner output")
         new_traj = self._resample_to_50hz(qpos_30hz, num_frames)
 
         if (
@@ -1374,8 +1378,7 @@ class SonicPipeline:
         """One 50 Hz policy step. Returns 29 position targets, DDS order."""
         self._step_count += 1
 
-        # Input sentries: a non-finite or degenerate input poisons the
-        # heading math and the planner. Hold the previous targets instead.
+        # Invalid observations must reach the task's latched damping response.
         bad = (
             self._nan_check("q_dds", np.asarray(q_dds))
             or self._nan_check("dq_dds", np.asarray(dq_dds))
@@ -1394,7 +1397,7 @@ class SonicPipeline:
                 self._nan_reported += 1
             bad = True
         if bad:
-            return self._last_targets_dds.copy()
+            raise SonicSafetyError("invalid robot policy input")
         self._cur_quat = np.asarray(base_quat_wxyz, dtype=np.float64)
         self._cur_q_dds = np.asarray(q_dds, dtype=np.float32)
 
@@ -1490,14 +1493,14 @@ class SonicPipeline:
         obs[674:964] = self._his_action[order].ravel()
         obs[964:994] = self._his_gravity[order].ravel()
 
-        self._nan_check("token", token)
-        self._nan_check("decoder_obs", obs)
+        if self._nan_check("token", token) or self._nan_check("decoder_obs", obs):
+            raise SonicSafetyError("non-finite decoder observation")
         decoder_started = time.perf_counter()
         out = self._decoder.run(None, {self._decoder_input: obs.reshape(1, -1)})
         self._decoder_durations_ms.append((time.perf_counter() - decoder_started) * 1000.0)
         actions = out[0].squeeze()[:NUM_JOINTS].astype(np.float32)
         if self._nan_check("actions", actions):
-            return self._last_targets_dds.copy()
+            raise SonicSafetyError("non-finite decoder output")
         self._last_reference_token = token.copy()
         self._last_token_was_stream = self._use_stream
         if (

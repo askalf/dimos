@@ -1,0 +1,30 @@
+// Wire-compatible subset of XRoboToolkit PC Service v1.0.0's PXREAService.proto.
+// Source: XR-Robotics/XRoboToolkit-PC-Service, commit
+// 6386009475369615fa984bca0a6e9902cd81eb2a, RoboticsService/PXREAService/linux_x86/.
+// Only the tracking subscription and heartbeat API are included.
+syntax = "proto3";
+package PXREAService;
+import "google/protobuf/empty.proto";
+
+service EAService {
+  rpc WatchServerFeedback(VRPid) returns (stream ServerFeedback);
+  rpc CancelServerFeedback(VRPid) returns (google.protobuf.Empty);
+  rpc SendBeat(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+message VRPid { int32 pid = 1; }
+message DeviceStatus {
+  string devid = 1;
+  int32 status = 2;
+}
+message DeviceStateJson {
+  string devid = 1;
+  string statejson = 2;
+}
+message ServerFeedback {
+  string name = 1;
+  oneof FeedbackArgs {
+    string devid = 3;
+    DeviceStatus devstatus = 5;
+    DeviceStateJson devicestatejson = 15;
+  }
+}

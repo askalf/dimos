@@ -110,6 +110,10 @@ class GlobalConfig(BaseSettings):
     # for longer than this is cut off at the client, not the server, so the
     # caller owns the number.
     mcp_timeout: int = 30
+    # Local XRoboToolkit PC service; the headset connects to the vendor service.
+    xrobotoolkit_host: str = "127.0.0.1"
+    xrobotoolkit_port: int = Field(default=60061, ge=1, le=65535)
+    xrobotoolkit_video_port: int = Field(default=13579, ge=0, le=65535)
     # `DIMOS_TRANSPORT` (or `.env`) is the single switch read by every process
     # (dimos, humancli, agentspy, dtop). The `transport` alias keeps the bare
     # env name and the `--transport` CLI flag (which sets the field by name) working.

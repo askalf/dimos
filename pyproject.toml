@@ -50,6 +50,7 @@ exclude = [
     "**/*.svg",
     "**/*.tcss",
     "**/*.pyi",
+    "**/*.proto",
 ]
 
 [tool.setuptools.exclude-package-data]
@@ -227,6 +228,8 @@ agents = [
     "faster-whisper>=1.0.0",
 ]
 
+xrobotoolkit = ["grpcio>=1.60,<2", "av>=14,<17"]
+
 web = [
     "fastapi>=0.115.6",
     "python-socketio>=5.16.1",  # WebsocketVisModule, also imported by Quest visualization
@@ -373,7 +376,7 @@ graspgenx = [
 ]
 
 all = [
-    "dimos[apriltag,cuda,drone,manipulation,misc,scene,unitree,webrtc]",
+    "dimos[apriltag,cuda,drone,manipulation,misc,scene,unitree,webrtc,xrobotoolkit]",
 ]
 
 [dependency-groups]
@@ -382,7 +385,7 @@ autofix = ["ruff==0.14.3"]
 
 # Project deps shared by `tests` and `lint`.
 project-deps = [
-    "dimos[web,visualization,webrtc]",
+    "dimos[web,visualization,webrtc,xrobotoolkit]",
     # Blackwell (sm_120) needs torch 2.7 from pytorch-cu128. Cap below 2.8.
     "torch>=2.1,<2.8",
     "torchvision>=0.16,<0.23",
@@ -475,6 +478,8 @@ lint = [
     "watchdog>=3.0.0",
 
     "pandas-stubs>=2.3.2.250926,<3",
+    "grpc-stubs>=1.53",
+    "types-protobuf>=6.32,<7",
     "types-pyaudio",
     "types-PyYAML>=6.0.12.20250915,<7",
     "types-reportlab>=4.5.0",
@@ -583,6 +588,8 @@ exclude = [
     "venv",
     "libs",
     "external",
+    "dimos/teleop/pico/proto/*_pb2.py",
+    "dimos/teleop/pico/proto/*_pb2.pyi",
     "src"
 ]
 
@@ -627,6 +634,11 @@ warn_unused_ignores = false
 untyped_calls_exclude = ["zenoh"]
 explicit_package_bases = true
 exclude = "^dimos/models/Detic(/|$)|.*/test_.|.*/tool_.|.*/conftest.py*"
+
+[[tool.mypy.overrides]]
+# protoc emits unparameterized Mapping in generated message constructors.
+module = ["dimos.teleop.pico.proto.*"]
+disable_error_code = ["type-arg"]
 
 [[tool.mypy.overrides]]
 module = [

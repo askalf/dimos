@@ -26,6 +26,7 @@ from dimos.control.tasks.g1_sonic_wbc_task.g1_sonic_wbc_task import (
     SonicControlState,
 )
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import WRIST_ONNX_INDICES
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import damping_commands
 from dimos.control.tasks.g1_sonic_wbc_task.webxr_retargeting import SMPL_WEBXR_JOINTS
 from dimos.hardware.whole_body.spec import IMUState
 from dimos.msgs.geometry_msgs.Twist import Twist
@@ -164,25 +165,45 @@ def test_dry_run_keeps_webxr_planner_available(
     assert task.state_snapshot()["webxr_teleop"]["mode"] == "planner"
 
 
-def test_dry_run_pose_preview_runs_sonic_without_actuator_output(
+def test_dry_run_pose_preview_keeps_the_fixed_hold_target(
     task_and_pipeline: tuple[Any, Any], mocker: Any
 ) -> None:
     task, pipeline = task_and_pipeline
     publish = mocker.Mock()
     task.set_pose_reference_publisher(publish)
     task.set_dry_run(True)
+    held_targets = task._last_targets.copy()
     publish.reset_mock()
 
     _enter_pose(task)
     output = task.compute(_state(1.20))
 
     snapshot = task.state_snapshot()
-    assert output is None
+    assert output.positions == held_targets
     assert snapshot["dry_run"] is True
     assert snapshot["webxr_teleop"]["mode"] == "pose"
     assert snapshot["reference_source"] == "webxr_pose"
     pipeline.set_pose_window.assert_called()
     assert publish.call_args.args[0].active is True
+
+
+@pytest.mark.parametrize("mode", ["planner", "pose"])
+def test_four_face_buttons_latch_damping_in_either_teleop_mode(task_and_pipeline, mode):
+    task, pipeline = task_and_pipeline
+    if mode == "pose":
+        _enter_pose(task)
+    pipeline.step.reset_mock()
+
+    task.on_teleop_buttons(_buttons(a=True, b=True, x=True, y=True), t_now=1.21)
+    task.on_teleop_buttons(_buttons(), t_now=1.22)
+    assert task.compute(_state(1.24)) is None
+    task.on_teleop_buttons(_buttons(a=True, x=True), t_now=1.25)
+    assert task.compute(_state(1.26)) is None
+
+    assert task.fault_reason == "operator stop"
+    assert task.state_snapshot()["webxr_teleop"]["mode"] == "off"
+    task._adapter.write_motor_commands.assert_called_with(damping_commands(29))
+    pipeline.step.assert_not_called()
 
 
 def test_ax_starts_smooth_transition_from_planner(
@@ -463,22 +484,6 @@ def test_ax_is_ignored_during_planner_transition(
 
     assert task.state_snapshot()["webxr_teleop"]["mode"] == "planner_transition"
     pipeline.begin_stream_transition.assert_not_called()
-
-
-def test_abxy_does_not_change_pose_mode(
-    task_and_pipeline: tuple[Any, Any],
-) -> None:
-    task, pipeline = task_and_pipeline
-    _enter_pose(task)
-    task.on_teleop_buttons(_buttons(), t_now=1.20)
-    pipeline.stop_clip.reset_mock()
-
-    task.on_teleop_buttons(_buttons(a=True, b=True, x=True, y=True), t_now=1.21)
-
-    assert task.control_state is SonicControlState.CONTROL
-    assert task.state_snapshot()["webxr_teleop"]["mode"] == "pose"
-    assert task.state_snapshot()["reference_source"] == "webxr_pose"
-    pipeline.stop_clip.assert_not_called()
 
 
 def test_entering_dry_run_from_live_pose_keeps_preview_active(

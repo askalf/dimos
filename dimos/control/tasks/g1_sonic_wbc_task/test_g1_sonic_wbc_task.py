@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from dimos.control.coordinator import ControlCoordinator
 from dimos.control.task import CoordinatorState, JointStateSnapshot
 from dimos.control.tasks.g1_sonic_wbc_task.g1_sonic_wbc_task import (
     G1SonicWBCTask,
@@ -27,6 +28,7 @@ from dimos.control.tasks.g1_sonic_wbc_task.g1_sonic_wbc_task import (
     _create_task,
 )
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import DEFAULT_ANGLES_DDS
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import damping_commands
 from dimos.hardware.whole_body.spec import IMUState
 
 _JOINT_NAMES = [f"joint_{index}" for index in range(29)]
@@ -52,6 +54,7 @@ def make_task(mocker: Any):
     pipeline = pipeline_class.return_value
     pipeline.step.return_value = np.zeros(29, dtype=np.float32)
     pipeline.snapshot.return_value = {"stream_active": False}
+    tasks = []
 
     def factory(
         *,
@@ -68,9 +71,13 @@ def make_task(mocker: Any):
             auto_dry_run=auto_dry_run,
             default_ramp_seconds=default_ramp_seconds,
         )
-        return G1SonicWBCTask("sonic", config, mocker.MagicMock())
+        task = G1SonicWBCTask("sonic", config, mocker.MagicMock())
+        tasks.append(task)
+        return task
 
-    return factory, pipeline
+    yield factory, pipeline
+    for task in tasks:
+        task.stop()
 
 
 def test_auto_arm_finishes_ramp_before_first_policy_step(make_task: Any) -> None:
@@ -179,17 +186,125 @@ def test_reset_reactivate_replays_arm_ramp(make_task: Any) -> None:
     assert snapshot["arm_pending"] is True
 
 
-def test_dry_run_outputs_arm_ramp_but_suppresses_policy_output(make_task: Any) -> None:
+def test_dry_run_republishes_fixed_hold_instead_of_learned_targets(make_task: Any) -> None:
     factory, pipeline = make_task
     task = factory(auto_arm=True, default_ramp_seconds=0.0, auto_dry_run=True)
     task.start()
 
     ramp_output = task.compute(_state(1.0))
+    pipeline.step.return_value = np.ones(29, dtype=np.float32)
     policy_output = task.compute(_state(1.02))
+    second_output = task.compute(_state(1.04))
 
     assert ramp_output is not None
-    assert policy_output is None
-    pipeline.step.assert_called_once()
+    assert policy_output.positions == second_output.positions == ramp_output.positions
+    assert policy_output.positions != [1.0] * 29
+    assert pipeline.step.call_count == 2
+
+
+def test_inference_exception_latches_damping_and_requires_restart(make_task):
+    factory, pipeline = make_task
+    task = factory(auto_arm=True, default_ramp_seconds=0.0)
+    task.start()
+    task.compute(_state(1.0))
+    pipeline.step.side_effect = RuntimeError("decoder failed")
+
+    assert task.compute(_state(1.02)) is None
+    pipeline.step.side_effect = None
+    assert task.compute(_state(1.04)) is None
+
+    assert task.control_state is SonicControlState.FAULT
+    assert task.state_snapshot()["fault_reason"] == "decoder failed"
+    task._adapter.write_motor_commands.assert_called_with(damping_commands(29))
+    assert pipeline.step.call_count == 1
+    assert task.reset_runtime_state(reactivate=True) is False
+    assert task.disarm() is False
+    with pytest.raises(RuntimeError, match="restart"):
+        task.arm()
+    with pytest.raises(RuntimeError, match="restart"):
+        task.set_estop(False)
+
+
+@pytest.mark.parametrize("velocity", [-36.0, 36.0])
+def test_measured_overspeed_trips_before_policy_inference(make_task, velocity):
+    factory, pipeline = make_task
+    task = factory(auto_arm=True, default_ramp_seconds=0.0)
+    task.start()
+    state = _state(1.0)
+    state.joints.joint_velocities[_JOINT_NAMES[0]] = velocity
+
+    assert task.compute(state) is None
+
+    assert "joint overspeed" in task.fault_reason
+    pipeline.step.assert_not_called()
+    task._adapter.write_motor_commands.assert_called_once_with(damping_commands(29))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_invalid_policy_targets_latch_damping(make_task, value):
+    factory, pipeline = make_task
+    task = factory(auto_arm=True, default_ramp_seconds=0.0)
+    task.start()
+    task.compute(_state(1.0))
+    pipeline.step.return_value = np.full(29, value, dtype=np.float32)
+
+    assert task.compute(_state(1.02)) is None
+
+    assert task.fault_reason == "invalid SONIC motor targets"
+    task._adapter.write_motor_commands.assert_called_with(damping_commands(29))
+
+
+def test_stop_arriving_during_inference_discards_completed_targets(make_task):
+    factory, pipeline = make_task
+    task = factory(auto_arm=True, default_ramp_seconds=0.0)
+    task.start()
+    task.compute(_state(1.0))
+
+    def stopped_inference(**kwargs):
+        task.set_estop(True)
+        return np.ones(29, dtype=np.float32)
+
+    pipeline.step.side_effect = stopped_inference
+
+    assert task.compute(_state(1.02)) is None
+
+    assert task.fault_reason == "operator stop"
+    task._adapter.write_motor_commands.assert_called_with(damping_commands(29))
+
+
+def test_hardware_fault_uses_robot_latch_instead_of_triggering_takeover(make_task, mocker):
+    factory, _ = make_task
+    task = factory(auto_arm=False, default_ramp_seconds=3.0)
+    publish = mocker.Mock()
+    task.set_fault_publisher(publish)
+    task.start()
+
+    task.set_estop(True)
+
+    publish.assert_called_once_with("operator stop")
+    task._adapter.write_motor_commands.assert_not_called()
+
+
+@pytest.fixture
+def coordinator():
+    coordinator = ControlCoordinator(publish_joint_state=False)
+    yield coordinator
+    coordinator.stop()
+
+
+def test_coordinator_estop_reaches_sonic_damping(make_task, coordinator):
+    factory, pipeline = make_task
+    task = factory(auto_arm=True, default_ramp_seconds=0.0)
+    coordinator.add_task(task, task_type="g1_sonic_wbc")
+    task.start()
+    task.compute(_state(1.0))
+
+    assert coordinator.set_estop(True)
+    assert task.compute(_state(1.02)) is None
+
+    assert task.fault_reason == "operator stop"
+    task._adapter.write_motor_commands.assert_called_with(damping_commands(29))
+    pipeline.step.assert_not_called()
 
 
 def test_policy_timing_is_observational(make_task: Any) -> None:

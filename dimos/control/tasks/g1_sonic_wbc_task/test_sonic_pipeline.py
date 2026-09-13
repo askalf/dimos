@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Iterator
+from concurrent.futures import Future
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,6 +32,7 @@ from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import (
     SonicPipeline,
     sonic_model_profile,
 )
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import SonicSafetyError
 
 _V1_PROFILE = sonic_model_profile(SONIC_V1_1_PIPELINE)
 ENCODER_OBS_DIM = _V1_PROFILE.encoder_obs_dim
@@ -191,6 +193,55 @@ def test_planner_cold_start_is_warmed_before_runtime_timing(pipeline: SonicPipel
     assert pipeline._planner.run.call_count == 1
     assert snapshot["planner_cold_start_ms"] >= 0.0
     assert snapshot["planner_timing_ms"]["samples"] == 0
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_decoder_output_raises_a_control_fault(pipeline, value):
+    pipeline._decoder.run.return_value = [np.full((1, NUM_JOINTS), value, dtype=np.float32)]
+
+    with pytest.raises(SonicSafetyError, match="non-finite decoder output"):
+        _policy_step(pipeline)
+
+
+def test_nonfinite_token_stops_before_decoder_inference(pipeline):
+    pipeline._standing_token = np.full(64, float("nan"), dtype=np.float32)
+    pipeline._decoder.run.reset_mock()
+
+    with pytest.raises(SonicSafetyError, match="non-finite decoder observation"):
+        _policy_step(pipeline)
+
+    pipeline._decoder.run.assert_not_called()
+
+
+def test_invalid_robot_orientation_does_not_reuse_previous_targets(pipeline):
+    with pytest.raises(SonicSafetyError, match="invalid robot policy input"):
+        pipeline.step(
+            q_dds=DEFAULT_ANGLES_DDS,
+            dq_dds=np.zeros(NUM_JOINTS),
+            base_quat_wxyz=np.zeros(4),
+            gyro_body=np.zeros(3),
+            gravity_body=np.zeros(3),
+        )
+
+
+def test_failed_background_planner_raises_a_control_fault(pipeline):
+    future = Future()
+    future.set_exception(RuntimeError("planner CUDA failure"))
+    pipeline._planner_future = future
+
+    with pytest.raises(SonicSafetyError, match="planner inference failed"):
+        _policy_step(pipeline)
+
+
+def test_stuck_background_planner_has_a_deadline(pipeline, mocker):
+    pipeline._planner_future = Future()
+    pipeline._planner_started_at = 10.0
+    mocker.patch(
+        "dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline.time.perf_counter", return_value=11.01
+    )
+
+    with pytest.raises(SonicSafetyError, match="planner inference timeout"):
+        _policy_step(pipeline)
 
 
 @pytest.mark.parametrize(
