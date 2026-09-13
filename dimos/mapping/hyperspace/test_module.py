@@ -920,6 +920,32 @@ def test_a_store_without_chunk_storage_still_loads(store: SqliteStore) -> None:
     )
 
 
+def test_scoring_a_block_at_a_time_is_the_same_as_scoring_it_whole(
+    store: SqliteStore,
+) -> None:
+    """The blocks exist for speed, so they must not change the answer at a boundary."""
+    from dimos.mapping.hyperspace import resident as resident_module
+    from dimos.mapping.hyperspace.frames import BACKGROUND_PROMPTS, member_streams
+    from dimos.mapping.hyperspace.resident import ResidentIndex
+
+    fill(store, ring(4, 2.5), flat=True)
+    held = ResidentIndex()
+    tag, stream = next(iter(member_streams(store)))
+    patches = held.of(store, tag, stream)
+    query = StubModel.embed_text("object")
+    background = np.stack([StubModel.embed_text(prompt) for prompt in BACKGROUND_PROMPTS])
+
+    whole = patches.scores(query, background)
+    was = resident_module.SCORE_CHUNK
+    try:
+        # A block size that lands mid-index, so a boundary is actually crossed.
+        resident_module.SCORE_CHUNK = max(1, patches.rows // 3)
+        in_blocks = patches.scores(query, background)
+    finally:
+        resident_module.SCORE_CHUNK = was
+    assert np.array_equal(whole, in_blocks)
+
+
 def test_the_resident_index_is_loaded_once_and_reused(store: SqliteStore) -> None:
     """Paying the read twice would defeat the whole point of holding it."""
     from dimos.mapping.hyperspace.frames import member_streams

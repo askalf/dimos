@@ -45,6 +45,10 @@ logger = setup_logger()
 # load; the table is read start to finish either way.
 READ_CHUNK = 50_000
 
+# Rows promoted to single precision at a time when scoring. Big enough that the matrix
+# multiply is worth starting, small enough that the promotion is half a gigabyte.
+SCORE_CHUNK = 100_000
+
 # What the vectors are held as. Half precision because the index is what has to fit:
 # grocery's three models are 34 GB at single precision and 17 at half, and the scores
 # it produces are a similarity used to rank and threshold, not a measurement -- the
@@ -88,15 +92,24 @@ class ResidentPatches:
     ) -> NDArray[np.float32]:
         """Every patch's contrast against the query: how much better than generic room.
 
-        The same quantity the sqlite path computes, over every patch rather than over
-        whatever the approximate index happened to return.
+        Exact, over every patch, rather than over whatever an approximate index would
+        have returned.
+
+        Done a block at a time, cast up to single precision as it goes. Numpy has no
+        fast half-precision matrix multiply -- it falls back to something thirty times
+        slower than the single-precision one, measured, which turned a 0.2 s search
+        into 18 s -- while a block of a hundred thousand rows costs half a gigabyte to
+        promote and runs at full speed. The storage stays halved either way.
         """
-        # float32 in, float32 out: the vectors are half precision to fit, but nothing
-        # is gained by doing the arithmetic there, and a half-precision sum over a
-        # thousand dimensions loses more than the storage saves.
-        against = (self.vectors @ query.astype(HELD_AS)).astype(np.float32)
-        against -= (self.vectors @ background.astype(HELD_AS).T).astype(np.float32).max(axis=1)
-        return against
+        # The query and the backgrounds go through together: one pass over the index
+        # rather than one for the words and another for the room.
+        texts = np.vstack([np.asarray(query, dtype=np.float32)[None, :], background])
+        out = np.empty(self.rows, dtype=np.float32)
+        for start in range(0, self.rows, SCORE_CHUNK):
+            block = np.asarray(self.vectors[start : start + SCORE_CHUNK], dtype=np.float32)
+            against = block @ texts.T
+            out[start : start + len(block)] = against[:, 0] - against[:, 1:].max(axis=1)
+        return out
 
     def hot(
         self,
