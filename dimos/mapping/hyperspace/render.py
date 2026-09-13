@@ -217,6 +217,7 @@ def boxes_html(
             "frames": detection.episode_frames,
             "span": detection.episode_span,
             "models": detection.models,
+            "arrived": detection.arrived,
             "duplicate_of": detection.duplicate_of,
         }
         for detection in detections
@@ -264,10 +265,20 @@ h1 span { color:var(--hot) }
 .box { border:1px solid var(--edge); border-radius:7px; padding:9px 11px; margin-bottom:8px;
        cursor:pointer; transition:border-color .15s, background .15s }
 .box:hover, .box.on { border-color:var(--hot); background:#1b1c25 }
+.box.waiting { opacity:.22 }
 .box b { color:var(--hot) }
 .box .n { color:var(--dim); font-size:11.5px; display:block; margin-top:3px }
-.hint { position:fixed; left:14px; bottom:calc(12px + env(safe-area-inset-bottom));
+.hint { position:fixed; left:14px; bottom:calc(38px + env(safe-area-inset-bottom));
         color:var(--dim); font-size:11.5px; pointer-events:none }
+#replay { position:fixed; left:14px; bottom:calc(12px + env(safe-area-inset-bottom));
+          display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--dim) }
+#replay button { appearance:none; cursor:pointer; background:var(--panel); color:var(--ink);
+                 border:1px solid var(--edge); border-radius:7px; padding:6px 11px;
+                 font:inherit; min-height:32px }
+#replay button:hover { border-color:var(--hot) }
+#clock { font-variant-numeric:tabular-nums; color:var(--hot) }
+#track { width:150px; height:4px; border-radius:2px; background:var(--edge); overflow:hidden }
+#track i { display:block; height:100%; width:0; background:var(--hot) }
 .touch { display:none }
 .none { color:var(--dim); font-style:italic }
 /* On a phone the list is a sheet off the bottom edge rather than a column that eats
@@ -294,6 +305,7 @@ h1 span { color:var(--hot) }
 <button id="fold" type="button"></button>
 <div id="side"></div>
 <div class="hint"><span class="mouse">drag to orbit &middot; scroll to zoom &middot; shift-drag to pan &middot; click an answer to fly to it</span><span class="touch">drag to orbit &middot; pinch to zoom &middot; two fingers to pan</span></div>
+<div id="replay"><button type="button">replay</button><span id="clock">0.00s</span><span id="track"><i></i></span></div>
 <script id="data" type="application/json">__DATA__</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
 <script>
@@ -349,7 +361,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.2)
 sun.position.set(1, 1.5, 2)
 scene.add(sun)
 
-const drawn = data.boxes.map(box => {
+const shapes = data.boxes.map(box => {
     // A second look at a place already found is drawn cooler, so the distinct answers
     // are the ones that stand out.
     const tone = box.duplicate_of ? 0x8a6a4a : 0xff8a2e
@@ -369,8 +381,44 @@ const drawn = data.boxes.map(box => {
         new THREE.LineBasicMaterial({ color: tone, transparent: true, opacity: 0.35 + 0.6 * sure }))
     edges.position.copy(mesh.position)
     scene.add(mesh); scene.add(edges)
-    return mesh
+    return { mesh, edges, solid: 0.10 + 0.55 * sure, line: 0.35 + 0.6 * sure }
 })
+const drawn = shapes.map(shape => shape.mesh)
+
+// --- the answers arriving ---------------------------------------------------------
+// Each box carries the moment the module handed it back, so the page shows the query
+// happening rather than its result: the first answer lands in a fraction of a second
+// and the rest follow one detector call apart.
+const arrivals = data.boxes.map(box => Number(box.arrived) || 0)
+const lastArrival = Math.max(0.001, ...arrivals)
+const clock = document.getElementById("clock")
+const progress = document.querySelector("#track i")
+let playedFrom = null
+
+function showUpTo(seconds) {
+    shapes.forEach((shape, index) => {
+        const since = seconds - arrivals[index]
+        const shown = since >= 0
+        shape.mesh.visible = shape.edges.visible = shown
+        if (!shown) return
+        // A box flares as it arrives and settles into its confidence, so a new answer
+        // is visible even when the camera is somewhere else.
+        const flare = Math.max(0, 1 - since / 0.6)
+        shape.mesh.material.opacity = Math.min(1, shape.solid + 0.35 * flare)
+        shape.edges.material.opacity = Math.min(1, shape.line + 0.4 * flare)
+    })
+    const cards = document.querySelectorAll(".box")
+    cards.forEach((card, index) => {
+        card.classList.toggle("waiting", seconds < arrivals[index])
+    })
+    clock.textContent = `${Math.min(seconds, lastArrival).toFixed(2)}s`
+    progress.style.width = `${Math.min(100, (seconds / lastArrival) * 100)}%`
+}
+
+function replay() {
+    playedFrom = performance.now()
+}
+document.querySelector("#replay button").onclick = replay
 
 // --- an orbit camera, written out rather than pulled in ---------------------------
 let yaw = 0.6, pitch = 0.9, range = span * 0.75
@@ -448,7 +496,15 @@ function fit() {
 }
 addEventListener("resize", fit)
 addEventListener("orientationchange", fit)
-;(function draw() { requestAnimationFrame(draw); renderer.render(scene, camera) })()
+;(function draw() {
+    requestAnimationFrame(draw)
+    if (playedFrom !== null) {
+        const seconds = (performance.now() - playedFrom) / 1000
+        showUpTo(seconds)
+        if (seconds > lastArrival + 1.0) playedFrom = null
+    }
+    renderer.render(scene, camera)
+})()
 
 // --- the list ---------------------------------------------------------------------
 const side = document.getElementById("side")
@@ -505,5 +561,9 @@ data.boxes.forEach((box, index) => {
     }
     side.appendChild(card)
 })
+
+// Show the query happening once, on arrival, rather than presenting the finished
+// answer as though it were free.
+replay()
 </script>
 """

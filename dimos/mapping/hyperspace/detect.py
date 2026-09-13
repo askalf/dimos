@@ -672,7 +672,7 @@ def find(
     config = config or DetectConfig()
     frames = frames or RecordingFrames(recording, config=config)
     boxes = boxes or Owlv2Boxes(config)
-    at = time.monotonic()
+    asked = at = time.monotonic()
     matched = hot_frames(store, query, towers=towers, models=models, resident=resident)
     if timings is not None:
         timings["search"] = time.monotonic() - at
@@ -693,6 +693,9 @@ def find(
     for answer in stream_episodes(
         found, query, frames, boxes, config=config, keep_images=keep_images
     ):
+        # From the question, not from the detector: this is when someone watching the
+        # module would have seen the answer appear.
+        answer.arrived = time.monotonic() - asked
         if first is None:
             first = time.monotonic() - at
         yield answer
