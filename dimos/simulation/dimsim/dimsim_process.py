@@ -81,8 +81,6 @@ class DimSimProcess:
 
     def stop(self) -> None:
         if self.process:
-            if self.process.stderr:
-                self.process.stderr.close()
             try:
                 self.process.terminate()
                 self.process.wait(timeout=5)
@@ -92,6 +90,13 @@ class DimSimProcess:
                 self.process.wait(timeout=2)
             except Exception as e:
                 logger.error(f"Error stopping DimSim process: {e}")
+            finally:
+                # Terminate the writer before closing pipes: the log-reader
+                # thread can hold their locks while blocked in readline().
+                if self.process.stderr:
+                    self.process.stderr.close()
+                if self.process.stdout:
+                    self.process.stdout.close()
             self.process = None
 
     def _start_log_reader(self) -> None:

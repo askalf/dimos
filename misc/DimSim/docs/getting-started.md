@@ -15,6 +15,12 @@ deno run -A --unstable-net cli.ts dev --scene apartment
 
 Both end up with a Vite-built `dist/` and a bridge on port 8090. Same scenes, same browser. The difference is just who's driving the agent.
 
+The simulator's wire protocol is LCM. When DimOS uses Zenoh, its DimSim connection
+relays camera, LiDAR, and odometry onto Zenoh and forwards movement commands back
+to LCM. TF retains the simulator's frame conventions; camera calibration is also
+published by the Go2 connection. With `--transport lcm`, modules consume the
+simulator topics directly without a second sensor or command relay.
+
 If you install the CLI globally, replace the `deno run` boilerplate with `dimsim`:
 
 ```bash
