@@ -750,7 +750,7 @@ jobs:
           - os: macOS
             container: null  # run on host — `container:` is Linux-only
             markers: "self_hosted"
-            experimental: true
+            experimental: false
     runs-on:
       - self-hosted
       - ${{ matrix.os }}
