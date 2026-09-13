@@ -53,6 +53,10 @@ PATCH_STREAM = "hyperspace_patches"
 # point cloud in the CAMERA'S OWN frame. Its world pose is applied at query time, so a
 # loop closure moves it; baking the pose in would leave it silently wrong.
 THUMBNAIL_STREAM = "hyperspace_depth_thumbnails"
+# Depth with the holes stereo leaves filled in, one frame per keyframe, in millimetres.
+# Written once -- live by the depth2depth module, or after the fact by `fill_depth` --
+# so that placing a box never pays for a model.
+FILLED_STREAM = "hyperspace_filled_depth"
 
 
 def index_slug(specs: Sequence[str]) -> str:
@@ -88,6 +92,76 @@ def patch_stream_for(slug: str, member: str) -> str:
 def thumbnail_stream_for(slug: str = "") -> str:
     """The depth-thumbnail stream of one index."""
     return THUMBNAIL_STREAM if not slug else f"{THUMBNAIL_STREAM}__{slug}"
+
+
+def filled_stream_for(slug: str = "") -> str:
+    """The filled-depth stream of one index."""
+    return FILLED_STREAM if not slug else f"{FILLED_STREAM}__{slug}"
+
+
+def fill_depth(
+    recording: Any,
+    *,
+    model: str = "default",
+    device: str = "",
+    color_stream: str = "color_image",
+    depth_stream: str = "depth_image",
+    every: int = 1,
+    on_frame: Any = None,
+) -> int:
+    """Write filled depth for a recording's colour frames, once, into the recording.
+
+    A box is placed off whatever the stereo returned, and off glass or a dark shelf it
+    returns nothing -- which is how a basket ends up metres past where it is. Filling
+    the holes costs about fifty milliseconds a frame, far too much to pay while someone
+    waits for an answer and nothing at all to pay once.
+
+    Live, the `depth2depth` module does this as the robot drives and the recorder keeps
+    it. This is the same thing after the fact, for a recording that was made without it.
+    """
+    from dimos.mapping.hyperspace.module import depth2depth_model_of
+    from dimos.msgs.sensor_msgs.Image import Image
+    from dimos.perception.depth2depth.fusion import Depth2Depth
+
+    name = filled_stream_for("")
+    if name in recording.list_streams():
+        recording.delete_stream(name)
+    out = recording.stream(name, dict)
+
+    fuser = Depth2Depth(model_name=depth2depth_model_of(model), device=device or "auto")
+    fuser.start()
+    logger.info(f"hyperspace: filling depth with {fuser.model_name} on {fuser.device}")
+
+    depths = recording.stream(depth_stream, Image)
+    written = 0
+    for index, observation in enumerate(recording.stream(color_stream, Image).order_by("ts")):
+        if index % max(1, every):
+            continue
+        colour = decoded(observation.data)
+        ts = float(observation.ts)
+        near = depths.at(ts, tolerance=0.05).to_list()
+        if not near:
+            continue
+        paired = min(near, key=lambda found: abs(float(found.ts) - ts))
+        raw = np.asarray(decoded(paired.data).as_numpy())
+        metres = raw.astype(np.float32) * (0.001 if raw.dtype == np.uint16 else 1.0)
+        metres[~np.isfinite(metres)] = 0.0
+        fused = fuser.fuse(np.asarray(colour.to_rgb().data), metres).fused
+        # Millimetres as uint16, the same as the sensor's own: a tenth of the bytes of
+        # float metres, and finer than anything the depth is accurate to.
+        out.append(
+            {
+                "camera_frame": colour.frame_id,
+                "ts": ts,
+                "depth_mm": np.clip(fused * 1000.0, 0, 65535).astype(np.uint16),
+            },
+            ts=ts,
+            tags={"camera_frame": colour.frame_id},
+        )
+        written += 1
+        if on_frame is not None:
+            on_frame(written, ts)
+    return written
 
 
 def stream_names(slug: str = "") -> tuple[str, str]:
@@ -265,6 +339,7 @@ class PatchIngestor:
         # keyframe stream at all, so opening one eagerly would leave that lie behind.
         self._keyframes: Stream[Any] | None = None
         self._thumbnails: Stream[Any] | None = None
+        self._filled: Stream[Any] | None = None
         # One vec0 stream per model; the member list is only certain once it has run.
         self.patches_by_member: dict[str, Stream[Any]] = {}
         self.tf_stream: Stream[TFMessage] = store.stream(TF_STREAM, TFMessage)
@@ -282,6 +357,13 @@ class PatchIngestor:
         if self._thumbnails is None:
             self._thumbnails = self.store.stream(thumbnail_stream_for(self.slug), dict)
         return self._thumbnails
+
+    @property
+    def filled(self) -> Stream[Any]:
+        """Where the filled depth lands, opened once."""
+        if self._filled is None:
+            self._filled = self.store.stream(filled_stream_for(self.slug), dict)
+        return self._filled
 
     def patch_stream(self, member: str) -> Stream[Any]:
         """This model's vec0 stream, opened once."""
@@ -381,14 +463,12 @@ class PatchIngestor:
         # Pair depth now, while its frame is still in the short depth history:
         # the buffer judges this frame ~5 embedded frames later.
         depth = self._paired_depth(image.frame_id, ts)
-        if depth is not None and self.config.depth2depth_model:
-            depth = self._fused_depth(rgb, depth)
         kept = self.buffer.push(
             hs.BufferedFrame(
                 ts=ts,
                 grid=grid.astype(np.float16),
                 quality=quality,
-                payload=(image.frame_id, depth, grids),
+                payload=(image.frame_id, depth, grids, rgb),
             )
         )
         if kept is None:
@@ -401,6 +481,36 @@ class PatchIngestor:
         for frame in kept:
             self._write_keyframe(frame)
         return len(kept)
+
+    def _filled_depth(
+        self,
+        camera_frame: str,
+        ts: float,
+        rgb: NDArray[np.uint8],
+        depth: NDArray[np.float32] | None,
+    ) -> NDArray[np.float32] | None:
+        """Fill this keyframe's depth holes, and keep the result in the recording.
+
+        Only keyframes, and only once. Fusing costs about fifty milliseconds, so doing
+        it to every frame the camera produced would be most of an ingest for frames
+        nothing will ever ask about -- and doing it at query time would be paying it
+        again every time somebody asks.
+        """
+        if depth is None or not self.config.depth2depth_model:
+            return depth
+        filled = self._fused_depth(rgb, depth)
+        self.filled.append(
+            {
+                "camera_frame": camera_frame,
+                "ts": ts,
+                # Millimetres as uint16, the same as the sensor's own: a tenth of the
+                # bytes of float metres and finer than the depth is accurate to.
+                "depth_mm": np.clip(filled * 1000.0, 0, 65535).astype(np.uint16),
+            },
+            ts=ts,
+            tags={"camera_frame": camera_frame},
+        )
+        return filled
 
     def _fused_depth(
         self, rgb: NDArray[np.uint8], depth: NDArray[np.float32]
@@ -462,7 +572,8 @@ class PatchIngestor:
 
     def _write_flat(self, kept: hs.BufferedFrame) -> None:
         """One row per patch that stands on its own, plus one depth thumbnail."""
-        camera_frame, depth, grids = kept.payload
+        camera_frame, depth, grids, rgb = kept.payload
+        depth = self._filled_depth(camera_frame, kept.ts, rgb, depth)
         color = self.intrinsics.get(camera_frame)
         if color is None:
             logger.warning(f"hyperspace: no camera_info for {camera_frame!r} yet; frame dropped")
@@ -527,7 +638,8 @@ class PatchIngestor:
         if self.config.flat:
             self._write_flat(kept)
             return
-        camera_frame, depth, grids = kept.payload
+        camera_frame, depth, grids, rgb = kept.payload
+        depth = self._filled_depth(camera_frame, kept.ts, rgb, depth)
         color = self.intrinsics.get(camera_frame)
         if color is None:
             logger.warning(f"hyperspace: no camera_info for {camera_frame!r} yet; keyframe dropped")

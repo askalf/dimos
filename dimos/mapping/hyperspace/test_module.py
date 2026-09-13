@@ -847,6 +847,38 @@ def test_hot_frames_reads_the_flat_layout_and_ranks_the_frames(store: SqliteStor
     assert len(episodes(frames, gap_s=max(gaps))) == 1
 
 
+def test_filled_depth_is_what_a_box_is_placed_off(store: SqliteStore) -> None:
+    """A recording carrying filled depth is placed off that, without touching stereo.
+
+    The point of writing it once -- live by the depth2depth module, or afterwards by
+    `fill_depth` -- is that answering a query never pays for a model. So the read side
+    has to prefer it, and has to find it by stamp like any other frame.
+    """
+    from dimos.mapping.hyperspace.detect import DetectConfig, RecordingFrames
+    from dimos.mapping.hyperspace.ingest import filled_stream_for
+
+    fill(store, ring(4, 2.5), flat=True)
+    config = DetectConfig(world_frame=WORLD)
+    assert RecordingFrames(store, config=config).depth(CAMERA, 10.0) is None, (
+        "nothing to place off yet: the fixture writes no depth stream"
+    )
+
+    store.stream(filled_stream_for(""), dict).append(
+        {
+            "camera_frame": CAMERA,
+            "ts": 10.0,
+            "depth_mm": np.full((HEIGHT, WIDTH), 2500, dtype=np.uint16),
+        },
+        ts=10.0,
+        tags={"camera_frame": CAMERA},
+    )
+
+    frames = RecordingFrames(store, config=config)
+    got = frames.depth(CAMERA, 10.0)
+    assert got is not None and np.allclose(got, 2.5), "metres, from the filled stream"
+    assert frames.depth(CAMERA, 30.0) is None, "and only where a filled frame exists"
+
+
 def test_the_resident_index_carries_everything_a_patch_is_placed_by(
     store: SqliteStore,
 ) -> None:

@@ -40,7 +40,12 @@ import numpy as np
 from dimos.mapping.hyperspace import patches as hs
 from dimos.mapping.hyperspace.flextf import FlexTf
 from dimos.mapping.hyperspace.frames import Episode, Frame
-from dimos.mapping.hyperspace.ingest import TF_STREAM, decoded, intrinsics_of
+from dimos.mapping.hyperspace.ingest import (
+    TF_STREAM,
+    decoded,
+    filled_stream_for,
+    intrinsics_of,
+)
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.utils.logging_config import setup_logger
@@ -307,6 +312,10 @@ class RecordingFrames:
         self.tf = FlexTf()
         self._tf_stream = tf_stream
         self._tf_loaded = False
+        filled = filled_stream_for("")
+        self._filled_stream = filled if filled in recording.list_streams() else None
+        if self._filled_stream:
+            logger.info(f"hyperspace: placing boxes off {filled}")
 
     def warm(self) -> float:
         """Do the first lookup's work now, while nobody is waiting on an answer.
@@ -336,6 +345,22 @@ class RecordingFrames:
             self.tf.receive_tfmessage(observation.data)
         self._tf_loaded = True
 
+    def filled(self, camera_frame: str, ts: float) -> NDArray[np.float32] | None:
+        """Depth with stereo's holes filled, if this recording carries any."""
+        del camera_frame
+        if self._filled_stream is None:
+            return None
+        tolerance = self.config.depth_max_dt
+        found = self.recording.streams[self._filled_stream].at(ts, tolerance=tolerance).to_list()
+        if not found:
+            return None
+        nearest = min(found, key=lambda observation: abs(float(observation.ts) - ts))
+        if abs(float(nearest.ts) - ts) > tolerance:
+            return None
+        metres = np.asarray(nearest.data["depth_mm"], dtype=np.float32) * 0.001
+        metres[(metres > self.config.max_depth_m) | ~np.isfinite(metres)] = 0.0
+        return metres
+
     def pose(self, camera_frame: str, ts: float, world_frame: str) -> NDArray[np.float64] | None:
         self.load_tf()
         poses, valid = self.tf.batch_get(world_frame, camera_frame, [ts])
@@ -349,8 +374,18 @@ class RecordingFrames:
         return decoded(nearest.data)
 
     def depth(self, camera_frame: str, ts: float) -> NDArray[np.float32] | None:
-        """Metres on the colour camera's grid, zero where there is no reading."""
+        """Metres on the colour camera's grid, zero where there is no reading.
+
+        Filled depth if the recording has any -- written live by the depth2depth module
+        or afterwards by `fill_depth`, either way already on the colour grid and
+        already aligned, so nothing here pays for a model.
+        """
+        filled = self.filled(camera_frame, ts)
+        if filled is not None:
+            return filled
         tolerance = self.config.depth_max_dt
+        if self.depth_stream not in self.recording.list_streams():
+            return None
         found = self.recording.streams[self.depth_stream].at(ts, tolerance=tolerance).to_list()
         if not found:
             return None

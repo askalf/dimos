@@ -59,8 +59,6 @@ class Depth2DepthConfig(ModuleConfig):
     max_pair_dt: float = 0.05
     # Depth frames kept while waiting for their colour frame.
     depth_history: int = 30
-    # At most this many frames a second; 0 = every frame that pairs.
-    max_hz: float = 0.0
 
 
 class Depth2Depth(Module):
@@ -99,7 +97,6 @@ class Depth2Depth(Module):
         logger.info(f"depth2depth: loading {self.config.model_name} on {device}")
         self.fuser.start()
         self._depths: deque[tuple[float, Image]] = deque(maxlen=self.config.depth_history)
-        self._last_fused = 0.0
         self.stats = {"color": 0, "depth": 0, "fused": 0, "unpaired": 0}
         super().start()
 
@@ -115,15 +112,15 @@ class Depth2Depth(Module):
         self.stats["color"] += 1
         if self.fuser is None:
             return
-        if self.config.max_hz > 0 and float(image.ts) - self._last_fused < 1.0 / self.config.max_hz:
-            return
         depth = self._paired_depth(float(image.ts))
         if depth is None:
             self.stats["unpaired"] += 1
             return
-        self._last_fused = float(image.ts)
-        # The forward pass blocks for ~70 ms on a GPU and seconds on a CPU; the
-        # handler's latest-only dispatch drops the frames that arrive meanwhile.
+        # Every frame that arrives, as fast as the model can take them. The forward
+        # pass blocks for ~70 ms on a GPU and seconds on a CPU, and the handler's
+        # latest-only dispatch drops whatever arrives meanwhile -- which is the right
+        # answer for a camera feed and the wrong one for a chosen frame, so send this
+        # module the frames that are worth fusing rather than all of them.
         await asyncio.get_running_loop().run_in_executor(None, self._fuse, image, depth)
 
     def _paired_depth(self, ts: float) -> Image | None:
