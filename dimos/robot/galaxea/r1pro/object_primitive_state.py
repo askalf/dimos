@@ -101,7 +101,7 @@ class PrimitiveSceneState:
             for arm in ARMS
         }
 
-    def transport_planner(self) -> PlanarTransport:
+    def transport_planner(self, *, collision_margin: float = 0.02) -> PlanarTransport:
         """Include both hands' measured cargo; leave the tray and unheld objects stationary."""
         return PlanarTransport(
             self.model,
@@ -109,6 +109,7 @@ class PrimitiveSceneState:
             cargo_bodies=tuple(row["object"] for row in self.inventory() if row["held_by"]),
             carry_tray=False,
             sweep_spacing=0.005,
+            collision_margin=collision_margin,
         )
 
     @staticmethod

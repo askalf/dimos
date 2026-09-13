@@ -21,6 +21,7 @@ import mujoco
 import numpy as np
 import pytest
 
+from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach
 from dimos.robot.galaxea.r1pro.grasping_blueprint import R1ProGraspingSim
 from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.object_packing_scene import sample_layout
@@ -240,3 +241,25 @@ def test_demonstration_can_prefer_longer_reach_without_disabling_collision_check
 
     assert path[-1] == pytest.approx([0.12, 0.5, 0.0])
     assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))
+
+
+def test_tracking_clearance_rejects_a_route_that_only_clears_the_nominal_robot(checker):
+    wide = PlanarTransport(checker.model, checker.probe, cargo_bodies=(), collision_margin=0.06)
+    # The robot's right face is 4 cm from the wall at this pose.
+    pose = np.array([0.26, 0.0, 0.0])
+    assert checker.clear_pose_segment(pose, pose)
+    assert not wide.clear_pose_segment(pose, pose)
+    assert wide.model.geom_margin.max() == pytest.approx(0.06)
+    assert checker.model.geom_margin.max() == pytest.approx(0.02)
+
+
+def test_approach_moves_a_tight_nominal_dock_to_preserve_tracking_clearance(checker):
+    wide = PlanarTransport(checker.model, checker.probe, cargo_bodies=(), collision_margin=0.06)
+    preposition = np.array([0.45, 0.0, np.pi])
+    assert not wide.clear_pose_segment(np.array([0.73, 0, 0]), np.array([0.73, 0, np.pi]))
+
+    transit, docking = apartment_approach(wide, preposition)
+
+    assert not np.allclose(transit[:2], [0.73, 0])
+    assert wide.clear_pose_segment(transit, docking)
+    assert abs(docking[2] - transit[2]) <= np.pi

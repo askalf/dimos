@@ -18,7 +18,7 @@ cd /home/mustafa/dimos-wt/r1pro-classical-apartment
 .classical-venv/bin/dimos humancli
 ```
 
-The agent uses your existing configured provider credentials. The full MuJoCo viewer opens; desktop startup was verified from this checkout. The external language-provider round trip has not been tested; physical actions were tested through local MCP. A new launch randomizes the seed, object properties and positions across the worktable, kitchen and dining table. `reset_scene` repeats the current seed. Pick and place are independent commands; the robot starts idle.
+The agent uses your existing configured provider credentials. The full MuJoCo viewer opens; desktop startup was verified from this checkout. The user has exercised HumanCLI picks and placements successfully; automated physical validation uses local MCP. A new launch randomizes the seed, object properties and positions across the worktable, kitchen and dining table. `reset_scene` repeats the current seed. Pick and place are independent commands; the robot starts idle.
 
 Examples, using the colors and IDs present in the current scene:
 
@@ -58,6 +58,16 @@ Simulation instance labels, object geometry and virtual multiview depth viewpoin
 The full delivery passed on seed `282527379`; cup coverage also includes seed `282527381`. This is measured scenario coverage, not a success-rate claim across every random layout. Placement search is bounded to 60 seconds and reports timeout separately from geometric infeasibility.
 
 All object attachments are confined to planning copies. Live objects are held and supported through MuJoCo contact physics.
+
+## Learned components and simulation inputs
+
+GraspGenX is a pretrained learned grasp proposer. The language model selects tools. Reachability, body/torso positioning, arm trajectories, placement and navigation use DimOS geometry, planning and control; no ACT policy executes.
+
+This demo deliberately uses privileged simulation inputs: object identities, colors and exact poses; depth from five virtual views centered on the selected object; full scene collision geometry and the apartment map; and contact forces plus exact object motion to verify grip, support and slip. It does not validate real-camera detection, segmentation or localization. Hardware would need measured or estimated replacements for those inputs.
+
+Objects are not welded or teleported during manipulation. Grips and support are physical MuJoCo contacts. The mobile base uses an idealized planar actuator model rather than a wheel/ground dynamics model.
+
+Navigation preserves KronkNav's waypoint sampling. Sparse visibility shortcuts can make corners untrackable even when the nominal line is collision-free. Classical transit checks 6 cm of clearance, and stops when combined position/yaw tracking deviation exceeds its 4 cm allowance. The exact commanded paths and maximum tracking deviation are saved with action evidence.
 
 ## Development validation
 

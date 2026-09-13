@@ -46,9 +46,13 @@ class PlanarTransport:
         cargo_bodies: tuple[str, ...] = ("task_bottle",),
         carry_tray: bool = True,
         sweep_spacing: float = 0.05,
+        collision_margin: float = 0.02,
     ) -> None:
         if not math.isfinite(sweep_spacing) or sweep_spacing <= 0:
             raise ValueError("Sweep spacing must be positive and finite")
+        if not math.isfinite(collision_margin) or collision_margin < 0:
+            raise ValueError("Collision margin must be finite and nonnegative")
+        self.collision_margin = collision_margin
         self.carry_tray = carry_tray
         self.sweep_spacing = sweep_spacing
         self.model = copy.copy(model)
@@ -83,14 +87,19 @@ class PlanarTransport:
         tray_id = model.body("task_bin").id
         for gid in range(model.ngeom):
             if int(model.geom_bodyid[gid]) in self.robot_bodies - {tray_id}:
-                self.model.geom_margin[gid] = max(float(model.geom_margin[gid]), 0.02)
+                self.model.geom_margin[gid] = max(
+                    float(model.geom_margin[gid]), self.collision_margin
+                )
         self.start = data.qpos[self.qids].copy()
 
     def collisions(self, data: mujoco.MjData, *, ignore_cargo: bool = False) -> list[str]:
         """Report robot/environment penetration, excluding floor support and cargo."""
         obstacles = set()
         for contact in data.contact:
-            if contact.dist > (0.02 if data is self.probe else 0.0) or contact.pos[2] < 0.06:
+            if (
+                contact.dist > (self.collision_margin if data is self.probe else 0.0)
+                or contact.pos[2] < 0.06
+            ):
                 continue
             bodies = [int(self.model.geom_bodyid[geom]) for geom in contact.geom]
             if self.cargo_ids.intersection(bodies) and not self.carried_qpos:
@@ -183,6 +192,7 @@ class PlanarTransport:
                 cargo_bodies=self.cargo_bodies,
                 carry_tray=self.carry_tray,
                 sweep_spacing=self.sweep_spacing,
+                collision_margin=self.collision_margin,
             )
             try:
                 path = aligned.plan(

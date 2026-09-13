@@ -34,6 +34,7 @@ from dimos.robot.galaxea.r1pro.apartment_navigation import (
     APARTMENT_NAV_TASK,
     ApartmentNavigation,
 )
+from dimos.robot.galaxea.r1pro.apartment_route import CLASSICAL_NAVIGATION_CLEARANCE_M
 from dimos.robot.galaxea.r1pro.classical_gripper import (
     R1PRO_GRASP_FRAME_TO_TCP,
     R1PRO_GRIPPER_SWEEP,
@@ -81,7 +82,11 @@ def build_classical_apartment(*, agent: bool = False) -> Blueprint:
         prepare_scene_on_build=True,
         background_camera_rendering=True,
         coordinator_type=R1ProApartmentCoordinator,
-        simulator_options={"workspace_file": None, "policy_neighbor_distance": None},
+        simulator_options={
+            "workspace_file": None,
+            "policy_neighbor_distance": None,
+            "navigation_clearance_m": CLASSICAL_NAVIGATION_CLEARANCE_M,
+        },
         velocity_base=HardwareComponent(
             hardware_id=CLASSICAL_BASE_ID,
             hardware_type=HardwareType.BASE,

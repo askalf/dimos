@@ -4,6 +4,17 @@ The user switched from ACT to classical manipulation with GraspGen and requested
 
 Branch: `feat/r1pro-classical-apartment`. Permanent checkout: `/home/mustafa/dimos-wt/r1pro-classical-apartment`. The former `/tmp/dimos-r1pro-primitives` path is a compatibility symlink. The existing ACT branch/checkpoints and Alfred checkout were not modified. The isolated runtime's launchers and package path were relocated with the worktree.
 
+
+## User return-navigation failure and fix under validation
+
+The user reported good interactive grasping/placement, then navigation failed. Session `recordings/r1pro-primitives/86b14d4cc63f46ab83dc671a63af545a`, seed 1646757217, action 006, carried a white cup from kitchen toward worktable. `wheel_motor_link3` contacted the display cabinet (`dc4b6a1b56faf0b0ac679141c9c53f1449bf984a-articulated-001`). Automatic recovery also stopped because the collision condition was still present.
+
+Saved-state physics replay reproduced contact at base (-0.2601, -1.3129), very near the user's (-0.2568, -1.3126). Geometric shortening had reduced the native route to a handful of sharp corners. Maximum cross-track error was 15.6 cm on the shortened route, exceeding its 2 cm collision allowance. Preserving native waypoints passed the return route. With 6 cm clearance the replay passed again; combined pose deviation stayed below 1.53 cm. A separate replay of the old route with the new 4 cm tracking guard stopped before collision.
+
+The patch preserves native waypoints, makes collision clearance configurable (classical transit uses 6 cm; other callers retain 2 cm), monitors combined translation/yaw displacement against a 4 cm allowance, and saves commanded routes before execution. It does not change live geometry or contact thresholds. 27 route/transport regressions and 21 execution/navigation tests passed; strict mypy passes all six changed implementation files.
+
+Detached native validation: `/tmp/r1pro-nav-return/stack-status.json`, supervisor PID3617509 at launch. It repeats the user's six commands and adds explicit worktable placement after returning. Private MCP10026/Zenoh19492; no external LLM request and no user-process commands. The handoff below describes the prior delivered baseline until this run finishes.
+
 ## Current verified state
 
 Main was fetched again before publication. The only new upstream change was RealSense Nix build fix `aa8a158469`. Recreating historical merges during rebase reintroduced old conflicts, so that rebase was aborted and upstream was merged as `28eeed4550`. Comparing against the verified pre-merge tree changes only `dimos/hardware/sensors/camera/realsense/rust/flake.nix`; all demo sources are identical. The branch contains current main.

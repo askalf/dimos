@@ -28,7 +28,7 @@ from pydantic import Field
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.core.core import rpc
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
-from dimos.robot.galaxea.r1pro.apartment_route import refine_apartment_route
+from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach, refine_apartment_route
 from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.home_surfaces import station_name
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
@@ -46,6 +46,7 @@ class R1ProApartmentSimConfig(R1ProPrimitiveSimConfig):
     seed: int = Field(default_factory=lambda: secrets.randbelow(2**31), ge=0)
     everyday_objects: bool = True
     randomize_locations: bool = True
+    navigation_clearance_m: float = Field(default=0.02, ge=0.0, le=0.2)
     policy_neighbor_distance: float | None = 0.8
     workspace_file: Path | None = None
     scene_package: Path | None = DIMOS_PROJECT_ROOT / "dimos/data/scene_packages/hssd_102344115"
@@ -271,17 +272,10 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
                 if goal.shape != (3,) or not np.isfinite(goal).all():
                     raise ValueError("Expected a finite assessed base pose")
                 yaw = float(goal[2])
-            # Transit stops clear of the furniture; local SDK prepositioning docks later.
-            goal[:2] -= 0.28 * np.array([np.cos(yaw), np.sin(yaw)])
-            planner = scene.transport_planner()
-            if not planner.clear_pose_segment(goal, goal):
-                raise RuntimeError("Apartment approach pose is obstructed with current cargo")
-            docking = goal.copy()
-            # Holonomic travel can keep the narrower fore/aft profile across a
-            # passage. Face the support after reaching its open approach area.
-            goal[2] = planner.start[2]
-            if not planner.clear_pose_segment(goal, docking):
-                raise RuntimeError("No clear arrival turn with the current hands and cargo")
+            # Transit and docking must reserve the same tracking clearance as
+            # the route. Move the approach a little if its nominal stop is tight.
+            planner = scene.transport_planner(collision_margin=self.config.navigation_clearance_m)
+            goal, docking = apartment_approach(planner, goal)
             yaw = float(goal[2])
             offset = carrying_offset(self._engine.model, self._engine.data, planner.robot_bodies)
             departure = None
@@ -337,10 +331,10 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
         with self._engine._lock:
             scene = self._state(self._engine)
             scene.validate(self._transport_initial, arm="right", selected=-1)
-            planner = scene.transport_planner()
+            planner = scene.transport_planner(collision_margin=self.config.navigation_clearance_m)
             # Native graph nodes describe the footprint centre, not the entire
-            # carried geometry. Retain only shortcuts whose complete sweeps are
-            # clear; reject if no such connection reaches the requested end.
+            # carried geometry. Preserve native waypoints and include the configured
+            # tracking allowance in complete sweeps before admitting execution.
         return refine_apartment_route(planner, path)
 
     @rpc

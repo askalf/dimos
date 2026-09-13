@@ -188,3 +188,20 @@ def test_confirmed_support_finishes_without_further_descent(skills, mocker):
     )
     assert report["support_before_release"] == ["table"]
     line.assert_not_called()
+
+
+def test_departing_checked_navigation_corridor_fails_before_route_continues(skills, mocker):
+    path = [[0, 0, 0], [1, 0, 0]]
+    skills._sim.validate_object_navigation.return_value = path
+    skills._sim.primitive_state.side_effect = [
+        dict(base_pose=[0, 0, 0], sim_time=1.0),
+        dict(base_pose=[0.5, 0.05, 0], sim_time=2.0, error=None),
+    ]
+    mocker.patch.object(skills, "_pause")
+    report = {}
+
+    with pytest.raises(RuntimeError, match="checked tracking allowance"):
+        skills._follow(path, report)
+
+    assert report["commanded_paths"] == [path]
+    assert report["max_navigation_tracking_error_m"] == pytest.approx(0.05)

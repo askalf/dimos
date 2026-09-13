@@ -42,6 +42,10 @@ from dimos.robot.galaxea.r1pro.apartment_navigation import (
     APARTMENT_NAV_TASK,
     ApartmentNavigationSpec,
 )
+from dimos.robot.galaxea.r1pro.apartment_route import (
+    CLASSICAL_TRACKING_LIMIT_M,
+    navigation_tracking_error,
+)
 from dimos.robot.galaxea.r1pro.classical_selection import color_name, resolve_classical_object
 from dimos.robot.galaxea.r1pro.classical_sim import ClassicalSimSpec
 from dimos.robot.galaxea.r1pro.config import R1PRO_PLANAR_BASE
@@ -252,6 +256,7 @@ class R1ProClassicalSkills(Module):
         if len(path) < 2:
             return
         path = self._sim.validate_object_navigation(path)
+        report.setdefault("commanded_paths", []).append(path)
         before = self._sim.primitive_state()
         self._pause(0)
         self._control.task_invoke(APARTMENT_NAV_TASK, "reset", {})
@@ -281,6 +286,15 @@ class R1ProClassicalSkills(Module):
                 updated, last_sim_time = time.monotonic(), state["sim_time"]
             if time.monotonic() - updated > 2:
                 raise RuntimeError("Apartment simulation stopped updating during navigation")
+            deviation = navigation_tracking_error(path, state["base_pose"])
+            report["max_navigation_tracking_error_m"] = max(
+                report.get("max_navigation_tracking_error_m", 0.0), deviation
+            )
+            if deviation > CLASSICAL_TRACKING_LIMIT_M:
+                raise RuntimeError(
+                    f"Navigation exceeded its checked tracking allowance ({deviation:.3f} m); "
+                    "stopping before continuing the route"
+                )
             task = self._control.task_invoke(APARTMENT_NAV_TASK, "get_state", {})
             if task == "arrived":
                 break
