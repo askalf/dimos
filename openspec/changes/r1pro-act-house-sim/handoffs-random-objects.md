@@ -737,3 +737,14 @@ Independent DimOS RRT-Connect posture planning, full MuJoCo sweep checks and phy
 Smoke v4 completed with picks 12/12, placements 9/12. Its left dining coverage gate correctly prevented bulk collection. V4 data remains untouched. Corrected `apartment-reach-smoke-v5` (PID 2802943, corridor contract 5) repeats seed 381000 across all three supports and both hands. Bulk collection was restarted waiting on v5 (PID 2802944). The later refiner was restarted while waiting (PID 2806466); previous scripts/status are retained as `run-before-v5.py`, `status-before-v5.json` and the corresponding dual-held revision files.
 
 The final queued native suite now also includes `two-held-two-stops` on held-out seed 381204: pick separate worktable objects with right and left, navigate to dining, place right, navigate to kitchen, place left. All eight native cases and bench results must be reviewed before preview promotion. Current source remains in `/tmp/dimos-r1pro-primitives`; no user checkout/preview replacement or push has occurred.
+
+
+### September 13: corrected physical gate passed; collection active
+
+Updated 2026-09-13T03:18-07:00.
+
+Source fixes are committed through `a4094ffcad`. Corrected smoke v5 completed with all 12 primitives accepted (three picks and three placements per hand, spanning worktable, dining_table and kitchen). Bulk reach collection passed that coverage gate and is running as parent 2802944 / child 2812837 on seeds 381100-381107; its first new right-hand pick/place pair passed. Appearance fine-tuning finished both right-hand models and is now training pick-left. The next refiner remains queued as PID 2806466.
+
+An additional offline probe replayed a verified two-hand grasp and checked the previously saved empty-hand KronkNav route. Full robot/cargo checking rejected the reused path while both grasps remained intact (`/tmp/r1pro-two-held-route-result.json`). This was not a fresh loaded-footprint KronkNav request. The queued native two-held/two-stop case must establish that fresh planning and actual controller execution work; do not count the earlier empty-hand navigation result as two-held-object evidence.
+
+No apartment ACT preview has been promoted, no branch push performed, and the user worktree code remains unchanged. All long jobs are detached with durable scripts, manifests, logs and status files in the shared recordings directory. Inspect `apartment-appearance-refine-v1/status.json` for the current learner and `apartment-reach-refine-v1/status.json` for the queued next phase.
