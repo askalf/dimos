@@ -455,3 +455,28 @@ interactive skills. Its status.json, results.json and individual trace.json
 files retain the evidence. Preview artifacts and the remote checkpoint remain
 unchanged. Next: inspect grasp-centering/lift behavior and the exact placement
 criterion that fails before choosing further correction data or tuning.
+
+### September 12, 19:02 Pacific: reproduced ACT centering and placement errors
+
+Failure traces completed. All four demonstration-controller cases passed;
+all four corresponding ACT cases reproduced their failures. Their measured
+initial states match, including the ACT-established hold before placement.
+The three failed grasps approach with roughly 1--2 cm forward TCP error, then
+close on the object edge and lose contact or tip the object. The teacher stays
+centered and retains a stable lift. The left placement does release and retreat,
+but the object ends near (0.500, 0.581) instead of (0.530, 0.540), about 5 cm
+away and outside the requested region once its footprint is considered. The
+teacher places near (0.528, 0.542) and passes. Do not weaken the success criteria
+or describe that particular failure as a gripper-release stall.
+
+Started detached `jobs/primitive-feedback-eval-v1`, parent PID 2197824.
+Before another training round, it evaluates the same eight cases at 10 and
+20 executed actions per observation against the established 30-action 4/8
+baseline, with unchanged weights and physical checks. If either reaches at
+least 7/8, it copies that candidate into the job directory, changes only its
+execution-window setting, verifies the remaining artifact files are identical,
+and runs the seven extended local DimOS/MCP cases on port 10017 / Zenoh 19480.
+No external LLM is called, no preview is overwritten and nothing is promoted
+automatically. If neither qualifies, the evidence will guide corrective data
+collection. No training is currently running. Overall demonstrated reliability
+remains 4/8 offline and 3/7 integrated until new results establish otherwise.
