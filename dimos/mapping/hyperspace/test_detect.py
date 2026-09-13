@@ -23,6 +23,7 @@ distance -- so a wrong answer says which step is wrong rather than only that one
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -691,6 +692,43 @@ def placed(rank: int, score: float, centre: tuple[float, float, float]) -> Detec
     return detection
 
 
+def test_a_second_look_sharpens_the_place_instead_of_adding_a_box() -> None:
+    """Two looks at one shelf are one place whose box is the average of the looks."""
+    near = placed(1, 0.5, (1.0, 0.0, 0.0))
+    again = placed(2, 0.5, (1.2, 0.0, 0.0))
+    assert near.box3d is not None and again.box3d is not None
+    near.box3d = replace(near.box3d, extent=(0.4, 0.4, 0.4))
+    again.box3d = replace(again.box3d, extent=(0.6, 0.6, 0.6))
+    assert merge_duplicates([near, again], merge_m=0.75) == 1
+    assert near.place_id == again.place_id == 1
+    assert again.duplicate_of == 1, "the second look points at the first"
+    assert near.refined is not None and again.refined is not None
+    assert near.refined.centre == pytest.approx((1.0, 0.0, 0.0)), "the first look is itself"
+    assert again.refined.centre == pytest.approx((1.1, 0.0, 0.0)), "then the average of both"
+    assert again.refined.extent == pytest.approx((0.5, 0.5, 0.5))
+    assert again.box3d is not None and again.box3d.centre == pytest.approx((1.2, 0.0, 0.0)), (
+        "the look keeps its own box; refining does not rewrite the evidence"
+    )
+
+
+def test_a_confident_look_pulls_the_place_further_than_a_doubtful_one() -> None:
+    """Averaging by score, so a 0.9 answer is not dragged about by a 0.2 one."""
+    sure = placed(1, 0.9, (1.0, 0.0, 0.0))
+    unsure = placed(2, 0.1, (1.5, 0.0, 0.0))
+    merge_duplicates([sure, unsure], merge_m=0.75)
+    assert unsure.refined is not None
+    assert unsure.refined.centre[0] == pytest.approx(1.05), "a tenth of the way, not halfway"
+
+
+def test_a_separate_place_gets_its_own_id() -> None:
+    """The id is what tells a caller 'new thing' from 'better look at the same thing'."""
+    here = placed(1, 0.5, (0.0, 0.0, 0.0))
+    far = placed(2, 0.5, (5.0, 0.0, 0.0))
+    assert merge_duplicates([here, far], merge_m=0.75) == 2
+    assert here.place_id == 1 and far.place_id == 2
+    assert far.duplicate_of is None
+
+
 def test_several_looks_at_one_shelf_become_one_place() -> None:
     """The real "cheese" answers on grocery.db: five episodes, three places.
 
@@ -707,9 +745,12 @@ def test_several_looks_at_one_shelf_become_one_place() -> None:
         placed(5, 0.48, (-1.3, 24.9, -1.3)),
     ]
     assert merge_duplicates(found, merge_m=0.75) == 3
-    # The strongest of the group keeps its rank; the rest point at it.
-    assert found[2].duplicate_of is None and found[2].score == 0.47
-    assert [d.duplicate_of for d in found] == [3, 3, None, None, None]
+    # The place belongs to the look that found it, and later looks point back at that
+    # one -- answers are folded in the order they arrived, so that a caller replaying a
+    # query sees the same thing a caller watching it saw.
+    assert found[0].duplicate_of is None
+    assert [d.duplicate_of for d in found] == [None, 1, 1, None, None]
+    assert [d.place_id for d in found] == [1, 1, 1, 2, 3]
     # Widen it and the fourth joins them.
     assert merge_duplicates(found, merge_m=1.5) == 2
 

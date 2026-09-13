@@ -82,8 +82,15 @@ class DetectConfig:
     # detector on four looks at the nearest chair before it has seen the far one.
     spread_places: bool = True
     # How close two episodes have to be to count as the same place for that ordering.
-    # The same radius answers are merged at, so the ordering and the merge agree.
-    place_radius_m: float = 0.75
+    # Deliberately looser than the radius answers are merged at: this estimate comes
+    # from patch rays before any detector has looked, and one cone at a metre placed
+    # itself over a 1.35 m spread, so 0.75 split it three ways and spent three looks on
+    # it. Measured on that cone against the two that exist: at 0.75 the first twelve
+    # held two looks at the near cone and reached the far one seventh; at 1.5 one look
+    # and fifth; at 2.0, fourth; at 3.0, third. Wider costs a genuinely separate object
+    # 2 m away its turn in the first round, so this stops at the first value that fixed
+    # the repeat.
+    place_radius_m: float = 1.5
     # Episodes to run the detector over at all, strongest first. Detection is ~0.7 s a
     # frame, so this is the knob that decides what a query costs.
     max_episodes: int = 12
@@ -147,6 +154,12 @@ class Detection:
     note: str = ""
     # Set by `merge_duplicates`: the rank of the detection this one is another look at.
     duplicate_of: int | None = None
+    # Which place in the world this answer belongs to. Stable across the query, so a
+    # caller can tell a new thing from a better look at a thing it already has.
+    place_id: int | None = None
+    # That place's box once this answer is folded in: a second look sharpens the box
+    # rather than adding another one beside it.
+    refined: Box3D | None = None
     image: Image | None = field(default=None, repr=False)
 
     @property
@@ -168,7 +181,10 @@ class Detection:
             "box2d": None if self.box2d is None else list(self.box2d),
             "box3d": None if self.box3d is None else self.box3d.as_dict(),
             "note": self.note,
+            "arrived": self.arrived,
             "duplicate_of": self.duplicate_of,
+            "place_id": self.place_id,
+            "refined": None if self.refined is None else self.refined.as_dict(),
         }
 
 
@@ -694,31 +710,63 @@ def _place(
 
 
 def merge_duplicates(detections: Sequence[Detection], merge_m: float = 0.75) -> int:
-    """Mark detections that are another look at the same thing. Returns how many places.
+    """Group answers that are the same place, and sharpen each place as looks arrive.
 
-    Episodes are split on time, deliberately: the trolley passes the cheese counter
-    four times and that is four chances at it rather than one. But the four answers are
-    one place, so the last step is to say so -- in 3D, where "the same place" means
-    something, rather than in the episode split, where it would cost the extra chances.
+    Episodes are split on time deliberately: the trolley passes the cheese counter four
+    times and that is four chances at it. But the four answers are one place, so the
+    last step is to say so -- in 3D, where "the same place" means something.
 
-    The strongest detection of a group keeps its rank and the rest point at it; nothing
-    is dropped, because a second look is evidence and a caller may want to show it.
+    A second look does not add a box beside the first. It joins the place, and the
+    place's box becomes the average of its looks weighted by what the detector thought
+    of each, so `refined` on any answer is that place's box as of that moment. Nothing
+    is dropped: every answer keeps its own box too, because a second look is evidence.
+
+    Answers are folded in the order they arrived rather than strongest-first, and the
+    place belongs to the look that found it. A caller replaying a query then sees what
+    a caller watching it saw.
     """
-    placed = [d for d in detections if d.box3d is not None]
+    placed = [detection for detection in detections if detection.box3d is not None]
     for detection in detections:
         detection.duplicate_of = None
-    for detection in sorted(placed, key=lambda d: -d.score):
-        if detection.duplicate_of is not None:
-            continue
+        detection.place_id = None
+        detection.refined = None
+
+    places: list[dict[str, Any]] = []
+    for detection in sorted(placed, key=lambda detection: detection.rank):
         assert detection.box3d is not None
-        here = np.asarray(detection.box3d.centre)
-        for other in placed:
-            if other is detection or other.duplicate_of is not None:
-                continue
-            assert other.box3d is not None
-            if float(np.linalg.norm(np.asarray(other.box3d.centre) - here)) <= merge_m:
-                other.duplicate_of = detection.rank
-    return sum(1 for d in placed if d.duplicate_of is None)
+        here = np.asarray(detection.box3d.centre, dtype=float)
+        size = np.asarray(detection.box3d.extent, dtype=float)
+        # A weak answer should not drag a place around, but a zero score still counts.
+        weight = max(float(detection.score), 1e-6)
+        joined = None
+        for place in places:
+            if float(np.linalg.norm(place["centre"] - here)) <= merge_m:
+                joined = place
+                break
+        if joined is None:
+            joined = {
+                "id": len(places) + 1,
+                "centre": here,
+                "extent": size,
+                "weight": weight,
+                "first": detection.rank,
+            }
+            places.append(joined)
+        else:
+            total = joined["weight"] + weight
+            joined["centre"] = (joined["centre"] * joined["weight"] + here * weight) / total
+            joined["extent"] = (joined["extent"] * joined["weight"] + size * weight) / total
+            joined["weight"] = total
+            detection.duplicate_of = int(joined["first"])
+        detection.place_id = int(joined["id"])
+        detection.refined = Box3D(
+            frame=detection.box3d.frame,
+            centre=tuple(float(v) for v in joined["centre"]),
+            extent=tuple(float(v) for v in joined["extent"]),
+            pixels=detection.box3d.pixels,
+            depth_m=detection.box3d.depth_m,
+        )
+    return len(places)
 
 
 def find(

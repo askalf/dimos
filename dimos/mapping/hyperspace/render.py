@@ -196,6 +196,61 @@ def _packed(points: NDArray[np.floating]) -> str:
     return base64.b64encode(np.ascontiguousarray(points, dtype=np.float32).tobytes()).decode()
 
 
+def camera_views(
+    detections: Sequence[Detection],
+    frames: Any,
+    world_frame: str,
+    *,
+    width: int = 384,
+    distance: float = 1.2,
+) -> list[dict[str, Any]]:
+    """The pictures the detector was actually shown, each with where it was taken from.
+
+    A box in the air is an assertion; the frame it came from is the evidence. Placing
+    the image on its own view frustum puts the two in the same space, so a box that
+    looks wrong can be checked against what the camera saw without leaving the scene.
+
+    The image travels as a small JPEG data URI -- twelve of them at 384 px is a few
+    hundred kilobytes, against megabytes for the scene cloud they sit in.
+    """
+    import base64
+    from io import BytesIO
+
+    from PIL import Image as PILImage
+
+    views: list[dict[str, Any]] = []
+    for detection in detections:
+        if detection.image is None:
+            continue
+        pose = frames.pose(detection.camera_frame, detection.ts, world_frame)
+        intrinsics = frames.intrinsics.get(detection.camera_frame)
+        if pose is None or intrinsics is None:
+            continue
+        rgb = np.asarray(detection.image.to_rgb().data)
+        height_px, width_px = rgb.shape[:2]
+        picture = PILImage.fromarray(rgb)
+        if width_px > width:
+            picture = picture.resize((width, max(1, round(height_px * width / width_px))))
+        buffer = BytesIO()
+        picture.save(buffer, format="JPEG", quality=70)
+        # The image plane at `distance`, sized so it subtends what the lens does.
+        views.append(
+            {
+                "rank": detection.rank,
+                "place_id": detection.place_id,
+                "arrived": detection.arrived,
+                "distance": distance,
+                "width_m": distance * width_px / float(intrinsics.fx),
+                "height_m": distance * height_px / float(intrinsics.fy),
+                "pose": [float(v) for v in np.asarray(pose).reshape(-1)],
+                "box2d": None if detection.box2d is None else list(detection.box2d),
+                "size_px": [width_px, height_px],
+                "src": "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode(),
+            }
+        )
+    return views
+
+
 def boxes_html(
     path: Path,
     query: str,
@@ -204,6 +259,7 @@ def boxes_html(
     route: NDArray[np.floating],
     *,
     recording: str = "",
+    views: Sequence[dict[str, Any]] = (),
 ) -> Path:
     """An interactive page: the scene in grey, the answers in orange, ranked in a list."""
     boxes = [
@@ -218,6 +274,11 @@ def boxes_html(
             "span": detection.episode_span,
             "models": detection.models,
             "arrived": detection.arrived,
+            "place_id": detection.place_id,
+            "refined_centre": None if detection.refined is None else list(detection.refined.centre),
+            "refined_extent": None
+            if detection.refined is None
+            else [max(0.05, v) for v in detection.refined.extent],
             "duplicate_of": detection.duplicate_of,
         }
         for detection in detections
@@ -231,6 +292,7 @@ def boxes_html(
         "refused": refused,
         "points": _packed(points),
         "route": _packed(route),
+        "views": list(views),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_PAGE.replace("__DATA__", json.dumps(payload, separators=(",", ":"))))
@@ -361,27 +423,70 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.2)
 sun.position.set(1, 1.5, 2)
 scene.add(sun)
 
+// --- the camera frames the detector was shown ------------------------------------
+// Each one hangs on its own view frustum, so the evidence for a box sits in the same
+// space as the box: a wrong answer can be checked against what the camera saw.
+const views = (data.views || []).map(view => {
+    const texture = new THREE.TextureLoader().load(view.src)
+    texture.colorSpace = THREE.SRGBColorSpace
+    const plane = new THREE.Mesh(
+        new THREE.PlaneGeometry(view.width_m, view.height_m),
+        new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.92,
+                                      side: THREE.DoubleSide, depthWrite: false }))
+    // The pose is row-major and the optical frame has y pointing down, so the plane is
+    // flipped in y to keep the picture the right way up.
+    const pose = new THREE.Matrix4().fromArray(view.pose).transpose()
+    const place = new THREE.Matrix4().makeTranslation(0, 0, view.distance)
+    const flip = new THREE.Matrix4().makeScale(1, -1, 1)
+    plane.matrixAutoUpdate = false
+    plane.matrix.copy(pose).multiply(place).multiply(flip)
+    plane.visible = false
+    scene.add(plane)
+
+    // A line back to where the camera stood, so a frame far from its box is obvious.
+    const eye = new THREE.Vector3().setFromMatrixPosition(pose)
+    const corner = new THREE.Vector3()
+    const edges = []
+    for (const [sx, sy] of [[-1,-1],[1,-1],[1,1],[-1,1]]) {
+        corner.set(sx * view.width_m / 2, sy * view.height_m / 2, 0).applyMatrix4(plane.matrix)
+        edges.push(eye.clone(), corner.clone())
+    }
+    const frustum = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(edges),
+        new THREE.LineBasicMaterial({ color: 0x4b5168, transparent: true, opacity: 0.5 }))
+    frustum.visible = false
+    scene.add(frustum)
+    return { plane, frustum, arrived: Number(view.arrived) || 0 }
+})
+
 const shapes = data.boxes.map(box => {
     // A second look at a place already found is drawn cooler, so the distinct answers
     // are the ones that stand out.
-    const tone = box.duplicate_of ? 0x8a6a4a : 0xff8a2e
+    // A refinement is the same place, so it keeps the place's colour; only the flare
+    // as it lands says that something changed.
+    const tone = 0xff8a2e
     // How solid a box looks is how sure the detector was. A guess is a haze you can
     // see straight through; a confident answer is nearly opaque.
     const sure = Math.max(0, Math.min(1, box.score))
+    // The place's box as of this answer, which for a second look is the average of the
+    // looks so far rather than a new box beside the old one.
+    const centre = box.refined_centre || box.centre
+    const extent = box.refined_extent || box.extent
     const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(...box.extent),
+        new THREE.BoxGeometry(...extent),
         new THREE.MeshLambertMaterial({
             color: tone, transparent: true, opacity: 0.10 + 0.55 * sure,
             // Without this a weak box in front hides a strong one behind it.
             depthWrite: false, side: THREE.DoubleSide }))
-    mesh.position.set(...box.centre)
+    mesh.position.set(...centre)
     mesh.renderOrder = 1 + sure
     const edges = new THREE.LineSegments(
         new THREE.EdgesGeometry(mesh.geometry),
         new THREE.LineBasicMaterial({ color: tone, transparent: true, opacity: 0.35 + 0.6 * sure }))
     edges.position.copy(mesh.position)
     scene.add(mesh); scene.add(edges)
-    return { mesh, edges, solid: 0.10 + 0.55 * sure, line: 0.35 + 0.6 * sure }
+    return { mesh, edges, solid: 0.10 + 0.55 * sure, line: 0.35 + 0.6 * sure,
+             place: box.place_id == null ? `rank${box.rank}` : `place${box.place_id}` }
 })
 const drawn = shapes.map(shape => shape.mesh)
 
@@ -396,9 +501,18 @@ const progress = document.querySelector("#track i")
 let playedFrom = null
 
 function showUpTo(seconds) {
+    views.forEach(view => {
+        view.plane.visible = view.frustum.visible = seconds >= view.arrived
+    })
+    // One box per place, not per answer: a second look at somewhere already found moves
+    // the box it already has rather than stacking another on top of it.
+    const owner = new Map()
+    shapes.forEach((shape, index) => {
+        if (seconds >= arrivals[index]) owner.set(shape.place, index)
+    })
     shapes.forEach((shape, index) => {
         const since = seconds - arrivals[index]
-        const shown = since >= 0
+        const shown = since >= 0 && owner.get(shape.place) === index
         shape.mesh.visible = shape.edges.visible = shown
         if (!shown) return
         // A box flares as it arrives and settles into its confidence, so a new answer

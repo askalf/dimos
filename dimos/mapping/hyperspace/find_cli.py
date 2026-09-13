@@ -229,7 +229,9 @@ def main(
         name = slug_of(text)
         if scene is None:
             scene = _scene(store, frames, config, no_scene)
-        sheet = _write_artifacts(out, name, text, found, scene, recording_path)
+        sheet = _write_artifacts(
+            out, name, text, found, scene, recording_path, frames, config.world_frame
+        )
         summary["queries"][text] = {
             "seconds": took,
             "episodes": len(found),
@@ -275,13 +277,22 @@ def _write_artifacts(
     found: list[Any],
     scene: tuple[Any, Any],
     recording_path: Path,
+    frames: Any = None,
+    world_frame: str = "odom",
 ) -> dict[str, Path | None]:
     from dimos.mapping.hyperspace import render
 
     out.mkdir(parents=True, exist_ok=True)
     sheet = render.evidence_sheet(out / f"{name}_frames.png", text, found)
+    views = [] if frames is None else render.camera_views(found, frames, world_frame)
     page = render.boxes_html(
-        out / f"{name}_boxes.html", text, found, scene[0], scene[1], recording=recording_path.name
+        out / f"{name}_boxes.html",
+        text,
+        found,
+        scene[0],
+        scene[1],
+        recording=recording_path.name,
+        views=views,
     )
     return {"frames": sheet, "boxes": page}
 
