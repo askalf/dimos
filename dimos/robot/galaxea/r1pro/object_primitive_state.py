@@ -125,11 +125,20 @@ class PrimitiveSceneState:
             )
         ]
 
-    def preposition_path(self, arm: Arm, target: NDArray[Any]) -> list[list[float]]:
+    def preposition_path(
+        self, arm: Arm, target: NDArray[Any], *, preferred_reach: float | None = None
+    ) -> list[list[float]]:
         """Route the held posture into the learned workspace without sweeping cargo into clutter."""
+        if preferred_reach is not None and not (
+            np.isfinite(preferred_reach) and 0.36 <= preferred_reach <= 0.52
+        ):
+            raise ValueError("Preferred reach must be between 0.36 and 0.52 meters")
+        poses = self.preposition_poses(arm, target)
+        if preferred_reach is not None:
+            poses.sort(key=lambda pose: abs(float(target[0] - pose[0]) - preferred_reach))
         planner = self.transport_planner()
         deadline = time.monotonic() + 10
-        for desired in self.preposition_poses(arm, target):
+        for desired in poses:
             if time.monotonic() >= deadline:
                 raise RuntimeError("Prepositioning planning exceeded ten seconds")
             if not planner.clear_pose_segment(desired, desired):

@@ -72,7 +72,9 @@ class ObjectPrimitiveTask(ObjectPackingTask):
         self.probe.qpos[:] = self.data.qpos
         mujoco.mj_forward(self.model, self.probe)
 
-    def teacher_preposition(self, target: NDArray[Any]) -> None:
+    def teacher_preposition(
+        self, target: NDArray[Any], *, preferred_reach: float | None = None
+    ) -> None:
         """Physically move the base before a primitive, keeping joint commands held.
 
         This deterministic bench teacher is not the house navigation adapter.
@@ -80,7 +82,7 @@ class ObjectPrimitiveTask(ObjectPackingTask):
         """
         initial = self.inventory()
         scene = PrimitiveSceneState(self.model, self.data, self.layout, self.home)
-        path = scene.preposition_path(self.arm, target)
+        path = scene.preposition_path(self.arm, target, preferred_reach=preferred_reach)
         command = self.data.ctrl[self.aids].copy()
         for pose in PlanarTransport.targets(path, FPS, speed=0.08):
             super().step(command, base_target=pose)
@@ -158,18 +160,38 @@ class ObjectPrimitiveTask(ObjectPackingTask):
         for _ in range(FPS // 2):
             yield phase, action.astype(np.float32)
 
-    def teacher_pick(self) -> Iterator[tuple[str, NDArray[np.float32]]]:
+    def teacher_pick(
+        self, *, from_approach: bool = False
+    ) -> Iterator[tuple[str, NDArray[np.float32]]]:
+        """Demonstrate a pick, optionally correcting a still-open ACT approach."""
         source = self.data.body(self.bottle_id).xpos.copy()
         obj = self.layout.objects[self.selected]
         sign = -1 if self.arm == "right" else 1
         grasp = source + np.array([0, 0, min(0.03, obj.half_size[2] * 0.45)])
-        yield from self._move(
-            "stage",
-            self.data.body("base_link").xpos + np.array([0.42, sign * 0.28, 0.94]),
-            0.05,
-            2.0,
-        )
-        yield from self._move("above", np.r_[source[:2], 0.94], 0.05, 2.0)
+        if from_approach:
+            row = self.geometry(self.selected)
+            offset = self.data.site(f"{self.arm}_tcp").xpos - grasp
+            opening = self.data.qpos[self.qids[self.active[-1]]]
+            if not (
+                row["upright"]
+                and row["released"]
+                and row["support_geoms"]
+                and row["settled"]
+                and opening >= 0.04
+                and np.linalg.norm(offset[:2]) <= 0.05
+                and abs(offset[2]) <= 0.04
+            ):
+                raise RuntimeError("Approach correction requires an open hand near a stable source")
+            self.probe.qpos[:] = self.data.qpos
+            mujoco.mj_forward(self.model, self.probe)
+        else:
+            yield from self._move(
+                "stage",
+                self.data.body("base_link").xpos + np.array([0.42, sign * 0.28, 0.94]),
+                0.05,
+                2.0,
+            )
+            yield from self._move("above", np.r_[source[:2], 0.94], 0.05, 2.0)
         yield from self._move("approach", grasp, 0.05, 2.0)
         yield from self._move("grasp", grasp, 0.0, 1.0)
         yield from self._move("lift", np.r_[source[:2], 0.94], 0.0, 2.0)
