@@ -65,6 +65,10 @@ class DetectConfig:
     # usually right, but an object can be half out of the frame at the moment it scores
     # highest, and the next look is free of that.
     attempts: int = 3
+    # Frames handed to the detector in one forward pass. Preprocessing, text encoding
+    # and kernel launches amortize across a batch, so the whole round of episodes goes
+    # in together; the cap is there to bound how much of the GPU a round can ask for.
+    batch: int = 8
     # Episodes to run the detector over at all, strongest first. Detection is ~0.7 s a
     # frame, so this is the knob that decides what a query costs.
     max_episodes: int = 12
@@ -311,7 +315,7 @@ class RecordingFrames:
 
 
 class Owlv2Boxes:
-    """Core's OWLv2 detector, loaded once and asked one image at a time."""
+    """Core's OWLv2 detector, loaded once and asked about whole rounds of frames."""
 
     def __init__(self, config: DetectConfig | None = None) -> None:
         self.config = config or DetectConfig()
@@ -334,12 +338,31 @@ class Owlv2Boxes:
         self, image: Image, text: str
     ) -> tuple[tuple[float, float, float, float], float] | None:
         """The strongest box for *text*, or nothing if the detector refuses the image."""
-        found = self.detector.query_detections(image, [text], threshold=self.config.threshold)
-        if not found.detections:
-            return None
-        best = max(found.detections, key=lambda detection: detection.confidence)
-        x1, y1, x2, y2 = (float(v) for v in best.bbox)
-        return (x1, y1, x2, y2), float(best.confidence)
+        return self.best_many([image], text)[0]
+
+    def best_many(
+        self, images: Sequence[Image], text: str
+    ) -> list[tuple[tuple[float, float, float, float], float] | None]:
+        """``best`` over many images, in as few forward passes as the cap allows.
+
+        One answer per image, in input order, so a caller can keep its own bookkeeping
+        beside the list. The images of one round are unrelated to each other -- this is
+        purely about paying the per-call overhead once instead of once per frame.
+        """
+        answers: list[tuple[tuple[float, float, float, float], float] | None] = []
+        size = max(1, self.config.batch)
+        for start in range(0, len(images), size):
+            chunk = list(images[start : start + size])
+            for found in self.detector.query_detections_batch(
+                chunk, [text], threshold=self.config.threshold
+            ):
+                if not found.detections:
+                    answers.append(None)
+                    continue
+                best = max(found.detections, key=lambda detection: detection.confidence)
+                x1, y1, x2, y2 = (float(v) for v in best.bbox)
+                answers.append(((x1, y1, x2, y2), float(best.confidence)))
+        return answers
 
 
 def detect_episode(
@@ -372,28 +395,97 @@ def detect_episode(
         models=sorted(episode.members),
         attempts=0,
     )
+    return detect_episodes(
+        [episode], query, frames, boxes, config=config, keep_images=keep_image, first_rank=rank
+    )[0]
+
+
+@dataclass
+class _Try:
+    """One episode part-way through its attempts, so a round can be shared."""
+
+    detection: Detection
+    candidates: list[Frame]
+    answer: Detection | None = None
     flat: Detection | None = None
-    refusals = 0
-    for candidate in episode.by_weight()[: max(1, config.attempts)]:
-        detection.attempts += 1
-        image = frames.color(candidate.ts)
-        if image is None:
-            detection.note = "no colour frame at that stamp"
-            continue
-        found = boxes.best(image, query)
-        if found is None:
-            refusals += 1
-            detection.note = f"detector refused {refusals} frame(s)"
-            continue
-        attempt = replace(detection, ts=candidate.ts, camera_frame=candidate.frame, note="")
-        attempt.box2d, attempt.score = found
-        if keep_image:
-            attempt.image = image
-        _place(attempt, candidate, image, frames, config)
-        if attempt.box3d is not None:
-            return attempt
-        flat = flat or attempt
-    return flat or detection
+    refusals: int = 0
+
+    @property
+    def settled(self) -> bool:
+        return self.answer is not None
+
+    def finish(self) -> Detection:
+        return self.answer or self.flat or self.detection
+
+
+def detect_episodes(
+    episodes: Sequence[Episode],
+    query: str,
+    frames: RecordingFrames,
+    boxes: Owlv2Boxes,
+    *,
+    config: DetectConfig,
+    keep_images: bool = False,
+    first_rank: int = 1,
+) -> list[Detection]:
+    """Detect over several episodes at once, a round of attempts at a time.
+
+    Every episode's best frame goes to the detector together, then the second-best
+    frame of only those still unanswered, and so on. This is the same work as asking
+    one episode at a time -- an episode that answers on its first frame is never asked
+    again -- but it arrives in `attempts` forward passes rather than one per frame,
+    which is where the per-call cost lives.
+    """
+    tries = [
+        _Try(
+            detection=Detection(
+                query=query,
+                rank=rank,
+                ts=episode.peak.ts,
+                camera_frame=episode.peak.frame,
+                episode_frames=len(episode.frames),
+                episode_span=episode.span,
+                episode_score=episode.score,
+                models=sorted(episode.members),
+                attempts=0,
+            ),
+            candidates=list(episode.by_weight()[: max(1, config.attempts)]),
+        )
+        for rank, episode in enumerate(episodes, first_rank)
+    ]
+
+    for round_ in range(max(1, config.attempts)):
+        pending: list[tuple[_Try, Frame, Image]] = []
+        for attempt_of in tries:
+            if attempt_of.settled or round_ >= len(attempt_of.candidates):
+                continue
+            candidate = attempt_of.candidates[round_]
+            attempt_of.detection.attempts += 1
+            image = frames.color(candidate.ts)
+            if image is None:
+                attempt_of.detection.note = "no colour frame at that stamp"
+                continue
+            pending.append((attempt_of, candidate, image))
+        if not pending:
+            break
+        found_in_round = boxes.best_many([image for _, _, image in pending], query)
+        for (attempt_of, candidate, image), found in zip(pending, found_in_round, strict=True):
+            if found is None:
+                attempt_of.refusals += 1
+                attempt_of.detection.note = f"detector refused {attempt_of.refusals} frame(s)"
+                continue
+            attempt = replace(
+                attempt_of.detection, ts=candidate.ts, camera_frame=candidate.frame, note=""
+            )
+            attempt.box2d, attempt.score = found
+            if keep_images:
+                attempt.image = image
+            _place(attempt, candidate, image, frames, config)
+            if attempt.box3d is not None:
+                attempt_of.answer = attempt
+            else:
+                attempt_of.flat = attempt_of.flat or attempt
+    return [attempt_of.finish() for attempt_of in tries]
 
 
 def _place(
