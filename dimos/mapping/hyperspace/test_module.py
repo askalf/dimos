@@ -21,6 +21,7 @@ from __future__ import annotations
 import itertools
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -877,6 +878,42 @@ def test_filled_depth_is_what_a_box_is_placed_off(store: SqliteStore) -> None:
     got = frames.depth(CAMERA, 10.0)
     assert got is not None and np.allclose(got, 2.5), "metres, from the filled stream"
     assert frames.depth(CAMERA, 30.0) is None, "and only where a filled frame exists"
+
+
+def test_the_fill_pass_only_visits_the_frames_that_were_embedded(store: SqliteStore) -> None:
+    """Filling costs fifty milliseconds a frame, so it must not visit every frame.
+
+    A box is only ever placed off a frame that was embedded -- grocery embedded 3462 of
+    its 24110 colour frames -- and walking the rest is twenty minutes spent on frames
+    nothing will ever ask about.
+    """
+    from dimos.mapping.hyperspace.ingest import _colour_at, embedded_stamps
+
+    ingestor = fill(store, ring(4, 2.5), flat=True)
+    stamps = embedded_stamps(store)
+    assert len(stamps) == ingestor.stats["kept"], "one stamp per embedded frame"
+    assert stamps == sorted(stamps)
+
+    class Colours:
+        """Stands in for the colour stream: one frame every tenth of a second."""
+
+        def __init__(self) -> None:
+            self.asked: list[float] = []
+
+        def at(self, ts: float, tolerance: float) -> Colours:
+            self.asked.append(ts)
+            self.window = (ts, tolerance)
+            return self
+
+        def to_list(self) -> list[SimpleNamespace]:
+            ts, tolerance = self.window
+            every = [10.0 + tenth / 10.0 for tenth in range(41)]
+            return [SimpleNamespace(ts=at) for at in every if abs(at - ts) <= tolerance]
+
+    colours = Colours()
+    got = [float(found.ts) for found in _colour_at(colours, stamps)]
+    assert got == stamps, "the embedded frame itself, not a neighbour"
+    assert colours.asked == stamps, "and nothing else was read"
 
 
 def test_the_resident_index_carries_everything_a_patch_is_placed_by(

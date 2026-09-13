@@ -99,6 +99,38 @@ def filled_stream_for(slug: str = "") -> str:
     return FILLED_STREAM if not slug else f"{FILLED_STREAM}__{slug}"
 
 
+def _colour_at(colours: Any, stamps: Sequence[float], tolerance: float = 0.01) -> Any:
+    """The colour observation taken at each of these stamps, in order.
+
+    The stamps came off frames of this very stream, so the match is exact in all but
+    float rounding -- the tolerance is there for rounding, not for pairing.
+    """
+    for ts in stamps:
+        near = colours.at(ts, tolerance=tolerance).to_list()
+        if near:
+            yield min(near, key=lambda found: abs(float(found.ts) - ts))
+
+
+def embedded_stamps(store: Any) -> list[float]:
+    """When every frame an index in this store embedded was taken.
+
+    One row per embedding frame lands in the depth-thumbnail stream, so that is where
+    the answer is; the union across indexes, because a db can hold several and they do
+    not have to have kept the same frames.
+    """
+    seen: dict[int, float] = {}
+    for slug in indexes_in(store) or {"": ""}:
+        name = thumbnail_stream_for(slug)
+        if name not in store.list_streams():
+            continue
+        for observation in store.stream(name, dict).order_by("ts"):
+            ts = float(observation.ts)
+            # A microsecond is finer than any two frames are apart, so this only ever
+            # folds together two indexes' record of ONE photograph.
+            seen.setdefault(round(ts * 1e6), ts)
+    return sorted(seen.values())
+
+
 def fill_depth(
     recording: Any,
     *,
@@ -107,20 +139,25 @@ def fill_depth(
     color_stream: str = "color_image",
     depth_stream: str = "depth_image",
     every: int = 1,
+    everywhere: bool = False,
     on_frame: Any = None,
 ) -> int:
-    """Write filled depth for a recording's colour frames, once, into the recording.
+    """Write filled depth for a recording's embedding frames, once, into the recording.
 
     A box is placed off whatever the stereo returned, and off glass or a dark shelf it
     returns nothing -- which is how a basket ends up metres past where it is. Filling
     the holes costs about fifty milliseconds a frame, far too much to pay while someone
     waits for an answer and nothing at all to pay once.
 
+    Only the frames that were embedded, because those are the only frames a box is ever
+    placed off -- grocery has 24110 colour frames and 3462 of them are embedded, so this
+    is twenty minutes against three. Pass `everywhere` to fill the whole colour stream
+    anyway, which is what a recording with no index yet gets.
+
     Live, the `depth2depth` module does this as the robot drives and the recorder keeps
     it. This is the same thing after the fact, for a recording that was made without it.
     """
     from dimos.mapping.hyperspace.module import depth2depth_model_of
-    from dimos.msgs.sensor_msgs.Image import Image
     from dimos.perception.depth2depth.fusion import Depth2Depth
 
     name = filled_stream_for("")
@@ -132,11 +169,23 @@ def fill_depth(
     fuser.start()
     logger.info(f"hyperspace: filling depth with {fuser.model_name} on {fuser.device}")
 
-    depths = recording.stream(depth_stream, Image)
+    # By the stream's own declared type, never Image: grocery's colour is
+    # CompressedImage and asking for the wrong one is refused outright.
+    colours = recording.streams[color_stream]
+    depths = recording.streams[depth_stream]
+    wanted = [] if everywhere else embedded_stamps(recording)
+    if wanted:
+        logger.info(f"hyperspace: {len(wanted)} embedding frames to fill")
+        chosen: Any = _colour_at(colours, wanted)
+    else:
+        chosen = (
+            observation
+            for index, observation in enumerate(colours.order_by("ts"))
+            if not index % max(1, every)
+        )
+
     written = 0
-    for index, observation in enumerate(recording.stream(color_stream, Image).order_by("ts")):
-        if index % max(1, every):
-            continue
+    for observation in chosen:
         colour = decoded(observation.data)
         ts = float(observation.ts)
         near = depths.at(ts, tolerance=0.05).to_list()
