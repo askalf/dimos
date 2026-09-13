@@ -42,6 +42,8 @@ from dimos.mapping.hyperspace.detect import (
     find,
     merge_duplicates,
     object_points,
+    place_of,
+    spread_by_place,
 )
 from dimos.mapping.hyperspace.frames import Episode, Frame, Hit, episodes, ranked_episodes
 from dimos.memory.codecs.lcm import LcmCodec
@@ -509,6 +511,72 @@ def test_one_image_is_still_one_pass() -> None:
     boxes._detector = detector
     assert boxes.best(object(), "a square") is None  # type: ignore[arg-type]
     assert detector.passes == [1]
+
+
+class PlacesAt:
+    """`RecordingFrames`' pose lookup, with the answer chosen by the test.
+
+    `spread_by_place` asks nothing else of a recording, so standing in for that one
+    method keeps the ordering under test instead of the fixture's transforms.
+    """
+
+    def __init__(self, by_ts: dict[float, tuple[float, float, float] | None]) -> None:
+        self.by_ts = by_ts
+
+    def pose(self, camera_frame: str, ts: float, world_frame: str):  # type: ignore[no-untyped-def]
+        del camera_frame, world_frame
+        where = self.by_ts.get(round(ts, 3))
+        if where is None:
+            return None
+        pose = np.eye(4)
+        pose[:3, 3] = where
+        return pose
+
+
+def two_looks_each_at_two_places() -> tuple[list[Episode], PlacesAt]:
+    """Four episodes: near, near again, far, far again -- strongest first."""
+    made = [
+        Episode(frames=[frame_at(10.0, 0.9)]),
+        Episode(frames=[frame_at(10.5, 0.8)]),
+        Episode(frames=[frame_at(30.0, 0.4)]),
+        Episode(frames=[frame_at(30.5, 0.3)]),
+    ]
+    return made, PlacesAt({10.0: (0, 0, 0), 10.5: (0.1, 0, 0), 30.0: (9, 0, 0), 30.5: (9.1, 0, 0)})
+
+
+def test_one_look_at_each_place_before_a_second_look_at_any() -> None:
+    """Strongest-first would detect both looks at the near thing before seeing the far.
+
+    That is how a real second cone went unanswered while the first collected seven
+    boxes: the budget was spent on the loudest place rather than on distinct ones.
+    """
+    made, frames = two_looks_each_at_two_places()
+    config = DetectConfig(world_frame=WORLD, place_radius_m=0.75)
+    ordered = spread_by_place(made, frames, config=config)  # type: ignore[arg-type]
+    assert [episode.peak.ts for episode in ordered] == [10.0, 30.0, 10.5, 30.5]
+
+
+def test_without_spreading_the_loudest_place_takes_the_whole_budget() -> None:
+    """The behaviour being replaced, stated so the fix cannot be mistaken for a no-op."""
+    made, _ = two_looks_each_at_two_places()
+    assert [episode.peak.ts for episode in made] == [10.0, 10.5, 30.0, 30.5]
+    assert [episode.peak.ts for episode in made][:2] == [10.0, 10.5], "both at one place"
+
+
+def test_an_unplaceable_episode_keeps_its_turn() -> None:
+    """Not knowing where an episode is says nothing about whether it is worth detecting."""
+    made = [Episode(frames=[frame_at(10.0, 0.9)]), Episode(frames=[frame_at(30.0, 0.8)])]
+    frames = PlacesAt({10.0: (0, 0, 0), 30.0: None})
+    ordered = spread_by_place(made, frames, config=DetectConfig(world_frame=WORLD))  # type: ignore[arg-type]
+    assert len(ordered) == 2, "nothing was dropped for being unplaceable"
+    assert place_of(ordered[1], frames, WORLD) is None  # type: ignore[arg-type]
+
+
+def test_spreading_never_changes_which_episodes_exist() -> None:
+    """It is an ordering. Every episode in, every episode out, exactly once."""
+    made, frames = two_looks_each_at_two_places()
+    ordered = spread_by_place(made, frames, config=DetectConfig(world_frame=WORLD))  # type: ignore[arg-type]
+    assert sorted(id(episode) for episode in ordered) == sorted(id(episode) for episode in made)
 
 
 def test_geometry_matches_a_hand_computation() -> None:

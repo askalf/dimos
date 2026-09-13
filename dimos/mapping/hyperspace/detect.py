@@ -73,6 +73,17 @@ class DetectConfig:
     # The knob stays because a CUDA box with headroom is the case where it should win;
     # raise it there and measure before believing it.
     batch: int = 1
+    # Episodes considered before the strongest `max_episodes` of them are detected.
+    # Only bounds the work of placing them; a query with more candidates than this is
+    # already answering about a very common thing.
+    episode_pool: int = 500
+    # Group candidate episodes by roughly where they are and give every group a look
+    # before any group gets a second one. Off means strongest-first, which spends the
+    # detector on four looks at the nearest chair before it has seen the far one.
+    spread_places: bool = True
+    # How close two episodes have to be to count as the same place for that ordering.
+    # The same radius answers are merged at, so the ordering and the merge agree.
+    place_radius_m: float = 0.75
     # Episodes to run the detector over at all, strongest first. Detection is ~0.7 s a
     # frame, so this is the knob that decides what a query costs.
     max_episodes: int = 12
@@ -456,6 +467,74 @@ class _Try:
         return self.answer or self.flat or self.detection
 
 
+def place_of(
+    episode: Episode, frames: RecordingFrames, world_frame: str
+) -> NDArray[np.float64] | None:
+    """Roughly where an episode's match is, before any detector has looked at it.
+
+    A hot patch already carries the ray through its cell and the depth the sensor read
+    there, which is all the dense path ever had; one transform puts it in the world.
+    Rough on purpose -- it exists to tell two places apart, not to answer with.
+    """
+    peak = episode.peak
+    usable = sorted(
+        (hit for hit in peak.hits if np.isfinite(hit.depth) and hit.depth > 0),
+        key=lambda hit: -hit.score,
+    )[:5]
+    if not usable:
+        return None
+    here = np.median(
+        [[hit.ray[0] * hit.depth, hit.ray[1] * hit.depth, hit.depth] for hit in usable], axis=0
+    )
+    pose = frames.pose(peak.frame, peak.ts, world_frame)
+    if pose is None:
+        return None
+    return np.asarray(pose @ np.append(here, 1.0))[:3]
+
+
+def spread_by_place(
+    episodes: Sequence[Episode], frames: RecordingFrames, *, config: DetectConfig
+) -> list[Episode]:
+    """Order episodes so every place gets a look before any place gets a second one.
+
+    Strongest-first spends the detector on whatever the camera saw most of: on
+    sf_office, seven of twelve cone episodes were the same cone, while a second cone
+    across the room never got a look. Grouping by where the patches say they are and
+    taking one from each group in turn buys distinct answers with the same budget.
+
+    Only the order changes. An episode the grouping gets wrong is detected sooner or
+    later than it would have been, which is a different thing from being dropped, and
+    the grouping leans on patch depth -- reliable up close, not at ten metres.
+    """
+    places = [place_of(episode, frames, config.world_frame) for episode in episodes]
+    groups: list[list[int]] = []
+    centres: list[NDArray[np.float64] | None] = []
+    for index, here in enumerate(places):
+        joined = False
+        if here is not None:
+            for group, centre in zip(groups, centres, strict=True):
+                if centre is None:
+                    continue
+                if float(np.linalg.norm(here - centre)) <= config.place_radius_m:
+                    group.append(index)
+                    joined = True
+                    break
+        if not joined:
+            # An episode we could not place is its own group rather than dropped: not
+            # knowing where it is says nothing about whether it is worth detecting.
+            groups.append([index])
+            centres.append(here)
+
+    # The episodes arrive strongest-first, so the groups are already in that order and
+    # so is each group's own list.
+    ordered: list[Episode] = []
+    for round_ in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if round_ < len(group):
+                ordered.append(episodes[group[round_]])
+    return ordered
+
+
 def detect_episodes(
     episodes: Sequence[Episode],
     query: str,
@@ -684,8 +763,12 @@ def find(
         matched,
         gap_s=config.episode_gap_s,
         min_frames=config.min_episode_frames,
-        limit=config.max_episodes,
+        limit=config.episode_pool if config.spread_places else config.max_episodes,
     )
+    if config.spread_places:
+        # Ordered before it is cut, or the cut is what decides which places are seen.
+        found = spread_by_place(found, frames, config=config)
+    found = found[: config.max_episodes]
     if timings is not None:
         timings["episodes"] = time.monotonic() - at
     at = time.monotonic()
