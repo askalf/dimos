@@ -37,6 +37,19 @@ POSITION_TOLERANCE = 0.0003
 ORIENTATION_TOLERANCE = 0.003
 
 
+def bounded_joint_positions(
+    positions: NDArray[np.float64], lower: NDArray[np.float64], upper: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Remove sub-microradian IK rounding at a stop; reject actual limit violations."""
+    if (
+        not np.all(np.isfinite(positions))
+        or np.any(positions < lower - 1e-6)
+        or np.any(positions > upper + 1e-6)
+    ):
+        raise RuntimeError("SDK pose solution exceeds conservative joint limits")
+    return np.clip(positions, lower, upper)
+
+
 class HomeKinematics:
     """Share the SDK's URDF, planning groups and Pink solver with the MuJoCo task.
 
@@ -150,6 +163,13 @@ class HomeKinematics:
                 f"position error={result.position_error:.6f} m, orientation error={result.orientation_error:.6f} rad"
             )
         positions = dict(zip(result.joint_state.name, result.joint_state.position, strict=True))
+        columns = [self.config.joint_names.index(name) for name in result.joint_state.name]
+        bounded = bounded_joint_positions(
+            np.asarray(result.joint_state.position, dtype=np.float64),
+            self.lower[columns],
+            self.upper[columns],
+        )
+        positions.update(zip(result.joint_state.name, bounded, strict=True))
         return np.array(
             [
                 positions.get(name, float(data.joint(name).qpos[0]))

@@ -29,6 +29,8 @@ Tracking diagnostics initially included a NumPy boolean that JSON could not seri
 
 `delivery-v16` exposed a real frame bug in the inherited cargo monitor: it compared world-frame TCP/object offsets across a turn. The bottle remained in the right hand; world offset changed 15.49 mm, but gripper-frame offset changed only 0.64 mm. Inventory now adds `tcp_offset_local`, and slip checks use that field. The existing world-frame field remains available for reachability calculations. Two tests (one per hand) rotate/translate held cargo without reporting slip, then inject actual 20 mm relative motion and require rejection. Twenty-one related state/reachability/execution tests pass. Current native rerun: `grip-frame-delivery-status.json`, supervisor PID3522263, case `delivery-v17`. This is the only full test stack; prior supervisors have completed.
 
+`delivery-v17` completed pick, dining navigation and placement. Its re-pick then stopped because the inactive left elbow was 9.2e-8 rad outside the SDK's conservative limit. Solver outputs and full posture goals now normalize at most 1e-6 rad of numerical overshoot; larger violations and non-finite values are rejected. The exact saved failed goal passes SDK collision-checked planning in 0.024 seconds (`limit-replay.log`). Five boundary regressions and mypy on both changed sources pass. Current detached run: `limit-delivery-status.json`, supervisor PID3536109, case `delivery-v18`, same six-action delivery. No other full validation stack is running.
+
 The entries below are chronological history and include superseded tuning values and completed process IDs.
 
 ## Current implementation (under validation; not promoted)

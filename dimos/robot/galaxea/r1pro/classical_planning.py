@@ -33,6 +33,7 @@ from dimos.manipulation.planning.planners.rrt_planner import RRTConnectPlanner
 from dimos.manipulation.planning.spec.protocols import WorldSpec
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.robot.galaxea.r1pro.home_kinematics import bounded_joint_positions
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
 from dimos.robot.galaxea.r1pro.object_primitives import ARMS, Arm, active_indices
 from dimos.robot.galaxea.r1pro.object_reachability import ObjectReachability, stance_candidates
@@ -489,7 +490,12 @@ class ClassicalGraspPlanner(ObjectReachability):
         kin = self.kinematics
         start = kin.seed(self.probe)
         mapping = dict(zip(R1PRO_PICK_PLACE_JOINTS, positions, strict=True))
-        goal = JointState(name=start.name, position=[mapping[name] for name in start.name])
+        goal = JointState(
+            name=start.name,
+            position=bounded_joint_positions(
+                np.array([mapping[name] for name in start.name]), kin.lower, kin.upper
+            ).tolist(),
+        )
         selection = PlanningGroupSelection.from_groups(
             tuple(kin.groups[name] for name in ("torso", "left_arm", "right_arm"))
         )
