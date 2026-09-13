@@ -392,3 +392,45 @@ orders, requested cross-table hands, unloading, and the far-table region.
 No external LLM is called and no checkpoint is automatically promoted.
 The source integration branch has advanced locally; origin/feat/r1pro-act-sim
 remains at 389632263b. Do not claim the new policies are ready until evaluated.
+
+### September 12: interactive refinement completed; positioning regression fixed
+
+`primitive-interactive-refine-v1` finished all four 2,000-update refinements.
+Collection accepted 35 pick/place pairs: 17 right, 18 left; 14 pairs included
+an object already held by the other hand. Previous datasets and initial models
+remain intact. No new policy was promoted to the preview.
+
+Its fresh offline evaluation completed 3/8 sequences on 361000..361003.
+Four cases (361000 and 361002, both arms) failed during base positioning before
+ACT started. All four picks that actually ran passed; one right-hand table
+placement stalled with the jaws closed. These seeds differ from the earlier
+7/8 result, so the raw totals do not establish a model regression.
+
+The extended local HTTP MCP/DimOS evaluation completed 3/7 full scenarios.
+Requested right-hand and left-hand cross-table pick/place cases both passed,
+as did right pick followed by custom far-table placement. In the longer right
+sequence, loading the tray and picking the object back out passed, but the
+final table placement stalled closed. The ordinary left pick and both two-hand
+orders failed: missed/unstable grasps or insufficient lift. One left grasp
+briefly met the lift condition then slipped immediately after stopping ACT;
+the completion guard correctly rejected it. The evidence does not yet show
+whether stopping contributed to the unstable grasp. Logs and action histories
+are in `primitive-interactive-refine-native-v1/validation`.
+
+Reproduced the four base failures using the original saved scenes. Every
+nominal/nearby pose collided with the table/tray, while standing farther back
+was clear. Expanded candidate search to include 48--52 cm forward target reach,
+retaining the existing nominal and nearby choices, full collision checks, and
+ten-second planning limit. This keeps forward positioning for far-table goals.
+All four previously blocked cases now physically preposition successfully;
+reports are `/tmp/primitive-route-diagnosis/results.json` (before) and
+`fixed.json` (after). Fourteen transport regression tests passed, including
+both-arm coverage for this case; changed-source typing and lint checks passed.
+
+Next verification is a detached matched evaluation in
+`jobs/primitive-positioning-matched-v1`: previous place-refinement policies
+versus the new interactive-refinement policies, same 361000..361003 layouts,
+same task ordering, 30 action steps, and the corrected positioning search.
+This is evaluation only. Check its status.json and each result.json; do not
+interpret a completed training job as an approved interactive release.
+Left grasp stability, two-hand sequences and reliable release remain open.
