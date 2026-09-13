@@ -107,6 +107,27 @@ class ResidentPatches:
         return picked, found[picked]
 
 
+def _warn_if_it_will_not_fit(tag: str, rows: int, width: int) -> None:
+    """Say so before spending minutes on a read that ends in a swap storm.
+
+    Not a refusal: how much of a machine an index may have is the caller's business,
+    and a model that only just fits is a normal thing to want. But finding out by
+    watching the machine die is not, so the number goes in the log first.
+    """
+    wanted = rows * width * 4
+    try:
+        import psutil
+
+        free = int(psutil.virtual_memory().available)
+    except Exception:
+        return
+    if wanted > free * 0.8:
+        logger.warning(
+            f"hyperspace: {tag} wants {wanted / 1e9:.1f} GB resident and this machine has "
+            f"{free / 1e9:.1f} GB free -- expect swapping, or pass --no-resident"
+        )
+
+
 def _vectors_of(conn: Any, stream: str, width: int, rows: int) -> NDArray[np.float32]:
     """Read a whole vec0 table into one array, in rowid order.
 
@@ -135,6 +156,11 @@ def load(store: Any, tag: str, stream: str) -> ResidentPatches:
     the vector table; the rest comes from the same rows' payloads, which are cheap
     (about six microseconds each) next to the vectors.
     """
+    # Reaching past the Stream for the backend and the connection. There is no public
+    # way to read a whole vector table or to fetch a payload by id -- `Stream.filter` is
+    # a python predicate over everything, which is worse than what this replaces -- and
+    # `stored_vectors` in frames.py already does the same. Worth a public accessor if
+    # anything else comes to want one.
     backend = store.stream(stream, dict)._source
     blobs, codec = backend.blob_store, backend.codec
     conn = store._registry_conn
@@ -149,6 +175,7 @@ def load(store: Any, tag: str, stream: str) -> ResidentPatches:
     probe = conn.execute(f'SELECT embedding FROM "{stream}_vec" LIMIT 1').fetchone()
     width = len(np.frombuffer(probe[0], dtype=np.float32))
 
+    _warn_if_it_will_not_fit(tag, rows, width)
     vectors = _vectors_of(conn, stream, width, rows)
     read = time.monotonic() - started
 
