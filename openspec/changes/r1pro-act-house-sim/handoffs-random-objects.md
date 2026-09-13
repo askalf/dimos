@@ -778,13 +778,20 @@ Actual deployments with the unchanged ACT weights:
   (0.3200, -0.5000, 0.7585); maximum joint error was 0.0059 rad. Left staging
   error was 0.0080 rad. Both ACT picks still timed out. Planned placements were
   not reached. These fixes do not establish grasp reliability.
-- `apartment-posture-retest-v3`: isolated diagnostic comparison, currently running
-  as detached PID 3180144. Copied artifacts use measured simulator joint limits
+- `apartment-posture-retest-v3`: isolated diagnostic comparison completed. Both
+  hands reached the assessed pose (maximum joint error 0.0090/0.0092 rad), but both
+  ACT picks timed out. Copied artifacts use measured simulator joint limits
   for action clipping. Original weights/artifacts are unchanged, as are copied
   normalization means/stds. Copies are marked `DIAGNOSTIC_ONLY.txt` and must not
   be promoted. The original right-pick action range caps joint 1 at -0.0885 rad,
   while the assessed valid starting pose has joint 1 at +0.0493 rad. This is a
-  concrete deployment constraint; the comparison must establish its effect.
+  concrete deployment constraint, but removing that clipping did not recover
+  either grasp. Keep this change diagnostic; it has not been applied to the
+  user's preview or production backend.
+
+Verified fixes and regression tests are committed locally as `5b9b738965`, with
+no coauthor trailer and no push. All three comparison jobs have finished and
+their workers shut down. The user's separate desktop process was not stopped.
 
 The user requested a smaller grasp learning problem: DimOS geometry, reachability,
 and classical approach to a measured pregrasp, followed by a short ACT contact,
