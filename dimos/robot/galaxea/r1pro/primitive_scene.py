@@ -61,7 +61,7 @@ def bilateral_layout(layout: ObjectLayout) -> ObjectLayout:
 
 
 def prepare_primitive_scene(
-    output: Path, layout: ObjectLayout, arm: Arm
+    output: Path, layout: ObjectLayout, arm: Arm, *, scene_package: Path | None = None
 ) -> tuple[Path, ObjectLayout]:
     """A symmetric physical bench overlay; only initial scene generation mirrors objects."""
     if arm == "left":
@@ -72,7 +72,7 @@ def prepare_primitive_scene(
                 for o in layout.objects
             ),
         )
-    scene = prepare_object_scene(output, layout)
+    scene = prepare_object_scene(output, layout, scene_package=scene_package)
     tree = ET.parse(scene)
     root = tree.getroot()
     table = root.find('.//body[@name="task_table"]')
@@ -88,10 +88,10 @@ def prepare_primitive_scene(
     return scene, layout
 
 
-def choose_placement(
+def placement_options(
     task: PrimitivePlacementContext, destination: str | PlacementRegion, seed: int | None
-) -> tuple[NDArray[np.float64], PlacementRegion]:
-    """Geometric placement, then prepositioning; no extra ACT command is inferred."""
+) -> tuple[tuple[tuple[float, float, float], ...], PlacementRegion]:
+    """Empty supported object goals, before any reachability or base-path search."""
     if isinstance(destination, PlacementRegion):
         region = destination
     elif destination == "tray":
@@ -143,16 +143,26 @@ def choose_placement(
         points = tuple(p for p in points if np.linalg.norm(np.asarray(p[:2]) - source[:2]) >= 0.045)
     if not points:
         raise RuntimeError("No empty placement region with object and open-finger clearance")
+    return points, region
+
+
+def choose_placement(
+    task: PrimitivePlacementContext, destination: str | PlacementRegion, seed: int | None
+) -> tuple[NDArray[np.float64], PlacementRegion]:
+    """Geometric placement, then prepositioning; no extra ACT command is inferred."""
+    points, region = placement_options(task, destination, seed)
     first = 0 if seed is None else int(np.random.default_rng(seed).integers(len(points)))
     scene = PrimitiveSceneState(task.model, task.data, task.layout, task.home)
     planner = scene.transport_planner()
+    base = task.data.body("base_link")
+    yaw = float(np.arctan2(base.xmat[3], base.xmat[0]))
     # An empty object footprint may still leave the carrying posture in a
     # collision. Try the other empty spots before rejecting the entire region.
     for offset in range(len(points)):
         target = np.asarray(points[(first + offset) % len(points)])
         if any(
             planner.clear_pose_segment(pose, pose)
-            for pose in scene.preposition_poses(task.arm, target)
+            for pose in scene.preposition_poses(task.arm, target, yaw=yaw)
         ):
             return target, region
     raise RuntimeError("No empty placement spot has a clear carrying pose in this region")

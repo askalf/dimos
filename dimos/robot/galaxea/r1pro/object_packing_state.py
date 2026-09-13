@@ -95,26 +95,37 @@ class ObjectPackingState:
         relative = rotation.T @ (body.xpos - tray.xpos)
         extent = object_extent(obj, rotation.T @ body.xmat.reshape(3, 3))
         geoms = set(map(int, np.flatnonzero(self.model.geom_bodyid == body.id)))
-        touching = set()
-        supported = False
-        supports = set()
+        pad_forces: dict[int, float] = {}
+        support_forces: dict[int, float] = {}
         force = np.zeros(6)
         for i, contact in enumerate(self.data.contact):
             first, second = map(int, contact.geom)
             if contact.dist > 0 or not geoms.intersection((first, second)):
                 continue
             mujoco.mj_contactForce(self.model, self.data, i, force)
-            if force[0] < 0.02:
+            if force[0] <= 0:
                 continue
             other = second if first in geoms else first
             if other in self.pad_ids:
-                touching.add(other)
+                pad_forces[other] = pad_forces.get(other, 0.0) + float(force[0])
             normal = contact.frame[:3] * (1 if second in geoms else -1)
-            supported |= self.model.geom_bodyid[other] == tray.id and normal[2] > 0.7
             if normal[2] > 0.7 and int(
                 self.model.geom_bodyid[other]
             ) not in self.guard.robot_bodies - self.guard.cargo_ids - {self.guard.tray_id}:
-                supports.add(self.model.geom(other).name or f"geom:{other}")
+                support_forces[other] = support_forces.get(other, 0.0) + float(force[0])
+        # A hollow cup spreads its load over many small wall/floor contacts.
+        # Apply the force threshold to the combined physical support or pad,
+        # rather than incorrectly treating every small contact as unsupported.
+        touching = {gid for gid, force in pad_forces.items() if force >= 0.02}
+        supports = {
+            self.model.geom(gid).name or f"geom:{gid}"
+            for gid, force in support_forces.items()
+            if force >= 0.02
+        }
+        supported = any(
+            self.model.geom_bodyid[gid] == tray.id and force >= 0.02
+            for gid, force in support_forces.items()
+        )
         inside = bool(
             np.all(np.abs(relative[:2]) + extent[:2] < OBJECT_TRAY_HALF_SIZE)
             and abs(relative[2] - extent[2] - 0.015) < 0.008
@@ -192,7 +203,11 @@ class ObjectPackingState:
             and row["position"][2] - self.initial_height >= 0.10
         )
 
-    def goal(self) -> NDArray[np.float32]:
+    def goal(self, *, neighbor_distance: float | None = None) -> NDArray[np.float32]:
+        if neighbor_distance is not None and (
+            not np.isfinite(neighbor_distance) or neighbor_distance <= 0
+        ):
+            raise ValueError("Policy neighbor distance must be finite and positive")
         base = self.data.body("base_link")
         rotation = base.xmat.reshape(3, 3)
         tcp = self.data.site(f"{self.arm}_tcp").xpos
@@ -214,6 +229,8 @@ class ObjectPackingState:
             if i != self.selected:
                 b = self.data.body(other.name)
                 position = rotation.T @ (b.xpos - tcp)
+                if neighbor_distance is not None and np.linalg.norm(position) > neighbor_distance:
+                    continue
                 extent = object_extent(other, rotation.T @ b.xmat.reshape(3, 3))
                 neighbors.append([1.0, *map(float, position), *map(float, extent)])
         neighbors.sort(key=lambda row: tuple(row[1:4]))

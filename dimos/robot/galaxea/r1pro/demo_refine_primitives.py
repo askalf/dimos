@@ -25,6 +25,7 @@ from typing import Any
 from dimos.robot.galaxea.r1pro.demo_collect_objects import save_manifest
 from dimos.robot.galaxea.r1pro.object_primitives import ARMS, PRIMITIVES
 from dimos.robot.galaxea.r1pro.primitive_training_job import TrainingStages
+from dimos.robot.galaxea.r1pro.primitive_workspace import save_workspaces
 
 
 def merge_demonstrations(rehearsal: Path, corrections: Path, output: Path) -> None:
@@ -91,6 +92,16 @@ def run(args: argparse.Namespace) -> None:
     if args.approach_corrections:
         contract["approach_corrections"] = True
     train_all = args.interactive_context or args.approach_corrections
+    collection_dir = args.collection.resolve() if args.collection else job / "collection"
+    if args.collection:
+        contract["collection"] = str(collection_dir)
+        contract["collection_hashes"] = {
+            f"{primitive}-{arm}": hashlib.sha256(
+                (collection_dir / f"{primitive}-{arm}/manifest.json").read_bytes()
+            ).hexdigest()
+            for primitive in PRIMITIVES
+            for arm in ARMS
+        }
     settings = job / "settings.json"
     if settings.exists() and json.loads(settings.read_text()) != contract:
         raise ValueError("Resume settings or source policies differ")
@@ -118,31 +129,32 @@ def run(args: argparse.Namespace) -> None:
                 str(args.action_steps),
             ]
         )
-        stage(
-            "collect",
-            [
-                *collection,
-                "--output",
-                str(job / "collection"),
-                "--layouts",
-                str(args.layouts),
-                "--start-seed",
-                str(args.start_seed),
-            ],
-        )
+        if args.collection is None:
+            stage(
+                "collect",
+                [
+                    *collection,
+                    "--output",
+                    str(collection_dir),
+                    "--layouts",
+                    str(args.layouts),
+                    "--start-seed",
+                    str(args.start_seed),
+                ],
+            )
         for primitive, arm in (
             (p, a) for a in ARMS for p in (PRIMITIVES if train_all else ("place",))
         ):
             name = f"{primitive}-{arm}"
             if train_all:
-                fresh = json.loads((job / "collection" / name / "manifest.json").read_text())
+                fresh = json.loads((collection_dir / name / "manifest.json").read_text())
                 held_examples = sum(bool(row.get("other_hand_object")) for row in fresh["episodes"])
                 if held_examples < 4:
                     raise ValueError(
                         f"Need at least four other-hand-held demonstrations for {name}"
                     )
             merged = job / "merged" / name
-            merge_demonstrations(args.rehearsal / name, job / "collection" / name, merged)
+            merge_demonstrations(args.rehearsal / name, collection_dir / name, merged)
             dataset, initialization, training = (
                 job / parent / name for parent in ("datasets", "initializations", "training")
             )
@@ -230,6 +242,8 @@ def run(args: argparse.Namespace) -> None:
                         str(args.action_steps),
                     ],
                 )
+        if train_all:
+            save_workspaces(job / "merged", job / "policies/workspace.json")
         stage(
             "evaluate",
             [
@@ -279,6 +293,11 @@ def main() -> None:
     parser.add_argument("--evaluation-seed", type=int, default=352000)
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--action-steps", type=int, default=30)
+    parser.add_argument(
+        "--collection",
+        type=Path,
+        help="Use an already completed verified correction collection; originals are retained",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--interactive-context", action="store_true")
     mode.add_argument("--approach-corrections", action="store_true")

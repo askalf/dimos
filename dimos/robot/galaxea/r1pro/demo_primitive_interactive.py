@@ -25,6 +25,9 @@ import requests
 
 from dimos.constants import RECORDINGS_DIR
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
+from dimos.robot.galaxea.r1pro.apartment_blueprint import build_apartment_blueprint
+from dimos.robot.galaxea.r1pro.apartment_sim import R1ProApartmentSim
+from dimos.robot.galaxea.r1pro.apartment_skills import R1ProApartmentSkills
 from dimos.robot.galaxea.r1pro.primitive_blueprint import build_primitive_blueprint
 from dimos.robot.galaxea.r1pro.primitive_sim import R1ProPrimitiveSim
 from dimos.robot.galaxea.r1pro.primitive_skills import R1ProPrimitiveSkills
@@ -33,7 +36,10 @@ from dimos.robot.galaxea.r1pro.sim_session import reserve_demo_session
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     args.output.mkdir(parents=True, exist_ok=True)
-    source = build_primitive_blueprint(args.policies)
+    apartment = getattr(args, "apartment", False)
+    sim_class = R1ProApartmentSim if apartment else R1ProPrimitiveSim
+    skills_class = R1ProApartmentSkills if apartment else R1ProPrimitiveSkills
+    source = (build_apartment_blueprint if apartment else build_primitive_blueprint)(args.policies)
     atoms = tuple(
         replace(
             a,
@@ -46,10 +52,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         occupied=args.occupied,
                         headless=not args.viewer,
                         bilateral_layout=not args.right_layout,
+                        **(
+                            {"scene_package": args.scene_package}
+                            if getattr(args, "scene_package", None)
+                            else {}
+                        ),
                     )
-                    if a.module is R1ProPrimitiveSim
+                    if a.module is sim_class
                     else dict(action_timeout=args.action_timeout)
-                    if a.module is R1ProPrimitiveSkills
+                    if a.module is skills_class
                     else {}
                 ),
             },
@@ -103,17 +114,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         raise RuntimeError(f"Placement region refused: {defined}")
                 for command in args.actions:
                     primitive, arm, target = command.split(":", 2)
-                    if primitive not in ("pick", "place"):
-                        raise ValueError("Actions use pick:arm:object or place:arm:region")
+                    if primitive not in ("pick", "place", "go") or (
+                        primitive == "go" and not apartment
+                    ):
+                        raise ValueError(
+                            "Actions use pick:arm:object, place:arm:region, or apartment go:arm:region"
+                        )
                     accepted = call(
-                        f"{primitive}_object",
-                        {"arm": arm, "object" if primitive == "pick" else "region": target},
+                        "go_to" if primitive == "go" else f"{primitive}_object",
+                        {"destination": target}
+                        if primitive == "go"
+                        else {"arm": arm, "object" if primitive == "pick" else "region": target},
                     )
                     row = dict(command=command, accepted=accepted)
                     report["actions"].append(row)
                     if not accepted["accepted"]:
                         raise RuntimeError(f"Action refused: {accepted}")
-                    deadline = time.monotonic() + 240
+                    deadline = time.monotonic() + (600 if apartment else 240)
                     while True:
                         outcome = call("wait_for_action", {"seconds": 20})
                         if outcome["state"] != "running":
@@ -141,7 +158,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 report["success"] = True
                 if args.stay_open:
                     print("Actions complete. Close the viewer or press Ctrl-C to stop.", flush=True)
-                    sim = coordinator.get_instance(R1ProPrimitiveSim)
+                    sim = coordinator.get_instance(sim_class)
                     while sim.is_simulation_running():
                         time.sleep(0.5)
         except Exception as exc:
@@ -163,6 +180,8 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=340000)
+    parser.add_argument("--apartment", action="store_true")
+    parser.add_argument("--scene-package", type=Path)
     parser.add_argument("--occupied", type=int, default=0)
     parser.add_argument("--right-layout", action="store_true")
     parser.add_argument("--viewer", action="store_true")

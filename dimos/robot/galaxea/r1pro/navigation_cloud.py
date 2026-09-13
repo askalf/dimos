@@ -38,7 +38,17 @@ def environment_cloud(
     """
     if not 0.01 <= spacing <= 0.1:
         raise ValueError("Map spacing must be between 1 and 10 cm")
-    excluded = {model.body(name).id for name in ("base_link", "task_bin", *PACKING_BODIES)}
+    # Primitive scenes have task_object_* props instead of the five legacy
+    # packing bottles. All free bodies are movable scene state, not static map.
+    excluded = {
+        i
+        for i in range(model.nbody)
+        if model.body(i).name in ("base_link", "task_bin", *PACKING_BODIES)
+        or (
+            model.body_jntnum[i] > 0
+            and model.jnt_type[model.body_jntadr[i]] == mujoco.mjtJoint.mjJNT_FREE
+        )
+    }
     for body in range(model.nbody):
         if int(model.body_parentid[body]) in excluded:
             excluded.add(body)

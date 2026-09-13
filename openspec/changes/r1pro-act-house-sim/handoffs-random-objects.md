@@ -546,3 +546,87 @@ eight-case held-out evaluation, and seven integrated DimOS/MCP cases. The old
 policies scored 3/8 on this round's fresh 371000..371003 baseline; the new
 policies have not yet been evaluated. Earlier 4/8 results used different seeds.
 Preview artifacts and the remote branch have not been promoted or replaced.
+
+### September 13: apartment reachability integration, not yet a working ACT demo
+
+User requirement remains an interactive randomized apartment with both grasping
+and placement on ACT, explicit or automatically selected hands, independent
+pick/hold and place/release, and DimOS locomomanipulation/navigation between
+supports. The latest direction adds physical reachability plus policy coverage
+to hand/stance selection, and intersects supported empty placement regions with
+that reach. Do not substitute classical runtime grasps or placements.
+
+Previous `primitive-approach-refine-v1` finished all four 4,000-update profiles.
+On matched seeds 371000..371003 it passed 8/8 picks but only 3/8 complete
+pick/place sequences (baseline also 3/8). Integrated cases passed left,
+right_cross_table and left_cross_table; right, both hand orders and custom_region
+failed. No promotion. Remote last verified 389632263b remains the older limited
+right-hand checkpoint. User worktree is still at 0187ef1208; new apartment work
+is in `/tmp/dimos-r1pro-primitives` and is not yet the user-facing preview.
+
+New apartment stack uses the actual HSSD package, Zenoh, full static pointcloud
+into KronkNav, and a ControlCoordinator holonomic task. Local HTTP MCP navigation
+trial `jobs/apartment-navigation-v8` passed the complete route to dining_table
+and preserved all unrequested objects. Keep heading through the narrow passage
+and turn at arrival. Native routes get at most 10 cm interior offsets, exact
+endpoints retained, and full swept robot/cargo collision checks before execution.
+Circular clearance above .35 m disconnected this route; do not increase it
+blindly. Current test speed is .12 m/s, yaw .12 rad/s; speed tuning remains.
+
+New prop families: bottle, hollow cup, drink carton, glue stick and toy block.
+These are small procedural household variants within the existing size envelope,
+not arbitrary mesh assets or proven general-purpose everyday-object grasping.
+Every launch samples a seed. Five items are placed on measured physical patches:
+two on worktable, one on dining table, two on kitchen counter. Objects/tray remain
+physical, unheld objects do not follow the base. Cup support sums contact force
+per support/pad before thresholding, so many small contacts count correctly.
+
+Reachability searches copied MuJoCo state using DimOS model/IK. It checks stance,
+arm approach/lift/retreat and held cargo, ranks free hands while preserving an
+explicit hand, and reports measured training coverage separately. ACT receives
+only the selected hand; torso/other-hand positioning uses the DimOS whole-body
+planner. Preparation uses a physics snapshot and commits selection only after
+route validation and an unchanged-state check. Recovery can preserve a stopped
+navigation pose when all cargo/unrequested objects remain intact. No implicit
+reset or release. Full runtime grasp success is still checked physically.
+
+`primitive_workspace.py` audits first-frame target/torso bounds from verified
+manifests. Latest policies cover roughly x=.40--.52 m, y=+/- .32 m for picks,
+z=.752--.790 m and a nearly fixed torso. Standing farther back allows counter
+reach that standing closer does not. Both hands have feasible counter corridors
+with torso assistance, but these are OUTSIDE the demonstrated workspace. Do not
+confuse IK feasibility with policy competence. Floor/bed/general meshes remain
+unfinished. Current SDK planar-base execution interfaces also match open PR4096;
+main was fetched (f01a8eed65) and is nine commits newer than this worktree's base.
+Rebase is still pending; do not modify the user's Alfred/Go2 worktree.
+
+Three native apartment ACT attempts with existing weights failed on the first
+pick: `apartment-pick-baseline-v1`, `apartment-pick-local-context-v1`, and
+`apartment-reach-pick-v1`. The last correctly chose the right hand for auto but
+timed out with the gripper open. Masking neighbors farther than .8 m did not
+solve it. This local observation contract is now used in apartment collection.
+The default `policy-apartment-preview` does not exist and must not be presented
+as a working launch command yet. No external LLM calls were made in these tests.
+
+Detached collection `jobs/apartment-appearance-v2`, parent PID 2706379, is running
+32 layouts, seeds 380132..380163, two source choices, both hands, with other-hand
+holds on half the layouts. It collects the source worktable poses in apartment
+appearance, not yet the raised dining/counter postures. At seed 380136 it had
+3 right pairs and 3 left pairs plus one extra left pick; successful other-hand
+held examples exist on both sides. Rejected physical demos stay excluded.
+`apartment-appearance-v1` was explicitly paused after poor source sampling;
+retain its data and paused.json. Do not resume it with the changed scene contract.
+
+`demo_refine_primitives --collection` can reuse this completed collection with
+original-data rehearsal, preserving every old dataset/checkpoint. It requires
+at least eight new accepted episodes and four other-hand-held examples per
+profile. No fine-tuning watcher has been launched yet at this entry. Need train,
+held-out apartment rollouts and integrated local MCP validation before promotion.
+Training learner uv mutations and native policy launches must not overlap.
+Collection in .home-venv is independent and may overlap training.
+
+Space cleanup: removed only inactive generated dimos-manip-docs/.direnv and ran
+Nix GC older than seven days; freed 5,419 paths / 3,149 MiB, preserving active
+profiles, datasets and checkpoints. Did not change root .venv. A native build
+changed Cargo.lock's lcm-msgs qualification; this is a build artifact, not an
+intended source change. Do not include it in commits.

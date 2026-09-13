@@ -65,7 +65,7 @@ def resolve_primitive_object(rows: list[dict[str, Any]], selector: str) -> int:
     if value in keys:
         key, sign = keys[value]
         return int(min(available, key=lambda r: (sign * r[key], r["index"]))["index"])
-    shapes = [r for r in available if r["shape"] == value]
+    shapes = [r for r in available if r["shape"] == value or r.get("kind") == value]
     if len(shapes) == 1:
         return int(shapes[0]["index"])
     raise ValueError("Use an object ID, unique shape, nearest/furthest or leftmost/rightmost")
@@ -197,7 +197,7 @@ class R1ProPrimitiveSkills(Module):
         self, primitive: Primitive, arm: Arm, index: int, region: str, report: dict[str, Any]
     ) -> None:
         self._stop_control()
-        selection = self._sim.prepare_primitive(primitive, arm, index, region)
+        selection = self._prepare_primitive(primitive, arm, index, region, report)
         report["selection"] = selection
         report["base_plan_ids"] = []
         for waypoint in selection["base_waypoints"][1:]:
@@ -242,6 +242,7 @@ class R1ProPrimitiveSkills(Module):
             self._pause(1.0)
             if np.max(np.abs(target - self._sim.primitive_state()["base_pose"])) > 0.01:
                 raise RuntimeError("Measured base is outside the policy prepositioning tolerance")
+        self._prepare_posture(selection, report)
         policy = cast("PackingPolicySpec", getattr(self, f"_{primitive}_{arm}"))
         policy.clear_rollout_observations()
         deadline = time.monotonic() + 120
@@ -286,6 +287,14 @@ class R1ProPrimitiveSkills(Module):
                 raise RuntimeError(
                     f"Physical {primitive} outcome did not persist after ACT stopped"
                 )
+
+    def _prepare_primitive(
+        self, primitive: Primitive, arm: Arm, index: int, region: str, report: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._sim.prepare_primitive(primitive, arm, index, region)
+
+    def _prepare_posture(self, selection: dict[str, Any], report: dict[str, Any]) -> None:
+        """Optional whole-body positioning before the arm-only ACT rollout."""
 
     @skill
     def get_scene(self) -> str:

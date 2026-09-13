@@ -14,6 +14,7 @@
 
 """Measured per-arm object ownership for composable pick and place actions."""
 
+import copy
 import time
 from typing import Any
 
@@ -35,6 +36,22 @@ class PrimitiveSceneState:
     ) -> None:
         self.model, self.data, self.layout = model, data, layout
         self.arms = {arm: ObjectPackingState(model, data, layout, home, arm=arm) for arm in ARMS}
+
+    def snapshot(self) -> "PrimitiveSceneState":
+        """Copy physics and action observations for planning without live state changes."""
+        result = PrimitiveSceneState(
+            self.model, copy.copy(self.data), self.layout, self.arms["right"].home
+        )
+        for arm, source in self.arms.items():
+            target = result.arms[arm]
+            target.selected = source.selected
+            target.bottle_id = source.bottle_id
+            target.bottle_geoms = source.bottle_geoms.copy()
+            target.target = source.target.copy()
+            target.initial_height = source.initial_height
+            target.peak_lift = source.peak_lift
+            target.bilateral_grasp = source.bilateral_grasp
+        return result
 
     def inventory(self) -> list[dict[str, Any]]:
         rows = []
@@ -87,22 +104,25 @@ class PrimitiveSceneState:
         )
 
     @staticmethod
-    def preposition_pose(arm: Arm, target: NDArray[Any]) -> NDArray[np.float64]:
+    def preposition_pose(
+        arm: Arm, target: NDArray[Any], *, yaw: float = 0.0
+    ) -> NDArray[np.float64]:
         """Put the target in the arm's demonstrated workspace, including forward base motion."""
-        return np.array(
-            [
-                float(target[0]) - 0.4,
-                float(target[1]) + (0.32 if arm == "right" else -0.32),
-                0.0,
-            ]
-        )
+        c, s = np.cos(yaw), np.sin(yaw)
+        rotation = np.array([[c, -s], [s, c]])
+        offset = rotation @ np.array([0.4, -0.32 if arm == "right" else 0.32])
+        return np.asarray([*(np.asarray(target[:2]) - offset), yaw], dtype=np.float64)
 
     @classmethod
-    def preposition_poses(cls, arm: Arm, target: NDArray[Any]) -> list[NDArray[np.float64]]:
+    def preposition_poses(
+        cls, arm: Arm, target: NDArray[Any], *, yaw: float = 0.0
+    ) -> list[NDArray[np.float64]]:
         """Prefer the nominal workspace, then clear poses within demonstrated reach."""
-        nominal = cls.preposition_pose(arm, target)
+        nominal = cls.preposition_pose(arm, target, yaw=yaw)
+        c, s = np.cos(yaw), np.sin(yaw)
+        rotation = np.array([[c, -s], [s, c]])
         return [
-            nominal + np.array([x, y, 0])
+            nominal + np.r_[rotation @ np.array([x, y]), 0]
             for x, y in (
                 (0, 0),
                 (-0.04, 0),
@@ -133,9 +153,14 @@ class PrimitiveSceneState:
             np.isfinite(preferred_reach) and 0.36 <= preferred_reach <= 0.52
         ):
             raise ValueError("Preferred reach must be between 0.36 and 0.52 meters")
-        poses = self.preposition_poses(arm, target)
+        base = self.data.body("base_link")
+        yaw = float(np.arctan2(base.xmat[3], base.xmat[0]))
+        poses = self.preposition_poses(arm, target, yaw=yaw)
         if preferred_reach is not None:
-            poses.sort(key=lambda pose: abs(float(target[0] - pose[0]) - preferred_reach))
+            forward = np.array([np.cos(yaw), np.sin(yaw)])
+            poses.sort(
+                key=lambda pose: abs(float((target[:2] - pose[:2]) @ forward) - preferred_reach)
+            )
         planner = self.transport_planner()
         deadline = time.monotonic() + 10
         for desired in poses:

@@ -50,6 +50,7 @@ class ObjectPrimitiveTask(ObjectPackingTask):
 
     def __init__(self, scene: Path, layout: ObjectLayout, *, arm: Arm, images: bool = True) -> None:
         self.arm = arm
+        self.policy_neighbor_distance: float | None = None
         self.active = list(active_indices(arm))
         super().__init__(scene, layout, images=False)
         self.home[2] = -0.2
@@ -119,7 +120,10 @@ class ObjectPrimitiveTask(ObjectPackingTask):
         self, primitive: Primitive, *, render_images: bool = True
     ) -> dict[str, NDArray[Any]]:
         values: dict[str, NDArray[Any]] = primitive_observation(
-            primitive, self.arm, self.data.qpos[self.qids], self.state.goal()
+            primitive,
+            self.arm,
+            self.data.qpos[self.qids],
+            self.state.goal(neighbor_distance=self.policy_neighbor_distance),
         )
         if self.renderer is not None and render_images:
             for key, camera in (("head", "head"), ("wrist", f"{self.arm}_wrist")):

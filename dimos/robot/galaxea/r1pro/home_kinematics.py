@@ -121,6 +121,7 @@ class HomeKinematics:
         torso_yaw_only: bool = False,
         position_tolerance: float = POSITION_TOLERANCE,
         orientation_tolerance: float = ORIENTATION_TOLERANCE,
+        max_attempts: int = 8,
     ) -> NDArray[np.float64]:
         torso = self.groups["torso"]
         if torso_yaw_only:
@@ -140,7 +141,7 @@ class HomeKinematics:
             position_tolerance=position_tolerance,
             orientation_tolerance=orientation_tolerance,
             check_collision=False,
-            max_attempts=8,
+            max_attempts=max_attempts,
         )
         if not result.is_success() or result.joint_state is None:
             raise RuntimeError(

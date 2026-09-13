@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 
 from dimos.robot.galaxea.r1pro.grasping_sim import TABLE_Z
+from dimos.robot.galaxea.r1pro.object_appearance import add_object_appearance
 from dimos.robot.galaxea.r1pro.object_packing import (
     MAX_OBJECTS as MAX_OBJECTS,
     SHAPES as SHAPES,
@@ -47,6 +48,7 @@ class PackingObject:
     position: tuple[float, float, float]
     yaw: float
     in_tray: bool = False
+    kind: str | None = None
 
     @property
     def joint(self) -> str:
@@ -237,6 +239,8 @@ def prepare_object_scene(
             condim="4",
             solref="0.005 1",
         )
+        if add_object_appearance(body, obj, common):
+            continue
         if obj.shape == "box":
             ET.SubElement(
                 body,

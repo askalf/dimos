@@ -24,7 +24,9 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from dimos.robot.galaxea.r1pro.apartment_scene import distribute_apartment_objects
 from dimos.robot.galaxea.r1pro.demo_collect_objects import save_manifest
+from dimos.robot.galaxea.r1pro.everyday_objects import sample_everyday_layout
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_FPS
 from dimos.robot.galaxea.r1pro.object_bimanual_task import BimanualPrimitiveTask
 from dimos.robot.galaxea.r1pro.object_packing_scene import (
@@ -53,7 +55,11 @@ def collect(
     images: bool,
     choices: int = 1,
     interactive_context: bool = False,
+    scene_package: Path | None = None,
+    apartment: bool = False,
 ) -> dict[str, Any]:
+    if apartment and scene_package is None:
+        raise ValueError("Apartment collection requires a scene package")
     output.mkdir(parents=True, exist_ok=True)
     manifests: dict[tuple[Arm, Primitive], dict[str, Any]] = {}
     for arm in ARMS:
@@ -76,6 +82,13 @@ def collect(
             if interactive_context:
                 contract["interactive_context"] = True
                 contract["context_version"] = 2
+            if scene_package is not None:
+                contract["scene_package"] = str(scene_package.resolve())
+            if apartment:
+                contract["apartment_stage"] = "worktable"
+                contract["apartment_scene_version"] = 2
+                contract["everyday_objects"] = True
+                contract["policy_neighbor_distance"] = 0.8
             path = folder / "manifest.json"
             manifest = (
                 json.loads(path.read_text())
@@ -87,7 +100,11 @@ def collect(
             manifests[arm, primitive] = manifest
             save_manifest(path, manifest)
     for number, seed in enumerate(range(start_seed, start_seed + layouts)):
-        original = sample_layout(seed, occupied=0 if number % 2 == 0 else 1 + number % 3)
+        original = (
+            sample_everyday_layout(seed)
+            if apartment
+            else sample_layout(seed, occupied=0 if number % 2 == 0 else 1 + number % 3)
+        )
         if interactive_context:
             original = bilateral_layout(original)
         candidates = [
@@ -101,7 +118,20 @@ def collect(
                 output / f"scene-{seed}-{arm}.xml",
                 original,
                 "right" if interactive_context else arm,
+                scene_package=scene_package,
             )
+            table_indices = None
+            if apartment:
+                layout, regions = distribute_apartment_objects(scene, layout)
+                scene.with_suffix(".objects.json").write_text(json.dumps(layout.to_dict()) + "\n")
+                table_indices = [
+                    i
+                    for i, obj in enumerate(layout.objects)
+                    if regions["worktable"].contains(obj.position, obj.radius, obj.half_size[2])
+                ]
+                selected_indices = list(
+                    map(int, np.random.default_rng(seed + 91).permutation(table_indices)[:choices])
+                )
             for selected in selected_indices:
                 finished = {
                     (row["seed"], row["selected"])
@@ -127,6 +157,8 @@ def collect(
                         BimanualPrimitiveTask if interactive_context else ObjectPrimitiveTask
                     )
                     with task_type(scene, layout, arm=arm, images=images) as task:
+                        if apartment:
+                            task.policy_neighbor_distance = 0.8
                         if interactive_context:
                             assert isinstance(task, BimanualPrimitiveTask)
                             base_row["other_hand_object"] = None
@@ -137,7 +169,9 @@ def collect(
                                 others = [
                                     i
                                     for i, o in enumerate(layout.objects)
-                                    if i != selected and not o.in_tray
+                                    if i != selected
+                                    and not o.in_tray
+                                    and (table_indices is None or i in table_indices)
                                 ]
                                 if not others:
                                     raise RuntimeError("No supported object for the other hand")
@@ -282,6 +316,12 @@ def main() -> None:
     parser.add_argument("--choices", type=int, choices=range(1, 4), default=1)
     parser.add_argument("--no-images", action="store_true")
     parser.add_argument("--interactive-context", action="store_true")
+    parser.add_argument("--scene-package", type=Path)
+    parser.add_argument(
+        "--apartment",
+        action="store_true",
+        help="Collect everyday props at the worktable in the full randomized apartment",
+    )
     args = parser.parse_args()
     if args.layouts < 1 or args.start_seed < 0:
         parser.error("Use positive layouts and a nonnegative seed")
@@ -294,6 +334,8 @@ def main() -> None:
                 choices=args.choices,
                 images=not args.no_images,
                 interactive_context=args.interactive_context,
+                scene_package=args.scene_package,
+                apartment=args.apartment,
             )
         ),
         flush=True,

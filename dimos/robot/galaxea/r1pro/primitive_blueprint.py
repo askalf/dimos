@@ -55,19 +55,27 @@ POLICIES = {
 }
 
 
-def build_primitive_blueprint(policies: Path, *, agent: bool = False) -> Blueprint:
+def build_primitive_blueprint(
+    policies: Path,
+    *,
+    agent: bool = False,
+    simulator: type[R1ProPrimitiveSim] = R1ProPrimitiveSim,
+    skills: type[R1ProPrimitiveSkills] = R1ProPrimitiveSkills,
+    coordinator: type[R1ProPrimitiveCoordinator] = R1ProPrimitiveCoordinator,
+    system_prompt: str | None = None,
+) -> Blueprint:
     base_joints = make_twist_base_joints(PRIMITIVE_BASE_ID)
     source = build_r1pro_manipulation(
         scene_path=RECORDINGS_DIR / "r1pro-primitives/scene.xml",
         artifact=str(policies / "pick-right"),
         device="cuda",
         headless=False,
-        simulator=R1ProPrimitiveSim,
+        simulator=simulator,
         policy_module=R1ProRightPickPolicy,
         task_description="Pick the selected object and hold it.",
         prepare_scene_on_build=True,
         background_camera_rendering=True,
-        coordinator_type=R1ProPrimitiveCoordinator,
+        coordinator_type=coordinator,
         velocity_base=HardwareComponent(
             hardware_id=PRIMITIVE_BASE_ID,
             hardware_type=HardwareType.BASE,
@@ -99,14 +107,14 @@ def build_primitive_blueprint(policies: Path, *, agent: bool = False) -> Bluepri
         kwargs = dict(atom.kwargs)
         if atom.module in (R1ProRightPickPolicy, PolicySkills):
             continue
-        if atom.module is R1ProPrimitiveSim:
+        if atom.module is simulator:
             kwargs["extra_cameras"] = [
                 SimCameraSpec(
                     name=f"{arm}_wrist", stream=f"{arm}_wrist", width=160, height=160, fps=40
                 )
                 for arm in ("right", "left")
             ]
-        elif atom.module is R1ProPrimitiveCoordinator:
+        elif atom.module is coordinator:
             tasks = []
             for task in kwargs["tasks"]:
                 if task.name == "policy_rollout":
@@ -142,7 +150,7 @@ def build_primitive_blueprint(policies: Path, *, agent: bool = False) -> Bluepri
     model.model = R1PRO_MODEL.with_planar_base(base)
     modules = [
         stack,
-        R1ProPrimitiveSkills.blueprint(),
+        skills.blueprint(),
         McpServer.blueprint(),
         ManipulationModule.blueprint(
             model=model,
@@ -174,15 +182,15 @@ def build_primitive_blueprint(policies: Path, *, agent: bool = False) -> Bluepri
             )
         )
     if agent:
-        modules.append(McpClient.blueprint(system_prompt=PRIMITIVE_PROMPT))
+        modules.append(McpClient.blueprint(system_prompt=system_prompt or PRIMITIVE_PROMPT))
     return (
         autoconnect(*modules)
         .remappings(
             [
-                (R1ProPrimitiveSim, "base_cmd_vel", f"/{PRIMITIVE_BASE_ID}/cmd_vel"),
-                (R1ProPrimitiveSim, "base_odom", f"/{PRIMITIVE_BASE_ID}/odom"),
+                (simulator, "base_cmd_vel", f"/{PRIMITIVE_BASE_ID}/cmd_vel"),
+                (simulator, "base_odom", f"/{PRIMITIVE_BASE_ID}/odom"),
                 *(
-                    (R1ProPrimitiveSkills, f"_{primitive}_{arm}", cls)
+                    (skills, f"_{primitive}_{arm}", cls)
                     for (primitive, arm), cls in POLICIES.items()
                 ),
             ]

@@ -15,6 +15,7 @@
 """Native physics and measured outcomes for independent bimanual ACT primitives."""
 
 from dataclasses import asdict
+import json
 from pathlib import Path
 import threading
 import time
@@ -28,12 +29,15 @@ from reactivex.disposable import Disposable
 
 from dimos.constants import RECORDINGS_DIR
 from dimos.core.core import rpc
+from dimos.core.global_config import global_config
 from dimos.core.stream import In, Out
 from dimos.imitation.observation import VectorObservation
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
+from dimos.robot.galaxea.r1pro.apartment_scene import distribute_apartment_objects
+from dimos.robot.galaxea.r1pro.everyday_objects import sample_everyday_layout
 from dimos.robot.galaxea.r1pro.grasping_sim import VIRTUAL_BASE_JOINTS
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
 from dimos.robot.galaxea.r1pro.navigation_base import PlanarVelocityServo
@@ -64,6 +68,10 @@ class R1ProPrimitiveSimConfig(MujocoSimModuleConfig):
     generate_scene: bool = True
     occupied: int = Field(default=0, ge=0, le=3)
     bilateral_layout: bool = True
+    everyday_objects: bool = False
+    randomize_locations: bool = False
+    scene_package: Path | None = None
+    policy_neighbor_distance: float | None = Field(default=None, gt=0)
     output: Path = Field(default_factory=lambda: RECORDINGS_DIR / "r1pro-primitives" / uuid4().hex)
 
 
@@ -101,13 +109,29 @@ class R1ProPrimitiveSim(MujocoSimModule):
             if self._session is not None:
                 return dict(self._session)
             if self.config.generate_scene:
-                layout = sample_layout(self.config.seed, occupied=self.config.occupied)
+                sampler = sample_everyday_layout if self.config.everyday_objects else sample_layout
+                layout = sampler(self.config.seed, occupied=self.config.occupied)
                 if self.config.bilateral_layout:
                     layout = bilateral_layout(layout)
                 output = self.config.output.expanduser().resolve()
                 if (output / "scene.xml").exists():
                     raise FileExistsError(f"Choose a new session output: {output}")
-                scene, layout = prepare_primitive_scene(output / "scene.xml", layout, "right")
+                package = global_config.scene_package or self.config.scene_package
+                scene, layout = prepare_primitive_scene(
+                    output / "scene.xml",
+                    layout,
+                    "right",
+                    scene_package=Path(package) if package else None,
+                )
+                if self.config.randomize_locations:
+                    if package is None:
+                        raise ValueError(
+                            "Randomized apartment locations require a house scene package"
+                        )
+                    layout, self._regions = distribute_apartment_objects(scene, layout)
+                    scene.with_suffix(".objects.json").write_text(
+                        json.dumps(layout.to_dict()) + "\n"
+                    )
                 self.config.address = scene
             scene = Path(self.config.address).expanduser().resolve()
             self._layout = TypeAdapter(ObjectLayout).validate_json(
@@ -163,7 +187,10 @@ class R1ProPrimitiveSim(MujocoSimModule):
             primitive, arm = self._active
             state = self._state(engine).arms[arm]
             values = primitive_observation(
-                primitive, arm, engine.data.qpos[state.qids], state.goal()
+                primitive,
+                arm,
+                engine.data.qpos[state.qids],
+                state.goal(neighbor_distance=self.config.policy_neighbor_distance),
             )["observation.environment_state"]
         port = getattr(self, f"{primitive}_{arm}_goal")
         port.publish(VectorObservation(ts=frame.ts, values=tuple(map(float, values))))
@@ -319,6 +346,7 @@ class R1ProPrimitiveSim(MujocoSimModule):
                     index=i,
                     id=f"object_{i + 1}",
                     rgba=list(scene.layout.objects[i].rgba),
+                    kind=scene.layout.objects[i].kind,
                     forward_m=float(relative[0]),
                     left_m=float(relative[1]),
                     distance_m=float(np.linalg.norm(relative[:2])),
