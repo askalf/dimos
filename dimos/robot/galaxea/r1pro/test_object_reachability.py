@@ -90,6 +90,22 @@ def test_reachability_never_mutates_live_robot_or_object_state(task):
         np.testing.assert_array_equal(old, current)
 
 
+@pytest.mark.self_hosted
+@pytest.mark.mujoco
+def test_place_reachability_can_release_both_fingers_after_a_real_grasp(task):
+    task.select(0)
+    target = task.data.body(task.bottle_id).xpos.copy()
+    task.teacher_preposition(target)
+    for _, action in task.teacher_pick():
+        task.primitive_step(action)
+    assert task.state.holding()
+    before = task.data.qpos.copy()
+    planner = ObjectReachability(PrimitiveSceneState(task.model, task.data, task.layout, task.home))
+    stance = planner.evaluate("place", "right", 0, target, planner.transport.start)
+    assert stance.arm == "right"
+    np.testing.assert_array_equal(task.data.qpos, before)
+
+
 @pytest.fixture
 def simulator(task, mocker, tmp_path):
     module = R1ProApartmentSim(output=tmp_path, scene_package=None)

@@ -24,6 +24,10 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from dimos.robot.galaxea.r1pro.apartment_demonstrations import (
+    choose_local_placement,
+    initialize_reachable_task,
+)
 from dimos.robot.galaxea.r1pro.apartment_scene import distribute_apartment_objects
 from dimos.robot.galaxea.r1pro.demo_collect_objects import save_manifest
 from dimos.robot.galaxea.r1pro.everyday_objects import sample_everyday_layout
@@ -57,9 +61,12 @@ def collect(
     interactive_context: bool = False,
     scene_package: Path | None = None,
     apartment: bool = False,
+    apartment_reach: bool = False,
 ) -> dict[str, Any]:
     if apartment and scene_package is None:
         raise ValueError("Apartment collection requires a scene package")
+    if apartment_reach and not (apartment and interactive_context):
+        raise ValueError("Apartment reach collection requires apartment and interactive context")
     output.mkdir(parents=True, exist_ok=True)
     manifests: dict[tuple[Arm, Primitive], dict[str, Any]] = {}
     for arm in ARMS:
@@ -85,10 +92,14 @@ def collect(
             if scene_package is not None:
                 contract["scene_package"] = str(scene_package.resolve())
             if apartment:
-                contract["apartment_stage"] = "worktable"
+                contract["apartment_stage"] = (
+                    "local_support_reach" if apartment_reach else "worktable"
+                )
                 contract["apartment_scene_version"] = 2
                 contract["everyday_objects"] = True
                 contract["policy_neighbor_distance"] = 0.8
+                if apartment_reach:
+                    contract["reach_corridor_version"] = 4
             path = folder / "manifest.json"
             manifest = (
                 json.loads(path.read_text())
@@ -130,7 +141,12 @@ def collect(
                     if regions["worktable"].contains(obj.position, obj.radius, obj.half_size[2])
                 ]
                 selected_indices = list(
-                    map(int, np.random.default_rng(seed + 91).permutation(table_indices)[:choices])
+                    map(
+                        int,
+                        np.random.default_rng(seed + 91).permutation(
+                            range(len(layout.objects)) if apartment_reach else table_indices
+                        )[:choices],
+                    )
                 )
             for selected in selected_indices:
                 finished = {
@@ -152,6 +168,7 @@ def collect(
                     layout=layout.to_dict(),
                     scene=str(scene.resolve()),
                 )
+                task = None
                 try:
                     task_type = (
                         BimanualPrimitiveTask if interactive_context else ObjectPrimitiveTask
@@ -164,7 +181,7 @@ def collect(
                             base_row["other_hand_object"] = None
                             # Half the layouts keep the other hand holding an object.
                             # Its setup grasp is teacher-only and never mislabeled ACT.
-                            if number % 4 >= 2:
+                            if number % 4 >= 2 and not apartment_reach:
                                 other_arm: Arm = "left" if arm == "right" else "right"
                                 others = [
                                     i
@@ -193,6 +210,23 @@ def collect(
                                 base_row["other_hand_object"] = layout.objects[other].name
                                 task.switch_arm(arm)
                         task.select(selected)
+                        ready = None
+                        local_region = None
+                        if apartment_reach:
+                            assert isinstance(task, BimanualPrimitiveTask)
+                            local_region = next(
+                                r
+                                for r in regions.values()
+                                if r.contains(
+                                    tuple(task.data.body(task.bottle_id).xpos),
+                                    layout.objects[selected].radius,
+                                    layout.objects[selected].half_size[2],
+                                )
+                            )
+                            ready = initialize_reachable_task(task)
+                            base_row["sampled_stance"] = asdict(ready)
+                            base_row["source"] = local_region.name
+                            base_row["initialization"] = "sampled_robot_pose_then_physics_settle"
                         for primitive in PRIMITIVES:
                             manifest = manifests[arm, primitive]
                             folder = output / f"{primitive}-{arm}"
@@ -201,6 +235,15 @@ def collect(
                             if primitive == "pick":
                                 target = task.data.body(task.bottle_id).xpos.copy()
                                 region = None
+                            elif apartment_reach:
+                                assert (
+                                    isinstance(task, BimanualPrimitiveTask)
+                                    and local_region is not None
+                                )
+                                target, ready = choose_local_placement(
+                                    task, local_region, seed + selected
+                                )
+                                region = local_region
                             else:
                                 target, region = choose_placement(
                                     task,
@@ -209,7 +252,8 @@ def collect(
                                     else "tray",
                                     seed + selected,
                                 )
-                            task.teacher_preposition(target)
+                            if not apartment_reach:
+                                task.teacher_preposition(target)
                             if primitive == "place":
                                 task.state.target = target.copy()
                             initial = task.inventory()
@@ -227,9 +271,21 @@ def collect(
                             phases = []
                             cameras: dict[str, NDArray[Any]] = {}
                             teacher = (
-                                task.teacher_pick()
-                                if region is None
-                                else task.teacher_place(target, region)
+                                (
+                                    task.teacher_pick(
+                                        clearance_z=ready.clearance_z, already_staged=True
+                                    )
+                                    if region is None
+                                    else task.teacher_place(
+                                        target, region, clearance_z=ready.clearance_z
+                                    )
+                                )
+                                if ready is not None
+                                else (
+                                    task.teacher_pick()
+                                    if region is None
+                                    else task.teacher_place(target, region)
+                                )
                             )
                             for frame, (phase, action) in enumerate(teacher):
                                 obs = task.primitive_observation(
@@ -276,6 +332,21 @@ def collect(
                                 flush=True,
                             )
                 except (RuntimeError, ValueError) as exc:
+                    if task is not None:
+                        failure = (
+                            output
+                            / f"{primitive}-{arm}"
+                            / f"layout-{seed}-object-{selected}-failure.npz"
+                        )
+                        np.savez_compressed(
+                            failure,
+                            qpos=task.data.qpos,
+                            qvel=task.data.qvel,
+                            ctrl=task.data.ctrl,
+                            act=task.data.act,
+                            time=task.data.time,
+                        )
+                        base_row["failure_state"] = failure.name
                     row = dict(
                         **base_row,
                         primitive=primitive,
@@ -322,6 +393,11 @@ def main() -> None:
         action="store_true",
         help="Collect everyday props at the worktable in the full randomized apartment",
     )
+    parser.add_argument(
+        "--apartment-reach",
+        action="store_true",
+        help="Sample initial robot stances at all measured apartment supports",
+    )
     args = parser.parse_args()
     if args.layouts < 1 or args.start_seed < 0:
         parser.error("Use positive layouts and a nonnegative seed")
@@ -336,6 +412,7 @@ def main() -> None:
                 interactive_context=args.interactive_context,
                 scene_package=args.scene_package,
                 apartment=args.apartment,
+                apartment_reach=args.apartment_reach,
             )
         ),
         flush=True,

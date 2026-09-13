@@ -41,6 +41,9 @@ class BimanualPrimitiveTask(ObjectPrimitiveTask):
         self.tcp_id = self.model.site(f"{arm}_tcp").id
         self.bottle_id, self.bottle_geoms = self.state.bottle_id, self.state.bottle_geoms
         self.initial_height = self.state.initial_height
+        # mj_step leaves transforms at the preceding integration point. Match
+        # them to current joints before the SDK's strict FK consistency check.
+        mujoco.mj_forward(self.model, self.data)
         self._kinematics = HomeKinematics(self.model, self.data, lock_lower_torso=True)
         self.probe.qpos[:] = self.data.qpos
         mujoco.mj_forward(self.model, self.probe)

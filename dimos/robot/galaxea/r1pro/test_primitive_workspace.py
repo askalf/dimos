@@ -19,7 +19,7 @@ import json
 import numpy as np
 import pytest
 
-from dimos.robot.galaxea.r1pro.primitive_workspace import audit_workspace
+from dimos.robot.galaxea.r1pro.primitive_workspace import PrimitiveWorkspace, audit_workspace
 
 
 @pytest.mark.parametrize("arm,sign", [("left", 1), ("right", -1)])
@@ -62,3 +62,19 @@ def test_workspace_does_not_accept_another_hand_profile(tmp_path):
     )
     with pytest.raises(ValueError, match="does not match"):
         audit_workspace(manifest, "pick", "right")
+
+
+def test_positioning_prefers_demonstrated_torso_for_the_requested_height():
+    low = (0.4, -0.4, -0.2, 0.0)
+    high = (0.5, 0.0, 0.4, 1.0)
+    workspace = PrimitiveWorkspace(
+        (0.4, -0.32, 0.77),
+        (0.7, -0.32, 0.94),
+        low,
+        high,
+        2,
+        "example",
+        starts=((0.4, -0.32, 0.77, *low), (0.7, -0.32, 0.94, *high)),
+    )
+    np.testing.assert_array_equal(workspace.preferred_torsos(np.array([0.7, -0.32, 0.93]))[0], high)
+    np.testing.assert_array_equal(workspace.preferred_torsos(np.array([0.4, -0.32, 0.78]))[0], low)

@@ -50,8 +50,9 @@ For 'take X to Y', pick X, wait for completion, navigate to Y, and wait. Place o
 Use get_surfaces to inspect physical support regions. Tray placement and unloading use explicit skills.
 For every accepted action call wait_for_action until terminal completion before the next action.
 Acceptance is not success. Report physical failures; never claim an item was moved just from a command.
-On failure stop the sequence. recover_action preserves a confirmed hold or restores an empty failed
-arm through DimOS planning. Do not silently retry, change targets, or reset the scene.
+On failure stop the sequence. If recovery_required is true, call recover_action once and wait for
+its result. It preserves a confirmed hold or restores an empty failed arm through DimOS planning.
+Report whether recovery succeeded. Do not silently retry the grasp, change targets, or reset the scene.
 ACT performs grasps and placements; DimOS handles positioning and KronkNav/holonomic base execution.
 Keep responses brief and grounded in the tool results."""
 

@@ -630,3 +630,75 @@ Nix GC older than seven days; freed 5,419 paths / 3,149 MiB, preserving active
 profiles, datasets and checkpoints. Did not change root .venv. A native build
 changed Cargo.lock's lcm-msgs qualification; this is a build artifact, not an
 intended source change. Do not include it in commits.
+
+### September 13, 02:30 Pacific: current main, first apartment training batch
+
+Rebased the isolated integration branch with merge topology retained onto
+origin/main f01a8eed65. The old merged-main resolution was reused, then only the
+nine newer main commits were applied; two adapter docstring conflicts retained
+the existing explanation of active transport selection. No user Alfred/Go2
+files changed. Apartment checkpoint is now 810b1e0912. Backup ref:
+`chore/r1pro-before-apartment-main-rebase-20260913` (145ffe5147).
+After rebase, 63 blueprint, Zenoh, holonomic and apartment skill/navigation tests
+passed. Focused physical/placement/primitive tests also passed (30 tests before
+the latest release-probe regression). User worktree and remote remain unchanged.
+
+Detached pipeline `jobs/apartment-appearance-refine-v1`, PID 2750703, now takes
+an immutable first-batch manifest snapshot as soon as the existing eight-new /
+four-other-hand-held gates pass. Full source collection PID 2706379 continues
+independently through all 32 layouts. No source arrays are copied or removed;
+the snapshot references accepted files by absolute path, retains their hashes,
+and checks numeric finiteness, frame counts and separate pick/place phase sets.
+`data_audit.json` passed: right pick/place 9/9 episodes, left pick/place 11/10;
+each profile includes four examples with the other hand occupied. This is not
+39 complete sequences: picks and placements are separately counted.
+
+The matched old-policy BENCH baseline on seeds 380200..380203 passed 8/8 full
+sequences. This does not establish apartment success. Right-pick fine-tuning is
+now running, 4,000 updates with prior-data rehearsal and unchanged low learning
+rates, then right place, left pick, left place, bench comparison and four local
+apartment MCP cases. Pipeline uses only local MCP, no external LLM calls, and
+never promotes automatically. Read status.json and data_audit.json for actual
+state. Do not launch native policy stacks while its learner environments mutate.
+
+Reach checking now proves a continuous fixed-torso Cartesian descent/retreat,
+checks SDK self-collision as well as copied MuJoCo scene/cargo contacts, and
+seeds torso positioning from nearby demonstrated starts when available. Explicit
+hands remain fixed. Raised supports can require standing farther back and a
+different torso. Physical reach is still distinct from learned competence.
+
+Found and fixed a placement-probe bug: mj_forward does not enforce coupled
+finger equalities. Opening only the driver left the follower finger closed in
+the planning copy, falsely blocking every retreat. The probe now moves the
+follower with its driver while preserving the measured compliance offset.
+A regression test performs a real simulated grasp, checks place feasibility and
+verifies that live joint/object state never changed; it passed. No contacts or
+success requirements were disabled. Gripper yaw is now included in placement
+clearance; apartment search first checks object fit then actual hand sweeps.
+
+New offline `--apartment --apartment-reach --interactive-context` collection
+samples initial robot stances at the worktable, dining table and counter. Initial
+robot pose assignment is training episode setup only, before any grasp or labels;
+props remain supported and unheld. Pick/release labels use actual arm controls.
+Local placement prepositioning physically moves the base with the grasp held,
+then records the independent place skill. This is not runtime teleportation.
+Higher-support demonstrations are still being debugged; do not start a large
+collection or deploy their policies without a passing smoke.
+
+Manual counter diagnostic: both hands established physical grasps; right also
+placed 2.5 cm away, left's shifted destination failed IK. Smoke v1 finished with
+six picks and zero placements; v2 was paused and preserved. Besides the coupled
+finger bug, a loose reach IK orientation tolerance admitted poses the stricter
+teacher could not track. Reach tolerance is now tighter. MuJoCo transforms also
+need refreshing after a physical base move before the strict SDK FK check;
+BimanualPrimitiveTask.switch_arm now does this. Current detached smoke is
+`jobs/apartment-reach-smoke-v3`, PID 2764323, seeds 381000..381001, three choices.
+Its running process predates the final switch_arm FK refresh, so inspect results
+and rerun into a new output if that old mismatch appears. Failed states now get
+small diagnostic snapshots and remain excluded from accepted data.
+
+Apartment transport monitoring now follows the same 20 Hz cadence as primitive
+monitoring instead of doing expensive full inventory checks every 500 Hz physics
+step. The full swept route check remains. Agent prompt asks for one recovery
+inspection after a failed action requiring recovery, without retrying the grasp,
+changing the hand/target, releasing an unsupported object or resetting progress.

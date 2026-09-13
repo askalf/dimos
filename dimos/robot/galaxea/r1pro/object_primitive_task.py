@@ -165,7 +165,11 @@ class ObjectPrimitiveTask(ObjectPackingTask):
             yield phase, action.astype(np.float32)
 
     def teacher_pick(
-        self, *, from_approach: bool = False
+        self,
+        *,
+        from_approach: bool = False,
+        clearance_z: float = 0.94,
+        already_staged: bool = False,
     ) -> Iterator[tuple[str, NDArray[np.float32]]]:
         """Demonstrate a pick, optionally correcting a still-open ACT approach."""
         source = self.data.body(self.bottle_id).xpos.copy()
@@ -188,17 +192,21 @@ class ObjectPrimitiveTask(ObjectPackingTask):
                 raise RuntimeError("Approach correction requires an open hand near a stable source")
             self.probe.qpos[:] = self.data.qpos
             mujoco.mj_forward(self.model, self.probe)
-        else:
+        elif not already_staged:
+            stage = self.data.body("base_link").xpos + self.data.body("base_link").xmat.reshape(
+                3, 3
+            ) @ np.array([0.42, sign * 0.28, 0])
+            stage[2] = clearance_z
             yield from self._move(
                 "stage",
-                self.data.body("base_link").xpos + np.array([0.42, sign * 0.28, 0.94]),
+                stage,
                 0.05,
                 2.0,
             )
-            yield from self._move("above", np.r_[source[:2], 0.94], 0.05, 2.0)
+            yield from self._move("above", np.r_[source[:2], clearance_z], 0.05, 2.0)
         yield from self._move("approach", grasp, 0.05, 2.0)
         yield from self._move("grasp", grasp, 0.0, 1.0)
-        yield from self._move("lift", np.r_[source[:2], 0.94], 0.0, 2.0)
+        yield from self._move("lift", np.r_[source[:2], clearance_z], 0.0, 2.0)
         if not self.state.holding():
             raise RuntimeError("Pick did not establish a current stable 10 cm lift")
         # Train an explicit held endpoint; no place action follows this boundary.
@@ -208,7 +216,7 @@ class ObjectPrimitiveTask(ObjectPackingTask):
             raise RuntimeError("Object slipped during the held endpoint")
 
     def teacher_place(
-        self, target: NDArray[Any], region: PlacementRegion
+        self, target: NDArray[Any], region: PlacementRegion, *, clearance_z: float = 0.94
     ) -> Iterator[tuple[str, NDArray[np.float32]]]:
         if not self.state.holding():
             raise RuntimeError("Place must start with a measured stable held object")
@@ -217,7 +225,7 @@ class ObjectPrimitiveTask(ObjectPackingTask):
         mujoco.mj_forward(self.model, self.probe)
         offset = self.data.site(f"{self.arm}_tcp").xpos - self.data.body(self.bottle_id).xpos
         destination = target + offset
-        yield from self._move("transfer", np.r_[destination[:2], 0.94], 0.0, 2.0)
+        yield from self._move("transfer", np.r_[destination[:2], clearance_z], 0.0, 2.0)
         yield from self._move("place", destination, 0.0, 2.0)
         for _ in range(8):
             if set(self.geometry(self.selected)["support_geoms"]) & set(region.support_geoms):
@@ -227,7 +235,7 @@ class ObjectPrimitiveTask(ObjectPackingTask):
         if not set(self.geometry(self.selected)["support_geoms"]) & set(region.support_geoms):
             raise RuntimeError("No requested physical support before release")
         yield from self._move("release", destination, 0.05, 1.0)
-        yield from self._move("retreat", np.r_[destination[:2], 0.94], 0.05, 2.0)
+        yield from self._move("retreat", np.r_[destination[:2], clearance_z], 0.05, 2.0)
         # A primitive can end at a clear retreat without an unnecessary home tour.
         row = self.geometry(self.selected)
         obj = self.layout.objects[self.selected]

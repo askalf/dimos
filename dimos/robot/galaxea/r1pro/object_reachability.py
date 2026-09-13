@@ -80,6 +80,10 @@ def stance_candidates(
             (0.36, 0.28),
             (0.60, 0.32),
             (0.70, 0.32),
+            (0.45, 0.45),
+            (0.55, 0.45),
+            (0.55, 0.55),
+            (0.60, 0.50),
         ):
             xy = target[:2] - rotation @ np.array([forward, side * lateral])
             angle = current[2] + math.atan2(math.sin(yaw - current[2]), math.cos(yaw - current[2]))
@@ -110,6 +114,17 @@ class ObjectReachability:
         self.rows = scene.inventory()
         self.base_ids = np.array([self.model.joint(n).qposadr[0] for n in VIRTUAL_BASE_JOINTS])
         self.qids = np.array([self.model.joint(n).qposadr[0] for n in R1PRO_PICK_PLACE_JOINTS])
+        self.grippers = [
+            (
+                int(self.model.joint(f"r1pro/{arm}_gripper").qposadr[0]),
+                int(self.model.joint(f"{arm}_gripper_follower").qposadr[0]),
+            )
+            for arm in ARMS
+        ]
+        self.finger_offsets = [
+            float(self.initial.qpos[follower] - self.initial.qpos[driver])
+            for driver, follower in self.grippers
+        ]
         self.kinematics = HomeKinematics(self.model, self.initial)
         self.transport = scene.transport_planner()
         self.robot = (
@@ -131,6 +146,11 @@ class ObjectReachability:
 
     def _forward(self) -> None:
         """Move attached cargo only in the planning copy, using its measured grip transform."""
+        # mj_forward computes contacts without solving joint equalities. Carry
+        # the coupled finger with its driver in this kinematic copy, preserving
+        # the measured compliance offset while held and opening both on release.
+        for (driver, follower), offset in zip(self.grippers, self.finger_offsets, strict=True):
+            self.probe.qpos[follower] = np.clip(self.probe.qpos[driver] + offset, 0.0, 0.05)
         mujoco.mj_forward(self.model, self.probe)
         for index, (arm, position, orientation) in self.attachments.items():
             tcp = self.probe.site(f"{arm}_tcp")
@@ -154,7 +174,7 @@ class ObjectReachability:
             },
             allow_torso=torso,
             position_tolerance=0.002,
-            orientation_tolerance=0.008,
+            orientation_tolerance=0.003,
             max_attempts=1,
         )
 
@@ -169,6 +189,8 @@ class ObjectReachability:
         if allow_selected_contact:
             held[obj] = arm
         obstacles = set()
+        if not self.kinematics.world.check_config_collision_free(self.kinematics.seed(self.probe)):
+            obstacles.add("robot_self_collision")
         for contact in self.probe.contact:
             if contact.dist > 0 or contact.pos[2] < 0.06:
                 continue
@@ -231,6 +253,20 @@ class ObjectReachability:
             if not self._sweep(goal, index, arm):
                 raise RuntimeError("Posture trajectory contacts the scene or tips held cargo")
 
+    def _cartesian_corridor(self, target: NDArray[Any], selected: int, arm: Arm) -> bool:
+        """Solve the vertical path continuously, rather than just its end points."""
+        start = self.probe.site(f"{arm}_tcp").xpos.copy()
+        steps = max(1, int(np.ceil(np.linalg.norm(target - start) / 0.005)))
+        for t in np.linspace(0, 1, steps + 1)[1:]:
+            previous = self.probe.qpos[self.qids].copy()
+            goal = self._solve({arm: start + t * (target - start)}, torso=False)
+            goal[-2:] = previous[-2:]
+            if np.max(np.abs(goal[:-2] - previous[:-2])) > 0.25 or not self._sweep(
+                goal, selected, arm
+            ):
+                return False
+        return True
+
     def evaluate(
         self, primitive: Primitive, arm: Arm, index: int, target: NDArray[Any], pose: NDArray[Any]
     ) -> ReachableStance:
@@ -268,7 +304,7 @@ class ObjectReachability:
         grasp = target + tcp_offset
         # Keep a ten-centimetre lift plus room for the held object's bottom.
         # A nearby taller object sets an additional vertical clearance constraint.
-        clearance = max(0.94, grasp[2] + 0.105)
+        clearance = max(0.94, grasp[2] + 0.12)
         for i, neighbor in enumerate(self.rows):
             if (
                 i != index
@@ -286,12 +322,18 @@ class ObjectReachability:
         other_tcp = self.probe.site(f"{other}_tcp").xpos.copy()
         # Solve torso and ready posture together, then lock that torso while
         # proving the grasp/placement and retreat are inside the arm workspace.
-        for use_torso in (False, True):
+        torso_seeds = workspace.preferred_torsos(relative_target) if workspace is not None else []
+        choices = [(False, seed) for seed in torso_seeds]
+        choices.extend([(False, original[:4]), (True, original[:4])])
+        for use_torso, torso_seed in choices:
             self.probe.qpos[:] = initial_probe
+            self.probe.qpos[self.qids[:4]] = torso_seed
             self.attachments = dict(initial_attachments)
             mujoco.mj_forward(self.model, self.probe)
             targets: dict[str, NDArray[Any]] = {arm: above}
-            if use_torso and any(r["held_by"] == other for r in self.rows):
+            if (use_torso or np.max(np.abs(torso_seed - original[:4])) > 0.001) and any(
+                r["held_by"] == other for r in self.rows
+            ):
                 targets[other] = other_tcp
             try:
                 ready = self._solve(targets, torso=use_torso)
@@ -300,9 +342,7 @@ class ObjectReachability:
                 self._forward()
                 if self._collisions(selected=index, arm=arm):
                     continue
-                lower = self._solve({arm: grasp}, torso=False)
-                lower[-2:] = original[-2:]
-                if not self._sweep(lower, index, arm):
+                if not self._cartesian_corridor(grasp, index, arm):
                     continue
                 if primitive == "pick":
                     self._attach(index, arm)
@@ -310,10 +350,9 @@ class ObjectReachability:
                     # The released object remains at the lower end while the
                     # opened hand retreats. This is a feasibility probe only.
                     self.attachments.pop(index)
-                    ready[active_indices(arm)[-1]] = 0.05
                     self.probe.qpos[self.qids[active_indices(arm)[-1]]] = 0.05
                     self._forward()
-                if not self._sweep(ready, index, arm):
+                if not self._cartesian_corridor(above, index, arm):
                     continue
                 distance = float(np.linalg.norm(pose[:2] - self.transport.start[:2]))
                 rotation = abs(float(pose[2] - self.transport.start[2]))

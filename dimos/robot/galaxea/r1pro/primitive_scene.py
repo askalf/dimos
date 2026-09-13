@@ -89,7 +89,11 @@ def prepare_primitive_scene(
 
 
 def placement_options(
-    task: PrimitivePlacementContext, destination: str | PlacementRegion, seed: int | None
+    task: PrimitivePlacementContext,
+    destination: str | PlacementRegion,
+    seed: int | None,
+    *,
+    check_gripper: bool = True,
 ) -> tuple[tuple[tuple[float, float, float], ...], PlacementRegion]:
     """Empty supported object goals, before any reachability or base-path search."""
     if isinstance(destination, PlacementRegion):
@@ -135,8 +139,14 @@ def placement_options(
             )
         )
     obj = task.layout.objects[task.selected]
+    base = task.data.body("base_link")
     points = placement_candidates(
-        region, radius=obj.radius, half_height=obj.half_size[2], obstacles=tuple(obstacles)
+        region,
+        radius=obj.radius,
+        half_height=obj.half_size[2],
+        obstacles=tuple(obstacles),
+        gripper_half_width=0.065 if check_gripper else 0.0,
+        gripper_yaw=float(np.arctan2(base.xmat[3], base.xmat[0])) if check_gripper else 0.0,
     )
     source = task.data.body(task.bottle_id).xpos
     if seed is not None:

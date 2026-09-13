@@ -85,17 +85,20 @@ def placement_candidates(
     obstacles: tuple[PlacementObstacle, ...] = (),
     clearance: float = 0.008,
     gripper_half_width: float = 0.065,
+    gripper_yaw: float = 0.0,
     spacing: float = 0.02,
 ) -> tuple[tuple[float, float, float], ...]:
     """Return stable empty goals, nearest the region centre first; empty means full.
 
     Radius conservatively encloses the object's XY footprint. The open gripper
-    extends along world Y; clearance for approach/release is separate from fit.
+    extends along its local Y; clearance for approach/release is separate from fit.
     Reachability and demonstrated workspace coverage must still be checked by
     the caller. This routine neither moves nor rearranges existing objects.
     """
     if (
-        not np.isfinite((radius, half_height, clearance, gripper_half_width, spacing)).all()
+        not np.isfinite(
+            (radius, half_height, clearance, gripper_half_width, gripper_yaw, spacing)
+        ).all()
         or min(radius, half_height, spacing) <= 0
         or min(clearance, gripper_half_width) < 0
     ):
@@ -112,6 +115,8 @@ def placement_candidates(
         key=lambda xy: (xy[0] ** 2 + xy[1] ** 2, xy[0], xy[1]),
     )
     half_footprint = np.array([radius + clearance, max(radius, gripper_half_width) + clearance])
+    c, s = np.cos(gripper_yaw), np.sin(gripper_yaw)
+    half_footprint = np.abs([[c, -s], [s, c]]) @ half_footprint
     candidates = []
     for offset in offsets:
         xy = np.asarray(region.center[:2]) + region.rotation @ offset

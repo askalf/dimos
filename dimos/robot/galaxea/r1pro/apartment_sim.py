@@ -18,6 +18,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import secrets
+import time
 from typing import Any, cast
 
 import numpy as np
@@ -54,6 +55,7 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._transport_initial: list[dict[str, Any]] | None = None
+        self._last_transport_check = float("-inf")
 
     @rpc
     def prepare_primitive_session(self) -> dict[str, Any]:
@@ -66,8 +68,10 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
 
     def _publish_shm_and_lcm(self, engine: MujocoEngine) -> None:
         super()._publish_shm_and_lcm(engine)
-        if self._transport_initial is not None:
+        now = time.monotonic()
+        if self._transport_initial is not None and now - self._last_transport_check >= 0.05:
             with engine._lock:
+                self._last_transport_check = now
                 try:
                     self._state(engine).validate(self._transport_initial, arm="right", selected=-1)
                 except RuntimeError as exc:
@@ -101,7 +105,11 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
             state = scene.arms[owner]
             state.selected = index
             state.bottle_id = scene.model.body(scene.layout.objects[index].name).id
-            points, placement = placement_options(state, regions.get(region, region), None)
+            # First check object fit. Reachability checks the actual open-hand
+            # sweep at each proposed heading, rather than assuming today's yaw.
+            points, placement = placement_options(
+                state, regions.get(region, region), None, check_gripper=False
+            )
             targets = [np.asarray(point) for point in points]
         workspaces = {}
         if self.config.workspace_file is not None:
@@ -165,7 +173,9 @@ class R1ProApartmentSim(R1ProPrimitiveSim):
             state = scene.select_place(cast("Arm", arm), target)
             if state.selected != index:
                 raise RuntimeError("The holding hand changed after reachability assessment")
-            points, placement = placement_options(state, registered_region, None)
+            points, placement = placement_options(
+                state, registered_region, None, check_gripper=False
+            )
             if not any(np.linalg.norm(np.asarray(point) - target) < 0.005 for point in points):
                 raise RuntimeError("The selected placement spot is no longer empty and supported")
         planner = scene.transport_planner()

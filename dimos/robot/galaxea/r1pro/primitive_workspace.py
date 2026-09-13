@@ -43,6 +43,24 @@ class PrimitiveWorkspace:
     torso_max: tuple[float, ...]
     episodes: int
     manifest_sha256: str
+    starts: tuple[tuple[float, ...], ...] = ()
+
+    def preferred_torsos(self, target: NDArray[Any]) -> list[NDArray[np.float64]]:
+        """Seed positioning from actual demonstrations near this target, not averaged postures."""
+        if not self.starts:
+            return [np.asarray(self.torso_min, dtype=float)]
+        samples = np.asarray(self.starts, dtype=float)
+        if samples.ndim != 2 or samples.shape[1] != 7 or not np.isfinite(samples).all():
+            raise ValueError("Invalid target/torso samples in the policy workspace")
+        order = np.argsort(np.linalg.norm((samples[:, :3] - target) / [0.05, 0.05, 0.02], axis=1))
+        result: list[NDArray[np.float64]] = []
+        for index in order:
+            torso = samples[index, 3:]
+            if all(np.linalg.norm(torso - q) > 0.025 for q in result):
+                result.append(torso.copy())
+            if len(result) == 3:
+                break
+        return result
 
     def covers(self, target: NDArray[Any], torso: NDArray[Any]) -> bool:
         # Allow measured servo error, not an invented expansion of the dataset.
@@ -91,6 +109,7 @@ def audit_workspace(manifest: Path, primitive: Primitive, arm: Arm) -> Primitive
         tuple(map(float, torso.max(axis=0))),
         len(targets),
         hashlib.sha256(raw).hexdigest(),
+        tuple(tuple(map(float, row)) for row in np.column_stack((target, torso))),
     )
 
 

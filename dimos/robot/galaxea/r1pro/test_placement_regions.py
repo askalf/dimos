@@ -56,3 +56,12 @@ def test_clearance_includes_open_gripper_not_only_object_footprint():
         region, radius=0.01, half_height=0.05, obstacles=(neighbor,), gripper_half_width=0.02
     )[0] == (0, 0, 0.75)
     assert placement_candidates(region, radius=0.01, half_height=0.05, obstacles=(neighbor,)) == ()
+
+
+def test_turning_the_hand_changes_finger_clearance_without_changing_object_fit():
+    region = PlacementRegion("small", (0, 0, 0.7), (0.025, 0.025), ("top",))
+    neighbor = PlacementObstacle((0, 0.055), (0.01, 0.01), 0.7, 0.8)
+    assert placement_candidates(region, radius=0.01, half_height=0.05, obstacles=(neighbor,)) == ()
+    assert placement_candidates(
+        region, radius=0.01, half_height=0.05, obstacles=(neighbor,), gripper_yaw=math.pi / 2
+    ) == ((0.0, 0.0, 0.75),)
