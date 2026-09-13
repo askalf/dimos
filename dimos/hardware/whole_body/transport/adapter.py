@@ -24,7 +24,8 @@ from collections.abc import Callable
 import threading
 from typing import Any
 
-from dimos.core.transport import LCMTransport, ZenohTransport
+from dimos.core.transport import ZenohTransport
+from dimos.core.transport_factory import make_transport
 from dimos.hardware.spec import JointLimits
 from dimos.hardware.whole_body.spec import IMUState, MotorCommand, MotorState
 from dimos.msgs.sensor_msgs.Imu import Imu
@@ -43,7 +44,7 @@ class TransportWholeBodyAdapter:
         self,
         dof: int = 29,
         hardware_id: str = "wholebody",
-        transport_cls: Callable[[str, type], Any] = LCMTransport,
+        transport_cls: Callable[[str, type], Any] = make_transport,
         network_interface: int | str = "",  # accepted-and-ignored — see module docstring
         **_: object,
     ) -> None:
@@ -201,7 +202,7 @@ class TransportWholeBodyAdapter:
 
 def transport_lcm_factory(**kwargs: Any) -> TransportWholeBodyAdapter:
     """Factory for the ``transport_lcm`` adapter (see ``_registry.py``)."""
-    kwargs.setdefault("transport_cls", LCMTransport)
+    kwargs.setdefault("transport_cls", make_transport)
     return TransportWholeBodyAdapter(**kwargs)
 
 
