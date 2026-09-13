@@ -218,8 +218,8 @@ class ObjectPrimitiveTask(ObjectPackingTask):
     def teacher_place(
         self, target: NDArray[Any], region: PlacementRegion, *, clearance_z: float = 0.94
     ) -> Iterator[tuple[str, NDArray[np.float32]]]:
-        if not self.state.holding():
-            raise RuntimeError("Place must start with a measured stable held object")
+        if not self.state.carrying():
+            raise RuntimeError("Place must start with a measured upright two-pad grasp")
         self.state.target = target.copy()
         self.probe.qpos[:] = self.data.qpos
         mujoco.mj_forward(self.model, self.probe)

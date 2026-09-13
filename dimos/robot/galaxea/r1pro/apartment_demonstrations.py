@@ -98,12 +98,12 @@ def choose_local_placement(
             ):
                 task.step(command, base_target=step)
                 task.validate(initial)
-                if not task.state.holding():
+                if not task.state.carrying():
                     raise RuntimeError("Local base positioning lost the physical grasp")
             for _ in range(R1PRO_PICK_PLACE_FPS):
                 task.step(command)
                 task.validate(initial)
-                if not task.state.holding():
+                if not task.state.carrying():
                     raise RuntimeError("The held object slipped after local positioning")
             task.switch_arm(task.arm)
             return target, stance

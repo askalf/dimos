@@ -302,9 +302,12 @@ class ObjectReachability:
             )
             offset = float(tcp_offset[2])
         grasp = target + tcp_offset
-        # Keep a ten-centimetre lift plus room for the held object's bottom.
-        # A nearby taller object sets an additional vertical clearance constraint.
-        clearance = max(0.94, grasp[2] + 0.12)
+        # A pick needs a ten-centimetre physical lift plus tracking margin. A
+        # placement needs a clear transfer and open-hand retreat, not another
+        # full lift above the destination. Requiring that extra height can push
+        # an otherwise valid release past a wrist limit. Nearby objects still
+        # raise either corridor to clear their complete geometry below.
+        clearance = max(0.94, grasp[2] + (0.12 if primitive == "pick" else 0.08))
         for i, neighbor in enumerate(self.rows):
             if (
                 i != index

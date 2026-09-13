@@ -28,6 +28,7 @@ from dimos.robot.galaxea.r1pro.object_packing_scene import ObjectLayout
 from dimos.robot.galaxea.r1pro.object_primitive_state import PrimitiveSceneState
 from dimos.robot.galaxea.r1pro.object_primitive_task import ObjectPrimitiveTask
 from dimos.robot.galaxea.r1pro.object_reachability import ObjectReachability, stance_candidates
+from dimos.robot.galaxea.r1pro.placement_regions import PlacementRegion
 from dimos.robot.galaxea.r1pro.primitive_scene import prepare_primitive_scene
 
 
@@ -104,6 +105,35 @@ def test_place_reachability_can_release_both_fingers_after_a_real_grasp(task):
     stance = planner.evaluate("place", "right", 0, target, planner.transport.start)
     assert stance.arm == "right"
     np.testing.assert_array_equal(task.data.qpos, before)
+
+
+@pytest.mark.self_hosted
+@pytest.mark.mujoco
+def test_place_accepts_a_carried_object_below_the_pick_completion_height(task):
+    task.select(0)
+    source = task.geometry(0)
+    target = np.asarray(source["position"])
+    obj = task.layout.objects[0]
+    region = PlacementRegion(
+        "source",
+        (*target[:2], target[2] - obj.half_size[2]),
+        (0.1, 0.1),
+        tuple(source["support_geoms"]),
+    )
+    task.teacher_preposition(target)
+    for _, action in task.teacher_pick():
+        task.primitive_step(action)
+    assert task.state.holding()
+    lower = task.data.site("right_tcp").xpos.copy() - [0, 0, 0.07]
+    for _, action in task._move("transfer", lower, 0.0, 1.0):
+        task.primitive_step(action)
+    assert not task.state.holding()
+    assert task.state.carrying()
+    for _, action in task.teacher_place(target, region):
+        task.primitive_step(action)
+    final = task.geometry(0)
+    assert final["released"] and final["upright"] and final["support_geoms"]
+    assert not task.state.carrying()
 
 
 @pytest.fixture

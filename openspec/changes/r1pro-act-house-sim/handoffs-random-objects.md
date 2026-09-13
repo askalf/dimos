@@ -722,3 +722,18 @@ Two detached continuations are queued under the shared recordings jobs directory
 Incremental refinement now checks occupied-hand coverage in combined verified rehearsal and corrections; it no longer requires every new-height batch to reproduce four fresh occupied-hand examples. This reuses previous data, but does not claim two occupied hands generalize to new heights: that remains a required runtime check. Duplicate or unsuccessful examples and batches with fewer than eight new examples are still rejected.
 
 Default scene package resolution is valid in the user worktree via its existing `dimos/data/scene_packages` symlink. The temporary development worktree now has the same untracked data link; no user path was hardcoded into production configuration. Training and long collection remain detached; do not start native policy stacks while learner environments are being updated.
+
+
+### September 13: release clearance and measured carry state
+
+Updated 2026-09-13T03:10-07:00.
+
+The saved left dining rejection had two distinct causes. First, requiring a second 12 cm lift before placement exceeded the wrist workspace by about 2.6 mm. Placement now uses an 8 cm transfer/retreat baseline with full neighbor clearance retained; pick still requires its 10 cm physical lift plus command margin. Second, local transport reused the pick-completion height predicate. The held bottle reached 99.9 mm lift, so it was reported lost despite upright bilateral pad contact. `ObjectPackingState.carrying()` now checks the actual unsupported grasp independently; offline placement/transport use it, while pick completion remains strict.
+
+The saved left dining case now physically passes base adjustment, placement, supported release and retreat (`/tmp/r1pro-dining-place-final.log`). A regression physically lowers a grasp below the pick milestone, then successfully places it; it passed. Changed production files pass mypy and ruff.
+
+Independent DimOS RRT-Connect posture planning, full MuJoCo sweep checks and physical execution also passed at both kitchen approach poses. Max measured joint errors were 0.00151 rad right and 0.00227 rad left (`/tmp/r1pro-apartment-posture-results.json`). This is offline posture validation, not a native ACT end-to-end result.
+
+Smoke v4 completed with picks 12/12, placements 9/12. Its left dining coverage gate correctly prevented bulk collection. V4 data remains untouched. Corrected `apartment-reach-smoke-v5` (PID 2802943, corridor contract 5) repeats seed 381000 across all three supports and both hands. Bulk collection was restarted waiting on v5 (PID 2802944). The later refiner was restarted while waiting (PID 2806466); previous scripts/status are retained as `run-before-v5.py`, `status-before-v5.json` and the corresponding dual-held revision files.
+
+The final queued native suite now also includes `two-held-two-stops` on held-out seed 381204: pick separate worktable objects with right and left, navigate to dining, place right, navigate to kitchen, place left. All eight native cases and bench results must be reviewed before preview promotion. Current source remains in `/tmp/dimos-r1pro-primitives`; no user checkout/preview replacement or push has occurred.

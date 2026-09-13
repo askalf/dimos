@@ -99,7 +99,7 @@ def collect(
                 contract["everyday_objects"] = True
                 contract["policy_neighbor_distance"] = 0.8
                 if apartment_reach:
-                    contract["reach_corridor_version"] = 4
+                    contract["reach_corridor_version"] = 5
             path = folder / "manifest.json"
             manifest = (
                 json.loads(path.read_text())

@@ -193,6 +193,11 @@ class ObjectPackingState:
         self.peak_lift, self.bilateral_grasp = 0.0, False
         return True
 
+    def carrying(self) -> bool:
+        """Confirm current upright two-pad grasp, independently of the pickup height."""
+        row = self.geometry(self.selected)
+        return bool(row["grasped"] and row["upright"] and not row["support_geoms"])
+
     def holding(self) -> bool:
         """Require current two-pad contact and measured lift, not historical grasp success."""
         row = self.geometry(self.selected)
