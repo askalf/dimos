@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "robot_id": "r1pro_planar_sim",
+    "surface": "MuJoCo house floor",
+    "mode": "classical apartment velocity integration",
+    "date": "2026-09-13",
+    "sim_or_hw": "sim"
+  },
+  "plant": {
+    "vx": {
+      "K": 1.0,
+      "tau": 0.25,
+      "L": 0.0
+    },
+    "vy": {
+      "K": 1.0,
+      "tau": 0.25,
+      "L": 0.0
+    },
+    "wz": {
+      "K": 1.0,
+      "tau": 0.25,
+      "L": 0.0
+    }
+  },
+  "feedforward": {
+    "K_vx": 1.0,
+    "K_vy": 1.0,
+    "K_wz": 1.0,
+    "output_min_vx": -0.3,
+    "output_max_vx": 0.3,
+    "output_min_vy": -0.3,
+    "output_max_vy": 0.3,
+    "output_min_wz": -0.4,
+    "output_max_wz": 0.4
+  },
+  "velocity_profile": {
+    "max_linear_speed": 0.3,
+    "max_angular_speed": 0.4,
+    "max_centripetal_accel": 0.15,
+    "max_linear_accel": 0.2,
+    "max_linear_decel": 0.2,
+    "min_speed": 0.003
+  },
+  "recommended_controller": {
+    "name": "holonomic_pose_follower",
+    "params": {},
+    "evidence": "Simulation controller configuration matching the classical demo velocity integrator. Not a measured hardware fit."
+  },
+  "caveats": [
+    "Simulation only. Loaded route and placement validation must accompany this configuration."
+  ],
+  "valid_for_tuning": false
+}

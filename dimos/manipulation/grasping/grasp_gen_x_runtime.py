@@ -71,6 +71,8 @@ class GraspGenXRuntime:
     """Loaded GraspGenX sampler and exact tensor conversion boundary."""
 
     def __init__(self, config: GraspGenXConfig) -> None:
+        self._num_samples = config.num_samples
+        self._max_candidates = config.max_candidates
         model_config = load_model_cfg(_gen_dir, _dis_dir, gen_pth=None, dis_pth=None)
         for component in ("diffusion", "discriminator"):
             backbone = getattr(model_config, component).gripper_backbone
@@ -91,7 +93,12 @@ class GraspGenXRuntime:
 
     def infer(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Run inference and copy the known torch tensors to CPU NumPy arrays."""
-        poses, scores = GraspGenXSampler.run_inference(points, self._sampler)
+        poses, scores = GraspGenXSampler.run_inference(
+            points,
+            self._sampler,
+            num_grasps=self._num_samples,
+            topk_num_grasps=self._max_candidates,
+        )
         return (
             poses.detach().cpu().numpy(),
             scores.detach().cpu().numpy(),

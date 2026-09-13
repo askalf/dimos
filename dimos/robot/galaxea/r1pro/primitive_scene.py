@@ -139,11 +139,12 @@ def placement_options(
             )
         )
     obj = task.layout.objects[task.selected]
+    held_extent = object_extent(obj, task.data.body(task.bottle_id).xmat.reshape(3, 3))
     base = task.data.body("base_link")
     points = placement_candidates(
         region,
         radius=obj.radius,
-        half_height=obj.half_size[2],
+        half_height=float(held_extent[2]),
         obstacles=tuple(obstacles),
         gripper_half_width=0.065 if check_gripper else 0.0,
         gripper_yaw=float(np.arctan2(base.xmat[3], base.xmat[0])) if check_gripper else 0.0,

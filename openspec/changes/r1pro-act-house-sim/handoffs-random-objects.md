@@ -1,3 +1,5 @@
+> Latest direction (2026-09-13): the user requested classical execution with GraspGen on a separate branch. Continue from [handoffs-classical-apartment.md](handoffs-classical-apartment.md); the ACT work below is historical.
+
 # Random-object ACT execution handoff
 
 ## Current state — 2026-09-12

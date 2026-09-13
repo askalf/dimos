@@ -74,6 +74,7 @@ class GraspGenXConfig(ModuleConfig):
     gripper: SweepVolumeGripperConfig
     grasp_frame_to_tcp: RigidTransform = IDENTITY_TRANSFORM
     max_candidates: PositiveCount = 100
+    num_samples: Annotated[int, Field(ge=1, le=2000, strict=True)] = 200
 
     # Relational matrix properties cannot be expressed through scalar Field constraints.
     @field_validator("grasp_frame_to_tcp")

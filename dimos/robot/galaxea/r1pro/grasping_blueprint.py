@@ -244,7 +244,7 @@ def build_r1pro_manipulation(
     device: str,
     headless: bool,
     simulator: type[MujocoSimModule],
-    policy_module: type[_PolicyModule],
+    policy_module: type[_PolicyModule] | None,
     task_description: str,
     background_camera_rendering: bool = False,
     viewer_lookat: tuple[float, float, float] = (0.0, -0.4, 0.85),
@@ -382,16 +382,26 @@ def build_r1pro_manipulation(
                 ),
             ],
         ),
-        policy_module.blueprint(
-            instance_name=POLICY_ROLLOUT_INSTANCE_NAME,
-            artifact=artifact,
-            task=task_description,
-            device=device,
-            startup_timeout=120.0,
-            max_execution_horizon_s=1.5,
-            extra_env={"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "4", "MKL_NUM_THREADS": "4"},
+        *(
+            (
+                policy_module.blueprint(
+                    instance_name=POLICY_ROLLOUT_INSTANCE_NAME,
+                    artifact=artifact,
+                    task=task_description,
+                    device=device,
+                    startup_timeout=120.0,
+                    max_execution_horizon_s=1.5,
+                    extra_env={
+                        "OPENBLAS_NUM_THREADS": "1",
+                        "OMP_NUM_THREADS": "4",
+                        "MKL_NUM_THREADS": "4",
+                    },
+                ),
+                PolicySkills.blueprint(),
+            )
+            if policy_module is not None
+            else ()
         ),
-        PolicySkills.blueprint(),
     )
 
 

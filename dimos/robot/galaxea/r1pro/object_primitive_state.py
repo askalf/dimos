@@ -71,6 +71,8 @@ class PrimitiveSceneState:
             held_by = holders[0] if holders else None
             row.update(
                 released=not contacts,
+                grasped=any(evidence[side]["grasped"] for side in ARMS),
+                grasping_arms=[side for side in ARMS if evidence[side]["grasped"]],
                 supported=bool(row["support_geoms"]),
                 contacting_arms=contacts,
                 held_by=held_by,

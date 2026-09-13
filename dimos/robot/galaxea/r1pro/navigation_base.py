@@ -35,11 +35,18 @@ class PlanarVelocityServo:
         *,
         max_speed: float = MAX_SPEED,
         max_accel: float = MAX_ACCEL,
+        max_yaw_rate: float = MAX_YAW_RATE,
+        max_yaw_accel: float = MAX_YAW_ACCEL,
     ) -> None:
-        if not np.isfinite([max_speed, max_accel]).all() or min(max_speed, max_accel) <= 0:
+        if (
+            not np.isfinite([max_speed, max_accel, max_yaw_rate, max_yaw_accel]).all()
+            or min(max_speed, max_accel, max_yaw_rate, max_yaw_accel) <= 0
+        ):
             raise ValueError("Base speed and acceleration must be finite and positive")
         self.max_speed = max_speed
         self.max_accel = max_accel
+        self.max_yaw_rate = max_yaw_rate
+        self.max_yaw_accel = max_yaw_accel
         self.target = np.asarray(pose, dtype=np.float64).copy()
         self.velocity = np.zeros(3)
         self.command = np.zeros(3)
@@ -52,7 +59,7 @@ class PlanarVelocityServo:
         self.command[:2] = velocity[:2] * min(
             1.0, self.max_speed / max(float(np.linalg.norm(velocity[:2])), 1e-9)
         )
-        self.command[2] = np.clip(velocity[2], -MAX_YAW_RATE, MAX_YAW_RATE)
+        self.command[2] = np.clip(velocity[2], -self.max_yaw_rate, self.max_yaw_rate)
         self.command_time = now
 
     def stop(self, pose: NDArray[Any]) -> None:
@@ -65,7 +72,7 @@ class PlanarVelocityServo:
         command = self.command if now - self.command_time <= COMMAND_TIMEOUT else np.zeros(3)
         delta = command - self.velocity
         delta[:2] *= min(1.0, self.max_accel * dt / max(float(np.linalg.norm(delta[:2])), 1e-9))
-        delta[2] = np.clip(delta[2], -MAX_YAW_ACCEL * dt, MAX_YAW_ACCEL * dt)
+        delta[2] = np.clip(delta[2], -self.max_yaw_accel * dt, self.max_yaw_accel * dt)
         self.velocity += delta
         c, s = np.cos(pose[2]), np.sin(pose[2])
         vx, vy, wz = self.velocity

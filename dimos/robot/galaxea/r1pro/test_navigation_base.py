@@ -60,3 +60,15 @@ def test_blocked_base_integrator_and_command_speed_are_bounded():
 def test_rejects_invalid_commands(command):
     with pytest.raises(ValueError, match="finite"):
         PlanarVelocityServo(np.zeros(3)).command_twist(np.asarray(command), 0)
+
+
+@pytest.mark.parametrize(
+    "options,limit", [({}, 0.12), ({"max_yaw_rate": 0.4, "max_yaw_accel": 0.4}, 0.4)]
+)
+def test_turn_rate_respects_configured_limit(options, limit):
+    pose = np.zeros(3)
+    servo = PlanarVelocityServo(pose, **options)
+    for tick in range(150):
+        servo.command_twist(np.array([0, 0, 1.0]), tick * 0.02)
+        pose = servo.step(pose, 0.02, tick * 0.02)
+    assert servo.velocity[2] == pytest.approx(limit)
