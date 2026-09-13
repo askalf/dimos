@@ -203,16 +203,25 @@ class VisualAnswers:
     def _start_embedding(self) -> bool:
         """Add embeddings in the background unless that is already happening.
 
-        siglipify where it can read the recording, this package's own indexer where it
-        cannot: siglipify knows only `Image` streams, and `lite_record` writes its colour
-        as a `CompressedImage`. On such a recording it said "no image stream 'color_image'
-        in the recording; it has ['depth_image']" and stopped -- naming the one stream it
-        could see, which reads as the colour being missing. It is not missing; it is webp,
-        and this module decodes it for the viewer on every frame.
+        siglipify ONLY where the file positively says the colour is a plain `Image`; this
+        package's own indexer otherwise. siglipify reads the recording itself and knows
+        only `Image` streams, and `lite_record` writes its colour as a `CompressedImage`.
+        On such a recording it said "no image stream 'color_image' in the recording; it
+        has ['depth_image']" and stopped -- naming the one stream it could see, which
+        reads as the colour being missing. It is not missing; it is webp, and this module
+        decodes it for the viewer on every frame.
+
+        The test is on a POSITIVE "Image", not on "not Image", because
+        `recorded_payload` answers None for a file that cannot say -- **which every mcap
+        is**. Read the other way round, `grocery.mcap` (the recording DEMO.md tells you to
+        run) sent its compressed colour to siglipify and the viewer's only offer to make
+        the recording searchable failed with that same misleading sentence. The in-process
+        indexer goes through `open_recording`, so it handles both kinds; it is the safe
+        default, and siglipify is the optimisation taken only when it is known to apply.
         """
         self._ensure_store()  # names the streams: the indexer must get the viewer's camera
         recorded = recorded_payload(self.config.store_path, self.config.image_stream_name)
-        if recorded is not None and recorded != "Image":
+        if recorded != "Image":
             return self._embed_job.start(
                 in_process_command(
                     self.config.store_path,

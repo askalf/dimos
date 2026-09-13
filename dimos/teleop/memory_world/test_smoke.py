@@ -277,6 +277,66 @@ def test_a_thing_seen_from_several_sides_outranks_a_single_lucky_frame() -> None
     assert places[0].image_uv == (0.25, 0.75), "the matched pixel was lost on the way out"
 
 
+# ---- building the index -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("recorded", "expect_siglipify"),
+    [("Image", True), ("CompressedImage", False), (None, False)],
+)
+def test_an_mcap_goes_to_the_indexer_that_can_read_it(recorded, expect_siglipify) -> None:  # type: ignore[no-untyped-def]
+    """ "Add embeddings" is the viewer's only offer to make a recording searchable.
+
+    siglipify reads the file itself and knows only plain `Image` streams. The choice used
+    to be "not Image -> our own indexer", and `recorded_payload` answers **None for every
+    mcap**, because an mcap cannot say. So `grocery.mcap` -- the recording DEMO.md tells
+    you to run -- sent its `CompressedImage` colour to siglipify, which failed with "no
+    image stream 'realsense_color_image_compressed' in the recording; it has
+    ['/realsense/depth_image']": the colour reported missing when it is right there, and
+    no way left to search the demo recording. Measured live on the demo before this test
+    existed. Only a POSITIVE "Image" may take the siglipify path.
+    """
+    from dimos.teleop.memory_world import visual_answers as mod
+    from dimos.teleop.memory_world.visual_answers import VisualAnswers
+
+    started: dict[str, object] = {}
+
+    class Host(VisualAnswers):
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(
+                store_path="/nowhere/grocery.mcap",
+                image_stream_name="colour",
+                siglip_model_name="m",
+                image_index_stride=3,
+                tf_stream_name="tf",
+                world_frame="odom",
+                camera_optical_frame="",
+                image_index_stream_name="",
+                tf_tolerance_s=0.2,
+                siglipify_flake="flake",
+            )
+            self._embed_job = SimpleNamespace(
+                start=lambda command, config, adopt: started.update(command=command, config=config)
+                or True
+            )
+
+        def _ensure_store(self):  # type: ignore[no-untyped-def]
+            return None
+
+    original = mod.recorded_payload
+    mod.recorded_payload = lambda *a, **k: recorded  # type: ignore[assignment]
+    try:
+        assert Host()._start_embedding() is True
+    finally:
+        mod.recorded_payload = original  # type: ignore[assignment]
+
+    # siglipify is the one that takes a config alongside its command; ours takes None.
+    went_to_siglipify = started["config"] is not None
+    assert went_to_siglipify is expect_siglipify, (
+        f"payload {recorded!r} went to {'siglipify' if went_to_siglipify else 'our indexer'}"
+    )
+
+
 # ---- the answer, end to end -------------------------------------------------------
 
 
