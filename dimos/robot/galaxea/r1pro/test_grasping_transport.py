@@ -175,3 +175,25 @@ def test_primitive_uses_a_nearby_base_pose_when_nominal_carrying_pose_is_blocked
     path = scene.preposition_path("right", target)
     assert 0 < np.max(np.abs(np.asarray(path[-1]) - nominal)) <= 0.040001
     assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))
+
+
+@pytest.mark.parametrize("arm, target_y", [("right", -0.32), ("left", 0.32)])
+def test_primitive_can_stand_back_when_nearby_workspace_poses_hit_the_table(
+    checker, mocker, arm, target_y
+):
+    mocker.patch("dimos.robot.galaxea.r1pro.object_primitive_state.ObjectPackingState")
+    scene = PrimitiveSceneState(checker.model, checker.probe, sample_layout(0), np.zeros(20))
+    mocker.patch.object(scene, "transport_planner", return_value=checker)
+    target = np.array([0.75, target_y, 0.77])
+    nominal = scene.preposition_pose(arm, target)
+    assert all(
+        not checker.clear_pose_segment(pose, pose)
+        for pose in (
+            nominal + np.array([x, y, 0]) for x in (-0.04, 0, 0.04) for y in (-0.04, 0, 0.04)
+        )
+    )
+
+    path = scene.preposition_path(arm, target)
+
+    assert 0.48 <= target[0] - path[-1][0] <= 0.520001
+    assert all(checker.clear_pose_segment(np.array(a), np.array(b)) for a, b in pairwise(path))

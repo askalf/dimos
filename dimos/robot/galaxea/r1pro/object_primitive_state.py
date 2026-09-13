@@ -99,7 +99,7 @@ class PrimitiveSceneState:
 
     @classmethod
     def preposition_poses(cls, arm: Arm, target: NDArray[Any]) -> list[NDArray[np.float64]]:
-        """Prefer the nominal workspace, then nearby poses that preserve arm reach."""
+        """Prefer the nominal workspace, then clear poses within demonstrated reach."""
         nominal = cls.preposition_pose(arm, target)
         return [
             nominal + np.array([x, y, 0])
@@ -113,6 +113,15 @@ class PrimitiveSceneState:
                 (-0.04, 0.04),
                 (0.04, -0.04),
                 (0.04, 0.04),
+                # The 40 cm nominal reach can put the parked hands into the
+                # bench. Retain the demonstrated 48--52 cm forward reach as
+                # alternatives, without forcing far-table goals back to x=0.
+                (-0.08, 0),
+                (-0.12, 0),
+                (-0.08, -0.04),
+                (-0.08, 0.04),
+                (-0.12, -0.04),
+                (-0.12, 0.04),
             )
         ]
 
