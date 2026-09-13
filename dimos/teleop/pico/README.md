@@ -28,7 +28,7 @@ extras. For an environment already running SONIC, this preserves its packages:
 uv sync --inexact --extra xrobotoolkit
 ```
 
-Then run the blueprint below. On **Ubuntu 22.04 or 24.04 x86_64**, its
+Then run the blueprint below. On **Ubuntu 22.04 or 24.04, x86_64 or ARM64**, its
 `PicoTeleopModule.build()` prepares the matching public
 [PC Service package](https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/tag/v1.0.0)
 before any modules start. It reuses existing files or downloads the pinned
@@ -38,6 +38,10 @@ and checksums live in [`install.py`](install.py). Extraction uses `dpkg-deb`,
 provided by Ubuntu's `dpkg` package, without sudo or running package installation
 scripts. Subsequent runs reuse the cache without network access. Concurrent
 builds share a lock; failed downloads/extractions never become the active cache.
+ARM64 uses the released headless package, so the G1's onboard Jetson can own the
+service without a desktop session or a separate workstation. For SONIC on
+JetPack 6 / CUDA 12.6, use `bin/hardware/g1/setup-sonic-jp6` from the repository
+root and activate `.venv-sonic-jp6`; its setup includes the `xrobotoolkit` extra.
 
 The module then starts the PC Service, waits for its gRPC heartbeat, and
 stops/reaps its process during teardown, including failed startup. No separate

@@ -164,6 +164,44 @@ handoff settings below to compare the default model with `sonic-low-latency`.
 The JetPack setup below is for the G1's onboard computer. Desktop simulation
 uses the workstation environment above.
 
+#### JetPack 6 / CUDA 12.6 runtime
+
+On Jetson Linux R36 with CUDA 12.6 and cuDNN 9, install the pinned
+[Jetson AI Lab ONNX Runtime wheel](https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/onnxruntime-gpu/)
+into a separate Python 3.10 environment:
+
+```bash
+cd ~/dimos
+bin/hardware/g1/setup-sonic-jp6 --check
+bin/hardware/g1/setup-sonic-jp6
+source .venv-sonic-jp6/bin/activate
+export DIMOS_TRANSPORT=zenoh
+sudo nvpmodel -m 0
+sudo jetson_clocks
+dimos hardware g1 sonic-doctor
+```
+
+The script expects the normal DimOS native dependencies, including Cyclone DDS
+(`CYCLONEDDS_HOME` for a custom installation) and PortAudio development headers.
+It verifies the GPU wheel's SHA-256 and uses the system CUDA/cuDNN libraries.
+It includes native PICO teleoperation dependencies and both SONIC model bundles.
+The default `.venv` and any JetPack 5 environment are preserved; no reflash or
+system CUDA replacement is needed. Use the activated `dimos` directly, because
+`uv run` can resynchronize a CPU-only ONNX Runtime over the GPU package.
+
+The validated runtime is ONNX Runtime **1.24.0** with TensorFloat-32 disabled:
+the default reduced precision exceeds the existing planner accuracy tolerance
+on Orin. Encoder/decoder CPU fallback remains forbidden, and a CUDA execution
+failure is propagated to the control fault handler. JetPack 5 retains its
+separate runtime pin and configuration.
+
+The doctor checks model hashes, numerical accuracy, audited CPU operations,
+and policy/planner latency without contacting the motor controller. It can
+report inference results with unlocked clocks, but the overall preflight stays
+failed until MAXN and locked CPU/GPU clocks are confirmed. Reading those clock
+limits needs no sudo credentials. Do not proceed to
+motor control while any preflight check fails.
+
 #### Experimental JetPack 5 / CUDA 11.8 runtime
 
 NVIDIA's supported onboard SONIC deployment uses JetPack 6 and TensorRT 10.7.

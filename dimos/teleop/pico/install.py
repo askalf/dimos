@@ -33,29 +33,46 @@ logger = setup_logger()
 PC_SERVICE_VERSION = "1.0.0"
 # GitHub release asset digests, pinned independently of the mutable release tag.
 # https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/tag/v1.0.0
-_PACKAGE_SHA256 = {
-    "22.04": "61961067eb4b41f81ed7cae35f4690dbb0ddfefb329a12b24e0b90ebc46ada91",
-    "24.04": "bce661f0be0b8a246ceecb2e5f1675a81c26b834648dc7fdf23f8c0bfe2a5d19",
+_PACKAGES = {
+    "ubuntu-22.04-amd64": (
+        "XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb",
+        "61961067eb4b41f81ed7cae35f4690dbb0ddfefb329a12b24e0b90ebc46ada91",
+    ),
+    "ubuntu-24.04-amd64": (
+        "XRoboToolkit_PC_Service_1.0.0_ubuntu_24.04_amd64.deb",
+        "bce661f0be0b8a246ceecb2e5f1675a81c26b834648dc7fdf23f8c0bfe2a5d19",
+    ),
+    "ubuntu-arm64-headless": (
+        "XRoboToolkit-PC-Service-headless_1.0.0.0_arm64.deb",
+        "532c605dfa1a02b05b7c285b856c91771c78623cded30ef5b16ea371de49ed5f",
+    ),
 }
 _SERVICE_PATH = Path("opt/apps/roboticsservice/RoboticsServiceProcess")
 _SYSTEM_SERVICE_PATH = Path("/") / _SERVICE_PATH
 
 
-def _ubuntu_version() -> str | None:
-    if platform.system() != "Linux" or platform.machine().lower() not in {"x86_64", "amd64"}:
+def _package_variant() -> str | None:
+    if platform.system() != "Linux":
         return None
     try:
         release = platform.freedesktop_os_release()
     except OSError:
         return None
     version = release.get("VERSION_ID", "")
-    return version if release.get("ID") == "ubuntu" and version in _PACKAGE_SHA256 else None
+    if release.get("ID") != "ubuntu" or version not in {"22.04", "24.04"}:
+        return None
+    machine = platform.machine().lower()
+    if machine in {"aarch64", "arm64"}:
+        return "ubuntu-arm64-headless"
+    if machine in {"x86_64", "amd64"}:
+        return f"ubuntu-{version}-amd64"
+    return None
 
 
-def _cache_directory(version: str) -> Path:
+def _cache_directory(variant: str) -> Path:
     # A reviewed checksum update must not silently reuse the previous package.
-    variant = f"ubuntu-{version}-amd64-{_PACKAGE_SHA256[version][:16]}"
-    return CACHE_DIR / "xrobotoolkit-pc-service" / PC_SERVICE_VERSION / variant
+    directory = f"{variant}-{_PACKAGES[variant][1][:16]}"
+    return CACHE_DIR / "xrobotoolkit-pc-service" / PC_SERVICE_VERSION / directory
 
 
 def _find_service(directory: Path | None) -> Path | None:
@@ -68,8 +85,8 @@ def _find_service(directory: Path | None) -> Path | None:
             data_home / "dimos/xrobotoolkit-pc-service" / _SERVICE_PATH,
             data_home / f"dimos/xrobotoolkit-pc-service-{PC_SERVICE_VERSION}" / _SERVICE_PATH,
         ]
-        if version := _ubuntu_version():
-            candidates.append(_cache_directory(version) / _SERVICE_PATH)
+        if variant := _package_variant():
+            candidates.append(_cache_directory(variant) / _SERVICE_PATH)
     for executable in candidates:
         if executable.is_file() and os.access(executable, os.X_OK):
             return executable.resolve()
@@ -98,10 +115,11 @@ def ensure_pc_service(directory: Path | None = None) -> Path:
         return service_executable(directory)
     if executable := _find_service(None):
         return executable
-    version = _ubuntu_version()
-    if version is None:
+    variant = _package_variant()
+    if variant is None:
         raise RuntimeError(
-            "Automatic XRoboToolkit PC Service setup supports Ubuntu 22.04/24.04 x86_64. "
+            "Automatic XRoboToolkit PC Service setup supports Ubuntu 22.04/24.04 x86_64 "
+            "and ARM64. "
             "Use --pc-service-dir for a compatible local service, or --manage-pc-service false "
             "with an external service (--xrobotoolkit-host/--xrobotoolkit-port)."
         )
@@ -109,14 +127,14 @@ def ensure_pc_service(directory: Path | None = None) -> Path:
     if extractor is None:
         raise RuntimeError("XRoboToolkit setup requires dpkg-deb (Ubuntu's dpkg package).")
 
-    target = _cache_directory(version)
+    filename, expected_sha256 = _PACKAGES[variant]
+    target = _cache_directory(variant)
     target.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(target.parent / f"{target.name}.lock"), timeout=300):
         if executable := _find_service(None):
             return executable
         if target.exists():
             raise RuntimeError(f"Incomplete XRoboToolkit cache at {target}; remove it and retry.")
-        filename = f"XRoboToolkit_PC_Service_{PC_SERVICE_VERSION}_ubuntu_{version}_amd64.deb"
         url = (
             "https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/"
             f"v{PC_SERVICE_VERSION}/{filename}"
@@ -136,7 +154,7 @@ def ensure_pc_service(directory: Path | None = None) -> Path:
                 raise RuntimeError(
                     f"Failed to download XRoboToolkit PC Service from {url}: {exc}"
                 ) from exc
-            if digest.hexdigest() != _PACKAGE_SHA256[version]:
+            if digest.hexdigest() != expected_sha256:
                 raise RuntimeError(
                     "XRoboToolkit PC Service checksum mismatch; package was not extracted."
                 )

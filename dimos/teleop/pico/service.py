@@ -36,7 +36,7 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
             pass
     try:
         await asyncio.wait_for(process.wait(), timeout=2.0)
-    except TimeoutError:
+    except asyncio.TimeoutError:
         try:
             process.kill()
         except ProcessLookupError:
@@ -66,7 +66,12 @@ async def pc_service_lifecycle(
     service_dir = executable.parent
     env = os.environ.copy()
     for key, paths in {
-        "LD_LIBRARY_PATH": [service_dir, service_dir / "lib", service_dir / "SDK/x64"],
+        "LD_LIBRARY_PATH": [
+            service_dir,
+            service_dir / "lib",
+            service_dir / "SDK/x64",
+            service_dir / "SDK/arm64",
+        ],
         "QT_PLUGIN_PATH": [service_dir / "plugins"],
         "QT_QML_PATH": [service_dir / "qml"],
     }.items():
@@ -84,19 +89,22 @@ async def pc_service_lifecycle(
             stderr=asyncio.subprocess.STDOUT,
         )
         try:
+
+            async def wait_ready() -> None:
+                while True:
+                    ready = await client.is_ready()
+                    if process.returncode is not None:
+                        raise RuntimeError(
+                            f"XRoboToolkit PC Service exited with code {process.returncode}; "
+                            f"see {log_path}"
+                        )
+                    if ready:
+                        return
+                    await asyncio.sleep(0.1)
+
             try:
-                async with asyncio.timeout(startup_timeout):
-                    while True:
-                        ready = await client.is_ready()
-                        if process.returncode is not None:
-                            raise RuntimeError(
-                                f"XRoboToolkit PC Service exited with code {process.returncode}; "
-                                f"see {log_path}"
-                            )
-                        if ready:
-                            break
-                        await asyncio.sleep(0.1)
-            except TimeoutError as exc:
+                await asyncio.wait_for(wait_ready(), timeout=startup_timeout)
+            except asyncio.TimeoutError as exc:
                 raise RuntimeError(
                     f"XRoboToolkit PC Service did not become ready within {startup_timeout}s; "
                     f"see {log_path}"

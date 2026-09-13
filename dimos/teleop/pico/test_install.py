@@ -40,8 +40,11 @@ def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
         install,
-        "_PACKAGE_SHA256",
-        dict.fromkeys(["22.04", "24.04"], hashlib.sha256(PACKAGE).hexdigest()),
+        "_PACKAGES",
+        {
+            variant: (filename, hashlib.sha256(PACKAGE).hexdigest())
+            for variant, (filename, _) in install._PACKAGES.items()
+        },
     )
     return release
 
@@ -61,13 +64,20 @@ def extraction(mocker):
 
 
 @pytest.mark.parametrize("version", ["22.04", "24.04"])
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
 def test_download_verified_package_and_reuse_without_network(
-    environment, extraction, requests_mock, version
+    environment, extraction, requests_mock, monkeypatch, version, machine
 ):
     environment["VERSION_ID"] = version
+    monkeypatch.setattr(install.platform, "machine", lambda: machine)
+    filename = (
+        "XRoboToolkit-PC-Service-headless_1.0.0.0_arm64.deb"
+        if machine == "aarch64"
+        else f"XRoboToolkit_PC_Service_1.0.0_ubuntu_{version}_amd64.deb"
+    )
     url = (
         "https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/"
-        f"XRoboToolkit_PC_Service_1.0.0_ubuntu_{version}_amd64.deb"
+        f"{filename}"
     )
     download = requests_mock.get(url, content=PACKAGE)
 
@@ -97,7 +107,9 @@ def test_updated_pin_does_not_reuse_old_cached_package(
 ):
     requests_mock.get(ANY, content=PACKAGE)
     previous = install.ensure_pc_service()
-    monkeypatch.setitem(install._PACKAGE_SHA256, "22.04", "0" * 64)
+    variant = "ubuntu-22.04-amd64"
+    filename, _ = install._PACKAGES[variant]
+    monkeypatch.setitem(install._PACKAGES, variant, (filename, "0" * 64))
 
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         install.ensure_pc_service()
@@ -191,7 +203,7 @@ def test_invalid_explicit_path_does_not_download_or_write_there(
 
 @pytest.mark.parametrize(
     ("system", "machine", "version"),
-    [("Darwin", "arm64", "22.04"), ("Linux", "aarch64", "22.04"), ("Linux", "x86_64", "20.04")],
+    [("Darwin", "arm64", "22.04"), ("Linux", "riscv64", "22.04"), ("Linux", "x86_64", "20.04")],
 )
 def test_unsupported_platform_has_actionable_error_before_download(
     environment, extraction, requests_mock, monkeypatch, system, machine, version

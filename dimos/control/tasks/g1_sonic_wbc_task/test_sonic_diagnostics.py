@@ -13,13 +13,12 @@
 # limitations under the License.
 
 import json
-import subprocess
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from dimos.control.tasks.g1_sonic_wbc_task import sonic_diagnostics
+from dimos.control.tasks.g1_sonic_wbc_task import sonic_diagnostics, sonic_hardware
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_hardware import (
     ensure_sonic_max_performance,
 )
@@ -109,57 +108,75 @@ def test_planner_input_matches_released_model_contract() -> None:
     }
 
 
-def test_max_performance_check_accepts_locked_cpu_and_gpu(mocker) -> None:
-    run = mocker.patch(
-        "subprocess.run",
-        side_effect=[
-            SimpleNamespace(stdout="NV Power Mode: MAXN\n0\n"),
-            SimpleNamespace(
-                stdout=(
-                    "cpu0: Online=1 MinFreq=2201600 MaxFreq=2201600 CurrentFreq=2201600\n"
-                    "GPU MinFreq=1300500000 MaxFreq=1300500000 CurrentFreq=1300500000\n"
-                )
-            ),
-        ],
+@pytest.fixture(params=["17000000.ga10b", "17000000.gpu"])
+def clocks(tmp_path, monkeypatch, mocker, request):
+    cpu_root = tmp_path / "cpufreq"
+    gpu_root = tmp_path / "devfreq"
+    monkeypatch.setattr(sonic_hardware, "CPU_FREQUENCY_ROOT", cpu_root)
+    monkeypatch.setattr(sonic_hardware, "DEVFREQ_ROOT", gpu_root)
+    cpu = cpu_root / "policy0"
+    gpu = gpu_root / request.param
+    cpu.mkdir(parents=True)
+    gpu.mkdir(parents=True)
+    (cpu / "scaling_min_freq").write_text("1984000\n")
+    (cpu / "scaling_max_freq").write_text("1984000\n")
+    (gpu / "min_freq").write_text("918000000\n")
+    (gpu / "max_freq").write_text("918000000\n")
+    run = mocker.patch.object(
+        sonic_hardware.subprocess,
+        "run",
+        return_value=SimpleNamespace(stdout="NV Power Mode: MAXN\n0\n"),
     )
+    return cpu, gpu, run
 
+
+def test_max_performance_check_reads_locked_clocks_without_sudo(clocks):
+    _, _, run = clocks
     ensure_sonic_max_performance()
-
-    assert run.call_count == 2
-    assert run.call_args_list[1].args[0] == [
-        "sudo",
-        "-n",
-        "/usr/bin/jetson_clocks",
-        "--show",
-    ]
+    assert run.call_count == 1
+    assert run.call_args.args[0] == ["nvpmodel", "-q"]
 
 
-def test_max_performance_check_explains_sudo_requirement(mocker) -> None:
-    mocker.patch(
-        "subprocess.run",
-        side_effect=[
-            SimpleNamespace(stdout="NV Power Mode: MAXN\n0\n"),
-            subprocess.CalledProcessError(1, ["sudo", "-n", "/usr/bin/jetson_clocks", "--show"]),
-        ],
-    )
-
-    with pytest.raises(RuntimeError, match="sudo -v"):
+@pytest.mark.parametrize("device", ["CPU", "GPU"])
+def test_max_performance_check_rejects_unlocked_clocks(clocks, device):
+    cpu, gpu, _ = clocks
+    path = cpu / "scaling_min_freq" if device == "CPU" else gpu / "min_freq"
+    path.write_text("306000\n")
+    with pytest.raises(RuntimeError, match=f"unlocked: {device}"):
         ensure_sonic_max_performance()
 
 
-def test_max_performance_check_rejects_unlocked_clocks(mocker) -> None:
-    mocker.patch(
-        "subprocess.run",
-        side_effect=[
-            SimpleNamespace(stdout="NV Power Mode: MAXN\n0\n"),
-            SimpleNamespace(
-                stdout=(
-                    "cpu0: Online=1 MinFreq=115200 MaxFreq=2201600 CurrentFreq=729600\n"
-                    "GPU MinFreq=306000000 MaxFreq=1300500000 CurrentFreq=306000000\n"
-                )
-            ),
-        ],
-    )
-
-    with pytest.raises(RuntimeError, match="locked Jetson clocks"):
+def test_max_performance_check_rejects_unreadable_limits(clocks):
+    _, gpu, _ = clocks
+    (gpu / "max_freq").unlink()
+    with pytest.raises(RuntimeError, match="cannot read Jetson clock limits"):
         ensure_sonic_max_performance()
+
+
+def test_max_performance_check_rejects_missing_gpu(clocks):
+    _, gpu, _ = clocks
+    gpu.rename(gpu.with_name("unrecognized"))
+    with pytest.raises(RuntimeError, match="unlocked: GPU"):
+        ensure_sonic_max_performance()
+
+
+def test_unlocked_clocks_keep_doctor_failed_but_allow_offline_inference(mocker):
+    mocker.patch.object(sonic_diagnostics, "_host_checks", return_value=())
+    mocker.patch.object(sonic_diagnostics, "_model_checks", return_value=())
+    mocker.patch.object(
+        sonic_diagnostics, "ensure_sonic_max_performance", side_effect=RuntimeError("unlocked")
+    )
+    inference_check = sonic_diagnostics.SonicDiagnosticCheck("inference", True, "CUDA")
+    inference = mocker.patch.object(
+        sonic_diagnostics, "_inference_checks", return_value=[inference_check]
+    )
+    paths = sonic_diagnostics.SonicModelPaths(profiles={}, planner=sonic_diagnostics.REFERENCE_PATH)
+
+    report = sonic_diagnostics.run_sonic_doctor(paths)
+
+    assert not report.passed
+    assert report.checks == (
+        sonic_diagnostics.SonicDiagnosticCheck("Jetson MAXN and locked clocks", False, "unlocked"),
+        inference_check,
+    )
+    inference.assert_called_once_with(paths)

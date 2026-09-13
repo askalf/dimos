@@ -20,17 +20,30 @@ import pytest
 from dimos.control.tasks.g1_sonic_wbc_task import sonic_onnx_runtime
 
 
-def test_system_linked_ort_does_not_require_preload_dlls(mocker: Any) -> None:
+@pytest.fixture
+def jetson(tmp_path, monkeypatch):
+    release = tmp_path / "nv_tegra_release"
+    release.write_text("# R35 (release), REVISION: 3.1\n")
+    monkeypatch.setattr(sonic_onnx_runtime, "L4T_RELEASE", release)
+    monkeypatch.setattr(sonic_onnx_runtime.platform, "machine", lambda: "aarch64")
+    return release
+
+
+@pytest.mark.parametrize(("release", "version"), [(35, "1.18.1"), (36, "1.24.0")])
+def test_jetson_uses_matching_runtime_and_system_libraries(jetson, mocker, release, version):
+    jetson.write_text(f"# R{release} (release), REVISION: 4.3\n")
     mocker.patch.object(sonic_onnx_runtime.platform, "machine", return_value="aarch64")
-    mocker.patch.object(ort, "__version__", "1.18.1")
+    mocker.patch.object(ort, "__version__", version)
     mocker.patch.object(
         ort,
         "get_available_providers",
         return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
-    mocker.patch.object(ort, "preload_dlls", new=None)
+    preload = mocker.patch.object(ort, "preload_dlls")
 
     sonic_onnx_runtime.prepare_sonic_onnx_runtime()
+
+    preload.assert_not_called()
 
 
 def test_prepare_rejects_cpu_only_runtime_before_loading_models(mocker: Any) -> None:
@@ -44,11 +57,30 @@ def test_prepare_rejects_cpu_only_runtime_before_loading_models(mocker: Any) -> 
         sonic_onnx_runtime.prepare_sonic_onnx_runtime()
 
 
-def test_prepare_rejects_unvalidated_ort_version_on_jetson(mocker: Any) -> None:
+@pytest.mark.parametrize(("release", "setup"), [(35, "jp5"), (36, "jp6")])
+def test_prepare_rejects_unvalidated_ort_version_on_jetson(jetson, mocker, release, setup):
+    jetson.write_text(f"# R{release} (release), REVISION: 4.3\n")
     mocker.patch.object(sonic_onnx_runtime.platform, "machine", return_value="aarch64")
-    mocker.patch.object(ort, "__version__", "1.24.1")
+    mocker.patch.object(ort, "__version__", "1.23.2")
 
-    with pytest.raises(RuntimeError, match="requires validated ONNX Runtime 1.18.1"):
+    with pytest.raises(RuntimeError, match=f"setup-sonic-{setup}"):
+        sonic_onnx_runtime.prepare_sonic_onnx_runtime()
+
+
+def test_arm_server_is_not_assumed_to_be_jetpack5(jetson, mocker):
+    jetson.unlink()
+    mocker.patch.object(ort, "__version__", "1.23.2")
+    mocker.patch.object(ort, "get_available_providers", return_value=["CUDAExecutionProvider"])
+    preload = mocker.patch.object(ort, "preload_dlls")
+
+    sonic_onnx_runtime.prepare_sonic_onnx_runtime()
+
+    preload.assert_called_once_with()
+
+
+def test_unknown_jetpack_fails_before_model_loading(jetson):
+    jetson.write_text("# R38 (release), REVISION: 1.0\n")
+    with pytest.raises(RuntimeError, match="supports Jetson Linux R35/R36"):
         sonic_onnx_runtime.prepare_sonic_onnx_runtime()
 
 
@@ -68,6 +100,21 @@ def test_policy_session_disables_cpu_fallback(mocker: Any) -> None:
     options = inference_session.call_args.kwargs["sess_options"]
     assert options.get_session_config_entry("session.disable_cpu_ep_fallback") == "1"
     assert inference_session.call_args.kwargs["providers"] == ["CUDAExecutionProvider"]
+    session.disable_fallback.assert_called_once_with()
+
+
+def test_jetpack6_disables_reduced_precision_without_relaxing_cpu_gate(jetson, mocker):
+    jetson.write_text("# R36 (release), REVISION: 4.3\n")
+    session = mocker.Mock()
+    session.get_providers.return_value = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    inference = mocker.patch.object(ort, "InferenceSession", return_value=session)
+
+    sonic_onnx_runtime.create_sonic_session("encoder", "encoder.onnx", allow_cpu_shape_ops=False)
+
+    assert inference.call_args.kwargs["provider_options"] == [{"use_tf32": "0"}]
+    assert inference.call_args.kwargs["providers"] == ["CUDAExecutionProvider"]
+    options = inference.call_args.kwargs["sess_options"]
+    assert options.get_session_config_entry("session.disable_cpu_ep_fallback") == "1"
 
 
 def test_planner_session_explicitly_allows_audited_cpu_partition(mocker: Any) -> None:

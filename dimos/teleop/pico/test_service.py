@@ -112,6 +112,7 @@ async def test_module_owns_service_and_reaps_it_even_if_it_ignores_terminate(
         assert spawn.call_args.args == (str(installation / "RoboticsServiceProcess"),)
         assert spawn.call_args.kwargs["cwd"] == installation
         assert spawn.call_args.kwargs["env"]["LD_LIBRARY_PATH"].startswith(str(installation))
+        assert str(installation / "SDK/arm64") in spawn.call_args.kwargs["env"]["LD_LIBRARY_PATH"]
     finally:
         await asyncio.to_thread(module.stop)
     assert processes[0].returncode == -signal.SIGKILL

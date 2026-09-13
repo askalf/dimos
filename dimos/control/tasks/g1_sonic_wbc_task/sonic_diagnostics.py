@@ -38,16 +38,14 @@ from dimos.control.tasks.g1_sonic_wbc_task.sonic_hardware import (
 )
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_onnx_runtime import (
     CPU_PROVIDER,
-    JETSON_ORT_VERSION,
     create_sonic_session,
+    jetson_l4t_major,
     prepare_sonic_onnx_runtime,
+    validate_jetson_ort_version,
 )
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import SONIC_MODEL_PROFILES
 from dimos.utils.data import get_data_dir
 
-CUDA_HOME = Path("/usr/local/cuda-11.8")
-L4T_RELEASE = Path("/etc/nv_tegra_release")
-CUDNN_LIBRARY = Path("/usr/lib/aarch64-linux-gnu/libcudnn.so.8")
 REFERENCE_PATH = Path(__file__).with_name("sonic_doctor_reference.json")
 
 EXPECTED_MODEL_SHA256 = (
@@ -124,9 +122,6 @@ def _sha256(path: Path) -> str:
 
 
 def _host_checks() -> tuple[_Check, ...]:
-    compat_library = CUDA_HOME / "compat/libcuda.so"
-    cuda_runtime = CUDA_HOME / "lib64/libcudart.so.11.0"
-    ort_version = str(getattr(ort, "__version__", "unknown"))
     return (
         (
             "architecture",
@@ -137,22 +132,9 @@ def _host_checks() -> tuple[_Check, ...]:
             ),
         ),
         ("Jetson Linux", _verify_l4t),
-        ("CUDA 11.8 runtime", lambda: _require_path(cuda_runtime)),
-        ("CUDA 11.8 compatibility driver", lambda: _require_path(compat_library)),
-        ("cuDNN 8", lambda: _require_path(CUDNN_LIBRARY)),
-        (
-            "ONNX Runtime",
-            lambda: (
-                ort_version
-                if ort_version == JETSON_ORT_VERSION
-                else _raise(
-                    f"expected {JETSON_ORT_VERSION}, found {ort_version}; "
-                    "run bin/hardware/g1/setup-sonic-jp5"
-                )
-            ),
-        ),
+        ("CUDA/cuDNN libraries", _verify_jetson_libraries),
+        ("ONNX Runtime", _verify_ort_version),
         ("CUDA execution provider", _verify_cuda_provider),
-        ("Jetson MAXN and locked clocks", _verify_max_performance),
     )
 
 
@@ -172,13 +154,32 @@ def _require_path(path: Path) -> str:
 
 
 def _verify_l4t() -> str:
-    try:
-        release = L4T_RELEASE.read_text(encoding="utf-8").splitlines()[0]
-    except OSError as exc:
-        raise RuntimeError(f"cannot read {L4T_RELEASE}: {exc}") from exc
-    if not release.startswith("# R35"):
-        raise RuntimeError(f"expected L4T R35, found {release}")
-    return release
+    major = jetson_l4t_major()
+    if major is None:
+        raise RuntimeError("expected Jetson Linux with /etc/nv_tegra_release")
+    return f"L4T R{major} (JetPack {major - 30})"
+
+
+def _verify_jetson_libraries() -> str:
+    _verify_l4t()
+    if jetson_l4t_major() == 35:
+        libraries = (
+            "/usr/local/cuda-11.8/lib64/libcudart.so.11.0",
+            "/usr/local/cuda-11.8/compat/libcuda.so",
+            "/usr/lib/aarch64-linux-gnu/libcudnn.so.8",
+        )
+    else:
+        libraries = (
+            "/usr/local/cuda-12.6/lib64/libcudart.so.12",
+            "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1",
+            "/usr/lib/aarch64-linux-gnu/libcudnn.so.9",
+        )
+    return "; ".join(_require_path(Path(library)) for library in libraries)
+
+
+def _verify_ort_version() -> str:
+    validate_jetson_ort_version()
+    return str(getattr(ort, "__version__", "unknown"))
 
 
 def _verify_cuda_provider() -> str:
@@ -477,6 +478,10 @@ def run_sonic_doctor(
     results = _run_checks(_host_checks())
     if not all(check.passed for check in results):
         return SonicDiagnosticReport(tuple(results))
+
+    # An unlocked clock is still a failed deployment gate, but does not prevent
+    # useful offline model diagnostics. No control is started by this command.
+    results.extend(_run_checks((("Jetson MAXN and locked clocks", _verify_max_performance),)))
 
     paths = model_paths if model_paths is not None else resolve_sonic_model_paths()
     model_results = _run_checks(_model_checks(paths))

@@ -5,13 +5,22 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Read-only Jetson performance checks required before SONIC control."""
 
 from __future__ import annotations
 
-import re
+from pathlib import Path
 import subprocess
+
+CPU_FREQUENCY_ROOT = Path("/sys/devices/system/cpu/cpufreq")
+DEVFREQ_ROOT = Path("/sys/class/devfreq")
 
 
 def _output(command: list[str]) -> str:
@@ -33,22 +42,32 @@ def ensure_sonic_max_performance() -> None:
     if "NV Power Mode: MAXN" not in nvpmodel:
         raise RuntimeError("SONIC requires Jetson MAXN mode. Run `sudo nvpmodel -m 0`, then retry.")
 
-    try:
-        clocks = _output(["sudo", "-n", "/usr/bin/jetson_clocks", "--show"])
-    except RuntimeError as exc:
-        raise RuntimeError(
-            "checking locked Jetson clocks requires cached sudo credentials. "
-            "Run `sudo -v`, then retry `dimos hardware g1 sonic-doctor`."
-        ) from exc
-    cpu_matches = re.findall(r"cpu\d+[^\n]*MinFreq=(\d+)[^\n]*MaxFreq=(\d+)", clocks, re.IGNORECASE)
-    gpu_match = re.search(r"GPU[^\n]*MinFreq=(\d+)[^\n]*MaxFreq=(\d+)", clocks, re.IGNORECASE)
+    # These kernel limits are readable without sudo, including in module workers.
+    # Configuring the limits still requires the operator to run jetson_clocks.
+    cpu_policies = list(CPU_FREQUENCY_ROOT.glob("policy[0-9]*"))
+    gpu_devices = [
+        path for path in DEVFREQ_ROOT.glob("*") if path.name.endswith((".gpu", ".ga10b", ".gv11b"))
+    ]
     unlocked: list[str] = []
-    if not cpu_matches or any(minimum != maximum for minimum, maximum in cpu_matches):
+    if not cpu_policies or not all(
+        _locked_limits(path, "scaling_min_freq", "scaling_max_freq") for path in cpu_policies
+    ):
         unlocked.append("CPU")
-    if gpu_match is None or gpu_match.group(1) != gpu_match.group(2):
+    if not gpu_devices or not all(
+        _locked_limits(path, "min_freq", "max_freq") for path in gpu_devices
+    ):
         unlocked.append("GPU")
     if unlocked:
         raise RuntimeError(
             "SONIC requires locked Jetson clocks for CPU/GPU. Run `sudo jetson_clocks`, "
             f"then retry (unlocked: {', '.join(unlocked)})."
         )
+
+
+def _locked_limits(directory: Path, minimum_name: str, maximum_name: str) -> bool:
+    try:
+        minimum = int((directory / minimum_name).read_text(encoding="utf-8"))
+        maximum = int((directory / maximum_name).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read Jetson clock limits in {directory}: {exc}") from exc
+    return 0 < minimum == maximum
