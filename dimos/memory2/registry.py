@@ -25,6 +25,16 @@ from pydantic import Field
 
 from dimos.protocol.service.spec import BaseConfig, Configurable
 
+_LEGACY_PACKAGE_PREFIX = "dimos.memory."
+_CURRENT_PACKAGE_PREFIX = "dimos.memory2."
+
+
+def canonical_class_path(class_path: str) -> str:
+    """Translate persisted class paths from before the ``memory2`` rename."""
+    if class_path.startswith(_LEGACY_PACKAGE_PREFIX):
+        return _CURRENT_PACKAGE_PREFIX + class_path.removeprefix(_LEGACY_PACKAGE_PREFIX)
+    return class_path
+
 
 def qual(cls: type) -> str:
     """Fully qualified class name, e.g. 'dimos.memory2.blobstore.sqlite.SqliteBlobStore'."""
@@ -33,7 +43,7 @@ def qual(cls: type) -> str:
 
 def deserialize_component(data: dict[str, Any]) -> Any:
     """Instantiate a component from its ``{"class": ..., "config": ...}`` dict."""
-    module_path, _, cls_name = data["class"].rpartition(".")
+    module_path, _, cls_name = canonical_class_path(data["class"]).rpartition(".")
     mod = importlib.import_module(module_path)
     cls = getattr(mod, cls_name)
     return cls(**data["config"])

@@ -16,13 +16,21 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
+
 import pytest
 
 from dimos.memory2.blobstore.file import FileBlobStore
 from dimos.memory2.blobstore.sqlite import SqliteBlobStore, SqliteBlobStoreConfig
 from dimos.memory2.notifier.subject import SubjectNotifier
 from dimos.memory2.observationstore.sqlite import SqliteObservationStoreConfig
-from dimos.memory2.registry import RegistryStore, deserialize_component, qual
+from dimos.memory2.registry import (
+    RegistryStore,
+    canonical_class_path,
+    deserialize_component,
+    qual,
+)
 from dimos.memory2.store.sqlite import SqliteStore
 from dimos.memory2.vectorstore.sqlite import SqliteVectorStore, SqliteVectorStoreConfig
 
@@ -96,6 +104,13 @@ class TestRegistryStore:
 
 
 class TestComponentSerialization:
+    def test_legacy_memory_class_path(self) -> None:
+        legacy = "dimos.memory.notifier.subject.SubjectNotifier"
+
+        assert canonical_class_path(legacy) == qual(SubjectNotifier)
+        restored = deserialize_component({"class": legacy, "config": {}})
+        assert isinstance(restored, SubjectNotifier)
+
     def test_sqlite_observation_store_config(self) -> None:
         cfg = SqliteObservationStoreConfig(page_size=512, path="test.db")
         dumped = cfg.model_dump()
@@ -175,6 +190,28 @@ class TestBackendSerialization:
 @pytest.mark.skipif_macos
 @pytest.mark.skipif_aarch64
 class TestStoreReopen:
+    def test_reopen_legacy_memory_registry_paths(self, tmp_path) -> None:
+        """Recordings made before the memory2 rename remain readable."""
+        db = str(tmp_path / "legacy.db")
+        with SqliteStore(path=db) as store:
+            store.stream("nums", int).append(42, ts=1.0)
+
+        conn = sqlite3.connect(db)
+        (raw_config,) = conn.execute(
+            "SELECT config FROM _streams WHERE name = ?", ("nums",)
+        ).fetchone()
+        config = json.loads(raw_config)
+        for component in ("blob_store", "vector_store", "notifier"):
+            config[component]["class"] = config[component]["class"].replace(
+                "dimos.memory2.", "dimos.memory."
+            )
+        conn.execute("UPDATE _streams SET config = ? WHERE name = ?", (json.dumps(config), "nums"))
+        conn.commit()
+        conn.close()
+
+        with SqliteStore(path=db, must_exist=True) as store:
+            assert store.stream("nums").first().data == 42
+
     def test_reopen_preserves_data(self, tmp_path) -> None:
         """Create a store, write data, close, reopen, read back."""
         db = str(tmp_path / "test.db")

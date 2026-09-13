@@ -25,7 +25,12 @@ from dimos.memory2.blobstore.base import BlobStore
 from dimos.memory2.blobstore.sqlite import SqliteBlobStore
 from dimos.memory2.codecs.base import codec_id
 from dimos.memory2.observationstore.sqlite import SqliteObservationStore
-from dimos.memory2.registry import RegistryStore, deserialize_component, qual
+from dimos.memory2.registry import (
+    RegistryStore,
+    canonical_class_path,
+    deserialize_component,
+    qual,
+)
 from dimos.memory2.store.base import Store, StoreConfig
 from dimos.memory2.utils.sqlite import open_disposable_sqlite_connection
 from dimos.memory2.utils.validation import validate_identifier
@@ -83,7 +88,9 @@ class SqliteStore(Store):
         bs_data = stored.get("blob_store")
         if bs_data is not None:
             bs_cfg = bs_data.get("config", {})
-            if bs_cfg.get("path") is None and bs_data["class"] == qual(SqliteBlobStore):
+            if bs_cfg.get("path") is None and canonical_class_path(bs_data["class"]) == qual(
+                SqliteBlobStore
+            ):
                 bs: Any = SqliteBlobStore(conn=backend_conn)
             else:
                 bs = deserialize_component(bs_data)
@@ -93,7 +100,9 @@ class SqliteStore(Store):
         vs_data = stored.get("vector_store")
         if vs_data is not None:
             vs_cfg = vs_data.get("config", {})
-            if vs_cfg.get("path") is None and vs_data["class"] == qual(SqliteVectorStore):
+            if vs_cfg.get("path") is None and canonical_class_path(vs_data["class"]) == qual(
+                SqliteVectorStore
+            ):
                 vs: Any = SqliteVectorStore(conn=backend_conn)
             else:
                 vs = deserialize_component(vs_data)
