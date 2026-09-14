@@ -16,8 +16,8 @@
 """Replay a recording through the lidar relocalizer's decision path, with no planner.
 
 The live map grows from the recording's lidar the way the ray tracer builds it. Each
-attempt is scored and confirmed the way the module does it, and the confirmed fix is
-compared with the one the robot published, when the recording carries it.
+attempt is scored the way the module scores it, and the accepted fix is compared with
+the one the robot published, when the recording carries it.
 
     python -m dimos.mapping.relocalization.lidar.tune replay <recording.db> --premap <map>
 """
@@ -33,7 +33,7 @@ import typer
 
 from dimos.mapping.ray_tracing.transformer import RayTraceMap, pose_from_tf
 from dimos.mapping.ray_tracing.utils.loaded_map import log_loaded_map
-from dimos.mapping.relocalization.lidar.module import FixConfirmer, LidarConfig
+from dimos.mapping.relocalization.lidar.module import LidarConfig
 from dimos.mapping.relocalization.lidar.relocalize import PRESETS, LidarRelocalizer
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF
@@ -59,7 +59,6 @@ class Attempt(NamedTuple):
     t: float
     fitness: float
     tf: Transform | None
-    confirmed: bool
 
 
 class Replay(NamedTuple):
@@ -127,7 +126,6 @@ def replay(
     preset: str,
     world_frame: str,
     reloc_interval: float,
-    confirm_fixes: int,
     min_local_points: int,
     voxel_size: float,
     after_s: float,
@@ -149,11 +147,6 @@ def replay(
     frames = lidar.transform(pose_from_tf(tf, world_frame)).transform(ray)
 
     relocalizer = LidarRelocalizer(premap.pointcloud, PRESETS[preset])
-    confirmer = FixConfirmer(
-        confirm_fixes,
-        _DEFAULTS["confirm_translation_m"].default,
-        _DEFAULTS["confirm_yaw_deg"].default,
-    )
     recorded = recorded_fix(store, world_frame, MAP_FRAME)
     premap_pts = premap.points_f32()
 
@@ -175,11 +168,10 @@ def replay(
             continue
         next_attempt = obs.ts + reloc_interval
         tf_fix, result = relocalizer.attempt(obs.data.pointcloud, world_frame, MAP_FRAME)
-        confirmed = tf_fix is not None and confirmer.confirmed(tf_fix)
-        attempts.append(Attempt(obs.ts - t0, result.fitness, tf_fix, confirmed))
+        attempts.append(Attempt(obs.ts - t0, result.fitness, tf_fix))
         rr.log("metrics/reloc/fitness", rr.Scalars(result.fitness))
-        _print_attempt(attempts[-1], confirmer, recorded)
-        if not confirmed:
+        _print_attempt(attempts[-1], recorded)
+        if tf_fix is None:
             continue
         fix, fix_ts = tf_fix, obs.ts
         stop_at = obs.ts + after_s
@@ -210,7 +202,7 @@ def write_loaded_map(
     return True
 
 
-def _print_attempt(attempt: Attempt, confirmer: FixConfirmer, recorded: Transform | None) -> None:
+def _print_attempt(attempt: Attempt, recorded: Transform | None) -> None:
     if attempt.tf is None:
         print(f"{attempt.t:.1f}s refused fitness={attempt.fitness:.3f}")
         return
@@ -222,12 +214,7 @@ def _print_attempt(attempt: Attempt, confirmer: FixConfirmer, recorded: Transfor
     if recorded is not None:
         dyaw, dt = fix_error(attempt.tf, recorded)
         line += f" vs recorded: yaw {dyaw:+.1f}deg t {dt:.2f}m"
-    state = (
-        "CONFIRMED"
-        if attempt.confirmed
-        else f"candidate {confirmer.agreeing}/{confirmer.confirm_fixes}"
-    )
-    print(f"{line} {state}")
+    print(f"{line} ACCEPTED")
 
 
 def main(
@@ -240,11 +227,6 @@ def main(
         _DEFAULTS["reloc_interval"].default,
         "--reloc-interval",
         help="Seconds of recording between attempts",
-    ),
-    confirm_fixes: int = typer.Option(
-        _DEFAULTS["confirm_fixes"].default,
-        "--confirm-fixes",
-        help="Consecutive agreeing fixes before one is believed",
     ),
     min_local_points: int = typer.Option(
         _DEFAULTS["min_local_points"].default,
@@ -278,7 +260,6 @@ def main(
             preset,
             world_frame,
             reloc_interval,
-            confirm_fixes,
             min_local_points,
             voxel_size,
             after,
@@ -290,7 +271,7 @@ def main(
     if out is not None:
         print(f"wrote {out}")
     if result.fix is None:
-        print(f"no fix confirmed in {len(result.attempts)} attempts")
+        print(f"no fix accepted in {len(result.attempts)} attempts")
         raise typer.Exit(1)
     if result.recorded is None:
         print("no recorded fix in this recording to compare against")

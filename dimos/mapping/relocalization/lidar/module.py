@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from collections import deque
 from functools import reduce
-import math
 import operator
 import time
 from typing import Any
@@ -31,7 +30,6 @@ from dimos.mapping.relocalization.lidar.relocalize import (
     RelocalizeConfig,
 )
 from dimos.mapping.relocalization.module import Config, RelocalizationModule
-from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
 from dimos.utils.reactive import backpressure
@@ -67,44 +65,6 @@ class LidarConfig(Config):
     # what has been measured; a different sensor wants its own preset
     # (see relocalize.PRESETS and tune.md), not these numbers.
     relocalize: RelocalizeConfig = MID360
-    # Consecutive fixes that must agree before one is published. 1 publishes
-    # the first fix that clears the fitness threshold.
-    confirm_fixes: int = 2
-    confirm_translation_m: float = 0.1
-    confirm_yaw_deg: float = 3.0
-
-
-def fixes_agree(a: Transform, b: Transform, translation_m: float, yaw_deg: float) -> bool:
-    """Whether two fixes land within the given translation and yaw of each other."""
-    dt = (a.translation - b.translation).length()
-    dyaw = math.degrees(a.rotation.euler.z - b.rotation.euler.z)
-    dyaw = (dyaw + 180.0) % 360.0 - 180.0
-    return dt <= translation_m and abs(dyaw) <= yaw_deg
-
-
-class FixConfirmer:
-    """Believes a fix once enough consecutive fixes agree with it."""
-
-    def __init__(self, confirm_fixes: int, translation_m: float, yaw_deg: float) -> None:
-        self.confirm_fixes = confirm_fixes
-        self.translation_m = translation_m
-        self.yaw_deg = yaw_deg
-        self._candidate: Transform | None = None
-        self.agreeing = 0
-
-    def confirmed(self, tf: Transform) -> bool:
-        if self._candidate is not None and fixes_agree(
-            tf, self._candidate, self.translation_m, self.yaw_deg
-        ):
-            self.agreeing += 1
-        else:
-            self.agreeing = 1
-        self._candidate = tf
-        if self.agreeing >= self.confirm_fixes:
-            self._candidate = None
-            self.agreeing = 0
-            return True
-        return False
 
 
 class CloudRelocalization(RelocalizationModule):
@@ -119,11 +79,6 @@ class CloudRelocalization(RelocalizationModule):
         super().__init__(**kwargs)
         self._relocalizer: LidarRelocalizer | None = None
         self._last_skip_log = 0.0
-        self._confirmer = FixConfirmer(
-            self.config.confirm_fixes,
-            self.config.confirm_translation_m,
-            self.config.confirm_yaw_deg,
-        )
 
     def clouds(self) -> Observable[PointCloud2]:
         """The windowed live cloud to match, at most one every ``reloc_interval``."""
@@ -179,13 +134,7 @@ class CloudRelocalization(RelocalizationModule):
             )
             return
         logger.info(f"relocalize lidar: time_cost={dt:.1f}s n_pts={len(msg)}")
-        if self._confirmer.confirmed(tf):
-            self.submit(tf, "lidar")
-            return
-        logger.info(
-            f"relocalize lidar: candidate {self._confirmer.agreeing}/"
-            f"{self.config.confirm_fixes}, waiting for an agreeing fix"
-        )
+        self.submit(tf, "lidar")
 
 
 class LidarWindowRelocalization(CloudRelocalization):

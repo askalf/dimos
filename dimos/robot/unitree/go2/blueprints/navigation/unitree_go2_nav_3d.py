@@ -54,7 +54,7 @@ from dimos.visualization.vis_module import vis_module
 voxel_size = 0.08
 wall_clearance_m = 0.1
 # Raise above 0 to draw what the planner searched over (surface, nodes, weighted edges).
-planner_viz_hz = 0.0
+planner_viz_hz = 1.0
 
 
 class Go2Mid360Recorder(PointlioRecorder):
