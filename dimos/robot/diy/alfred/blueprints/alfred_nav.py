@@ -32,7 +32,8 @@ import os
 from typing import Any
 
 from dimos.control.components import HardwareComponent, HardwareType, make_twist_base_joints
-from dimos.control.coordinator import ControlCoordinator, TaskConfig
+from dimos.control.coordinator import TaskConfig
+from dimos.control.path_following_coordinator import PathFollowingCoordinator
 from dimos.control.tasks.joint_hold_task.joint_hold_task import joint_hold_task
 from dimos.control.tasks.trajectory_task.trajectory_task import joint_trajectory_task
 from dimos.core.coordination.blueprints import autoconnect
@@ -42,9 +43,7 @@ from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
-from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
 from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
-from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
 from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
@@ -72,6 +71,7 @@ from dimos.visualization.rerun.urdf_robot import (
     UrdfRobotJointStateRerunFactory,
     UrdfRobotStaticRerunFactory,
 )
+from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
 from dimos.visualization.vis_module import vis_module
 
 OPENARM_LEFT_CAN_ENV = "OPENARM_LEFT_CAN"
@@ -98,6 +98,8 @@ def _openarm_hardware_from_env() -> HardwareComponent:
 
 ALFRED_BASE_HARDWARE_ID = "flowbase"
 BASE_TRAJECTORY_TASK_NAME = "base_trajectory"
+BASE_VELOCITY_TASK_NAME = "vel_flowbase"
+NAV_FOLLOWER_TASK_NAME = "holonomic_follower"
 JOINT_TRAJECTORY_TASK_NAME = "joint_trajectory"
 # The coordinator does not own the FlowBase: it publishes a twist that MovementManager
 # muxes, so AlfredHighLevel stays the only writer. Odometry comes back on the same
@@ -110,6 +112,15 @@ _flowbase_hardware = HardwareComponent(
     auto_enable=True,
 )
 _BASE_VX_LIMIT, _BASE_VY_LIMIT, _BASE_WZ_LIMIT = ALFRED_PLANAR_BASE.velocity_limits
+
+
+class AlfredNavCoordinator(PathFollowingCoordinator):
+    """The coordinator, carrying the ``path`` and ``speed`` ports the follower binds to.
+
+    Everything that drives Alfred's base is a task on this one coordinator, so the
+    base is arbitrated by joint claim and priority like every other joint rather
+    than by a separate mux upstream of the hardware.
+    """
 
 
 def alfred_manipulation_tasks() -> list[TaskConfig]:
@@ -127,11 +138,38 @@ def alfred_manipulation_tasks() -> list[TaskConfig]:
                 PILLAR_LIFT_JOINT: PILLAR_LIFT_VELOCITY_LIMIT_M_S,
             },
         ),
-        joint_hold_task(alfred_arm_joints(), name="hold_arms"),
+        joint_hold_task(alfred_arm_joints(), list(_flowbase_hardware.joints), name="hold_arms"),
+        # Teleop. Above the plan and the follower both: the operator overrides.
+        TaskConfig(
+            name=BASE_VELOCITY_TASK_NAME,
+            type="velocity",
+            joint_names=list(_flowbase_hardware.joints),
+            priority=20,
+            # The base coasts to a stop on its own ramp; zeroing on every gap in
+            # the key stream would fight it.
+            params={"zero_on_timeout": False},
+        ),
+        # Navigation. Lowest of the three base claims, so a plan's base segment
+        # and the operator both take the wheels off it without a mux upstream.
+        TaskConfig(
+            name=NAV_FOLLOWER_TASK_NAME,
+            type="holonomic_pose_follower",
+            joint_names=list(_flowbase_hardware.joints),
+            priority=10,
+            params={
+                "speed": 0.4,
+                "goal_tolerance": 0.20,
+                "orientation_tolerance": 0.25,
+                # TODO: replace with Alfred's own artifact from `dimos run
+                # alfred-autotune`. The default is the Go2's plant model, so until
+                # then the follower is calibrated for the wrong robot.
+            },
+        ),
         TaskConfig(
             name=BASE_TRAJECTORY_TASK_NAME,
             type="planar_base_trajectory",
             joint_names=list(_flowbase_hardware.joints),
+            priority=15,
             # The planner limits x and y separately, so a diagonal may exceed either.
             params={
                 "max_linear": math.hypot(_BASE_VX_LIMIT, _BASE_VY_LIMIT),
@@ -220,7 +258,12 @@ _rerun_config = {
 
 alfred_nav = (
     autoconnect(
-        vis_module(viewer_backend=global_config.viewer, rerun_config=_rerun_config),
+        # A click in the viewer is the goal. MovementManager used to relay it and
+        # also cancel the goal when teleop took over; the coordinator handles the
+        # override by priority instead, so only the relay is still needed.
+        vis_module(viewer_backend=global_config.viewer, rerun_config=_rerun_config).remappings(
+            [(RerunWebSocketServer, "clicked_point", "goal")]
+        ),
         AlfredHighLevel.blueprint(),
         AlfredMountTf.blueprint(root_frame=LIDAR_FRAME),
         PointLio.blueprint(
@@ -260,8 +303,6 @@ alfred_nav = (
         DanLocalPlanner.blueprint(resample_spacing_m=0.1).remappings(
             [(DanLocalPlanner, "odom", "start_pose")]
         ),
-        DanHolonomicTC.blueprint().remappings([(DanHolonomicTC, "odom", "start_pose")]),
-        MovementManager.blueprint(),
         PillarConnection.blueprint(),
         planner(
             model=alfred_planar_model_config(),
@@ -278,26 +319,24 @@ alfred_nav = (
                 BASE_TRAJECTORY_TASK_NAME: list(ALFRED_PLANAR_BASE.joint_names),
             },
         ),
-        # MovementManager's cmd_vel is the muxed teleop-over-navigation twist, and the
-        # only place the base's actual motion is visible to the coordinator; hold_arms
-        # reads it. There is no BASE hardware here, so the coordinator's own twist ->
-        # base-joint mapping stays a no-op.
-        ControlCoordinator.blueprint(
+        # Teleop arrives as a Twist and is mapped onto the base's virtual joints,
+        # where vel_flowbase picks it up at priority 20. Navigation arrives as a
+        # Path on the follower's port. Both are ordinary joint claims from here.
+        AlfredNavCoordinator.blueprint(
             instance_name="ControlCoordinator",
             hardware=[pillar_hardware(), _openarm_hardware_from_env(), _flowbase_hardware],
             tasks=alfred_manipulation_tasks(),
-        ).remappings([(ControlCoordinator, "twist_command", "cmd_vel")]),
+        ).remappings([(AlfredNavCoordinator, "twist_command", "tele_cmd_vel")]),
     )
     .transports(
         {
             **dict(PILLAR_MOTOR_TRANSPORTS),
-            # The base hardware's transport adapter owns two raw topics derived from its
-            # hardware_id. Bind the module streams that face them onto the same names:
-            # the coordinator's base twist becomes MovementManager's manipulation input,
-            # and StartRelay's pose becomes the adapter's odometry feedback.
-            ("manip_cmd_vel", Twist): LCMTransport.spec(
-                f"/{ALFRED_BASE_HARDWARE_ID}/cmd_vel", Twist
-            ),
+            # The base hardware's transport adapter owns two raw topics derived from
+            # its hardware_id. Bind the module streams that face them onto the same
+            # names. cmd_vel is the coordinator's single arbitrated base command --
+            # teleop, the follower and a plan's base segment all leave by this one
+            # topic -- and AlfredHighLevel is what turns it into wheels.
+            ("cmd_vel", Twist): LCMTransport.spec(f"/{ALFRED_BASE_HARDWARE_ID}/cmd_vel", Twist),
             ("start_pose", PoseStamped): LCMTransport.spec(
                 f"/{ALFRED_BASE_HARDWARE_ID}/odom", PoseStamped
             ),
