@@ -1186,3 +1186,43 @@ def test_gpu_preprocessing_is_off_until_a_run_says_otherwise() -> None:
     assert Owlv2Config().gpu_preprocess is False, (
         "every caller of the shared detector, not just hyperspace, opts in deliberately"
     )
+
+
+def test_the_first_answer_is_timed_from_the_question(recording: SqliteStore, monkeypatch) -> None:
+    """`first_result` is the wait a person could time with a stopwatch.
+
+    It used to start at the beginning of detection, which left out the patch search and
+    the episode grouping in front of it. On bike.db that reported 0.4 s for a wait that
+    was really 7 -- and a number that flattering sends the next afternoon of tuning at
+    the wrong half of the query. So it has to be at least as large as the search it
+    waited for.
+    """
+    import time as clock
+
+    def slow_search(*args, **kwargs):
+        clock.sleep(0.15)
+        return [frame_at(10.0, 0.9), frame_at(10.25, 0.9)]
+
+    monkeypatch.setattr("dimos.mapping.hyperspace.frames.hot_frames", slow_search)
+    config = DetectConfig(world_frame=WORLD)
+    timings: dict[str, float] = {}
+    answers = list(
+        find(
+            recording,
+            recording,
+            "a square",
+            config=config,
+            frames=RecordingFrames(recording, config=config),
+            boxes=StubBoxes((28.0, 20.0, 36.0, 28.0)),
+            timings=timings,
+        )
+    )
+    assert answers, "the stub answers, so there is a first result to time"
+    assert timings["search"] >= 0.15, "the stubbed search really did take that long"
+    assert timings["first_result"] >= timings["search"], (
+        f"first_result {timings['first_result']:.3f}s is less than the "
+        f"{timings['search']:.3f}s search in front of it, so it is not timed from the question"
+    )
+    assert timings["first_result"] == answers[0].arrived, (
+        "the reported wait and the answer's own arrival have to be the same number"
+    )

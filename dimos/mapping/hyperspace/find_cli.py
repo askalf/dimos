@@ -228,7 +228,7 @@ def main(
             f"  time: search {spent.get('search', 0):.3f}s"
             f" + episodes {spent.get('episodes', 0):.3f}s"
             f" + detector {spent.get('detect', 0):.3f}s"
-            f"  (first answer at {spent.get('search', 0) + spent.get('first_result', 0):.3f}s,"
+            f"  (first answer at {spent.get('first_result', 0):.3f}s,"
             f" {int(spent.get('frames_matched', 0))} frames matched)"
         )
         for detection in found:

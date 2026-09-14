@@ -1188,8 +1188,13 @@ def find(
         # module would have seen the answer appear.
         answer.arrived = time.monotonic() - asked
         if first is None:
-            first = time.monotonic() - at
+            first = answer.arrived
         yield answer
     if timings is not None:
         timings["detect"] = time.monotonic() - at
+        # From the QUESTION, like `arrived`, and for the same reason. This used to be
+        # measured from the start of detection, which quietly omitted the search and the
+        # episode grouping in front of it -- it reported 0.4 s for a wait that was
+        # really 7. The number a person can check against a stopwatch is the only honest
+        # one, and on this recording search is most of it.
         timings["first_result"] = first or 0.0
