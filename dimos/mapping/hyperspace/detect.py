@@ -45,6 +45,7 @@ from dimos.mapping.hyperspace.ingest import (
     decoded,
     filled_stream_for,
     frame_stream_for,
+    info_stream_for,
     intrinsics_of,
 )
 from dimos.msgs.sensor_msgs.Image import Image
@@ -317,11 +318,19 @@ class RecordingFrames:
         self.depth_stream = depth_stream
         self.config = config or DetectConfig()
         self.intrinsics: dict[str, hs.Intrinsics] = {}
-        for name in (color_info_stream, depth_info_stream):
-            if name in recording.list_streams():
-                for observation in recording.streams[name].order_by("ts").limit(1):
-                    info = observation.data
-                    self.intrinsics[info.frame_id] = intrinsics_of(info)
+        # The ingest's own record last, so it wins: live it is the only one there is,
+        # and offline it is the camera the patches were actually measured through.
+        for name in (color_info_stream, depth_info_stream, info_stream_for("")):
+            if name not in recording.list_streams():
+                continue
+            for observation in recording.streams[name].order_by("ts"):
+                info = observation.data
+                self.intrinsics[info.frame_id] = intrinsics_of(info)
+        if not self.intrinsics:
+            logger.warning(
+                f"hyperspace: no camera_info in {color_info_stream!r}, {depth_info_stream!r} "
+                f"or {info_stream_for('')!r} -- no answer can be placed in the world"
+            )
         self.tf = FlexTf()
         self._tf_stream = tf_stream
         self._tf_loaded = False

@@ -70,6 +70,15 @@ class LiveConfig:
     merge_m: float = 0.75
     # Answers to return. 0 = all of them.
     top: int = 0
+    # The recording's stream names. Empty means the defaults `RecordingFrames` knows,
+    # which are not what every recording calls them -- bike.db's are
+    # `realsense_color_image_compressed` and `realsense_camera_info`, and a query that
+    # guesses wrong finds the images but no intrinsics, so every answer dies as
+    # "no camera_info for <frame>" with a warning and no exception.
+    color_stream: str = ""
+    depth_stream: str = ""
+    color_info_stream: str = ""
+    depth_info_stream: str = ""
 
 
 class LiveQuery:
@@ -83,7 +92,17 @@ class LiveQuery:
     def __init__(self, store: Any, config: LiveConfig | None = None) -> None:
         self.store = store
         self.config = config or LiveConfig()
-        self.frames = RecordingFrames(store, config=self.config.detect)
+        named = {
+            key: value
+            for key, value in (
+                ("color_stream", self.config.color_stream),
+                ("depth_stream", self.config.depth_stream),
+                ("color_info_stream", self.config.color_info_stream),
+                ("depth_info_stream", self.config.depth_info_stream),
+            )
+            if value
+        }
+        self.frames = RecordingFrames(store, config=self.config.detect, **named)
         self.boxes = Owlv2Boxes(self.config.detect)
         self.towers = TextTowers(self.config.detect.device or "cpu")
         self.held = ResidentIndex()

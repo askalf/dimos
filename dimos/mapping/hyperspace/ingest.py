@@ -31,6 +31,7 @@ import numpy as np
 
 from dimos.mapping.hyperspace import patches as hs
 from dimos.models.embedding.base import Embedding
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.utils.logging_config import setup_logger
@@ -43,7 +44,6 @@ if TYPE_CHECKING:
     from dimos.mapping.hyperspace.embedder import SigLIP2Patches
     from dimos.memory.store.base import Store
     from dimos.memory.stream import Stream
-    from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 
 logger = setup_logger()
 
@@ -62,6 +62,10 @@ FILLED_STREAM = "hyperspace_filled_depth"
 # has to be handed the picture of a place the robot drove past minutes ago. Keeping the
 # gated 5 Hz is about a gigabyte an hour against the 70 the raw stream would cost.
 FRAME_STREAM = "hyperspace_frames"
+# The camera the frames came through. Live there is no `camera_info` stream to read --
+# the intrinsics arrive on a port and are held in memory -- and without them a 2D box
+# cannot be turned into a place in the world. One row per camera, written once.
+INFO_STREAM = "hyperspace_camera_info"
 
 
 def index_slug(specs: Sequence[str]) -> str:
@@ -107,6 +111,11 @@ def filled_stream_for(slug: str = "") -> str:
 def frame_stream_for(slug: str = "") -> str:
     """The kept-colour-frame stream of one index."""
     return FRAME_STREAM if not slug else f"{FRAME_STREAM}__{slug}"
+
+
+def info_stream_for(slug: str = "") -> str:
+    """The camera-intrinsics stream of one index."""
+    return INFO_STREAM if not slug else f"{INFO_STREAM}__{slug}"
 
 
 def _colour_at(colours: Any, stamps: Sequence[float], tolerance: float = 0.01) -> Any:
@@ -405,6 +414,7 @@ class PatchIngestor:
         self._thumbnails: Stream[Any] | None = None
         self._filled: Stream[Any] | None = None
         self._frames: Stream[Any] | None = None
+        self._cameras_written: set[str] = set()
         # One vec0 stream per model; the member list is only certain once it has run.
         self.patches_by_member: dict[str, Stream[Any]] = {}
         self.tf_stream: Stream[TFMessage] = store.stream(TF_STREAM, TFMessage)
@@ -447,8 +457,17 @@ class PatchIngestor:
         """
         if not self.config.keep_frames:
             return
+        # RGB, said out loud. `Image.from_numpy` defaults to BGR, and the buffer hands
+        # this pass RGB -- so the default silently labels the channels backwards and
+        # `to_rgb()` then swaps them for real. The detector is shown the result, and
+        # OWLv2 asked for "a car" on a street full of cars refused every frame.
         self.frames.append(
-            Image.from_numpy(np.ascontiguousarray(rgb), frame_id=camera_frame, ts=ts),
+            Image.from_numpy(
+                np.ascontiguousarray(rgb),
+                format=ImageFormat.RGB,
+                frame_id=camera_frame,
+                ts=ts,
+            ),
             ts=ts,
             tags={"camera_frame": camera_frame},
         )
@@ -487,6 +506,24 @@ class PatchIngestor:
 
     def add_camera_info(self, info: CameraInfo) -> None:
         self.intrinsics[info.frame_id] = intrinsics_of(info)
+        self._keep_camera_info(info)
+
+    def _keep_camera_info(self, info: CameraInfo) -> None:
+        """Write this camera down, once, so a query can place a box off its own store.
+
+        Live, the intrinsics arrive on a port and exist only in this process's memory.
+        The query side turns a 2D detector box into a place in the world with them, and
+        without them every answer dies as "no camera_info for <frame>" -- one warning per
+        episode, no exception, no answers.
+        """
+        if not self.config.keep_frames or info.frame_id in self._cameras_written:
+            return
+        self.store.stream(info_stream_for(self.slug), CameraInfo).append(
+            info,
+            ts=float(getattr(info, "ts", 0.0) or time.time()),
+            tags={"camera_frame": info.frame_id},
+        )
+        self._cameras_written.add(info.frame_id)
 
     def add_tf(self, msg: TFMessage, ts: float | None = None) -> None:
         """Record tf so the query side can place keyframes at query time.

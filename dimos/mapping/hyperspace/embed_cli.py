@@ -56,9 +56,6 @@ from dimos.mapping.hyperspace.embedder import DEFAULT_TRIO, PatchEnsemble
 from dimos.mapping.hyperspace.ingest import (
     IngestConfig,
     index_slug,
-    index_specs,
-    indexes_in,
-    patch_stream_for,
     stream_names,
 )
 from dimos.mapping.hyperspace.module import depth2depth_model_of
@@ -68,21 +65,20 @@ logger = setup_logger()
 
 
 def report_indexes(memory: Any) -> None:
-    """What this recording already answers from, before anything is touched."""
-    found = indexes_in(memory)
+    """What this recording already answers from, before anything is touched.
+
+    Counted off the PATCH streams, not off `indexes_in`. The flat layout writes no
+    keyframe stream at all, and `indexes_in` looks for one -- so asking it reports
+    "none yet" about an index that has two million vectors in it.
+    """
+    from dimos.mapping.hyperspace.frames import member_streams
+
+    found = list(member_streams(memory))
     if not found:
         typer.echo("indexes: none yet")
         return
-    for slug in sorted(found):
-        specs = index_specs(memory, slug) or []
-        rows = []
-        for spec in specs:
-            from dimos.mapping.hyperspace.embedder import member_tag
-
-            stream = patch_stream_for(slug, member_tag(spec))
-            if stream in memory.list_streams():
-                rows.append(f"{member_tag(spec)}={memory.stream(stream, dict).count()}")
-        typer.echo(f"indexes: {slug or '(canonical)'} -- {', '.join(rows) or 'empty'}")
+    rows = [f"{tag}={memory.stream(stream, dict).count():,}" for tag, stream in found]
+    typer.echo(f"indexes: {', '.join(rows)}")
 
 
 def main(

@@ -37,6 +37,7 @@ import time
 from typing import TYPE_CHECKING, Any
 import zipfile
 
+import numpy as np
 import typer
 
 from dimos.mapping.hyperspace.cli import open_store, pick_device, pick_stream
@@ -65,8 +66,10 @@ def _picture(answer: Detection, width: int = 720) -> str:
 
     if answer.image is None:
         return ""
-    array = answer.image.to_rgb().data
-    picture = PILImage.fromarray(array[:, :, ::-1] if array.shape[2] == 3 else array).convert("RGB")
+    # `to_rgb()` already returns RGB. Reversing the channels here on the assumption it
+    # returns BGR is how the pages came out with blue traffic cones -- the same
+    # confusion that put the swap into the stored frames in the first place.
+    picture = PILImage.fromarray(np.asarray(answer.image.to_rgb().data)).convert("RGB")
     if answer.box2d is not None:
         draw_box(picture, answer.box2d, (255, 138, 46), width=max(2, picture.width // 180))
     if picture.width > width:
@@ -166,11 +169,14 @@ def main(
             ),
             models=wanted,
             merge_m=merge_m,
+            # Named at construction, not patched afterwards: `RecordingFrames` reads the
+            # camera intrinsics in its constructor, so a name set later is set too late.
+            color_stream=pick_stream(store, None, "color", "image"),
+            depth_stream=pick_stream(store, None, "depth", "image"),
+            color_info_stream=pick_stream(store, None, "camera", "info"),
+            depth_info_stream=pick_stream(store, None, "depth", "camera", "info"),
         ),
     )
-    # The same streams the module would find, named rather than guessed per query.
-    live.frames.color_stream = pick_stream(store, None, "color", "image")
-    live.frames.depth_stream = pick_stream(store, None, "depth", "image")
 
     typer.echo(f"index: {recording_path}  models {wanted} of {available}")
     loaded = live.warm([spec_of(tag) for tag in wanted])

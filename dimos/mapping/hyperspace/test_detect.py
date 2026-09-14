@@ -925,3 +925,68 @@ def test_live_the_detector_is_shown_the_frames_the_ingest_kept(tmp_path: Path) -
     assert answer.box3d is not None, "placed off the kept frame and the filled depth"
     assert answer.image is not None, "and it carries the picture it was placed from"
     store.stop()
+
+
+def test_a_recording_that_names_its_streams_differently_can_still_place(tmp_path: Path) -> None:
+    """Intrinsics are read in the constructor, so a stream name set afterwards is late.
+
+    bike.db calls its camera info `realsense_camera_info`, not `camera_info`. Told the
+    wrong name, `RecordingFrames` finds the images and no intrinsics, and every answer
+    dies as "no camera_info for <frame>" -- a warning per episode, no exception, and a
+    query that quietly returns nothing on a recording full of the thing asked for.
+    """
+    store = SqliteStore(path=str(tmp_path / "oddly_named.db"))
+    store.start()
+    store.stream("realsense_camera_info", CameraInfo).append(camera_info(), ts=10.0)
+    colors = store.stream("realsense_color_image_compressed", Image)
+    depths = store.stream("realsense_depth_image", Image, codec=Lz4Codec(LcmCodec(Image)))
+    for ts in (10.0, 10.25):
+        colors.append(
+            Image.from_numpy(
+                np.full((HEIGHT, WIDTH, 3), 128, dtype=np.uint8), frame_id=CAMERA, ts=ts
+            ),
+            ts=ts,
+        )
+        depths.append(
+            Image.from_numpy(
+                (planted_depth() * 1000).astype(np.uint16),
+                format=ImageFormat.DEPTH16,
+                frame_id=CAMERA,
+                ts=ts,
+            ),
+            ts=ts,
+        )
+
+    config = DetectConfig(world_frame=WORLD)
+    guessed = RecordingFrames(store, config=config)
+    assert not guessed.intrinsics, "the defaults do not match this recording"
+
+    told = RecordingFrames(
+        store,
+        color_stream="realsense_color_image_compressed",
+        depth_stream="realsense_depth_image",
+        color_info_stream="realsense_camera_info",
+        depth_info_stream="realsense_camera_info",
+        config=config,
+    )
+    assert CAMERA in told.intrinsics, "told the right names, it can place a box"
+    assert told.color(10.0) is not None
+    assert told.depth(CAMERA, 10.0) is not None
+    store.stop()
+
+
+def test_the_ingests_own_camera_record_is_enough_to_place_a_box(tmp_path: Path) -> None:
+    """Live there is no camera_info stream at all -- the ingest's record is the only one.
+
+    The intrinsics arrive on a port and live in the ingest's memory; if it does not write
+    them down, a query against its store can find the pictures and the depth and still
+    not turn a 2D box into a place in the world.
+    """
+    from dimos.mapping.hyperspace.ingest import info_stream_for
+
+    store = SqliteStore(path=str(tmp_path / "live_only.db"))
+    store.start()
+    store.stream(info_stream_for(""), CameraInfo).append(camera_info(), ts=10.0)
+    frames = RecordingFrames(store, config=DetectConfig(world_frame=WORLD))
+    assert CAMERA in frames.intrinsics, "the ingest's own record is read"
+    store.stop()

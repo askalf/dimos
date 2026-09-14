@@ -1208,3 +1208,34 @@ def test_a_stream_says_which_family_of_model_wrote_it() -> None:
         "google/siglip2-so400m-patch16-naflex@1024",
     ):
         assert spec_of(sql_safe(member_tag(spec))) == spec, spec
+
+
+def test_a_kept_frame_comes_back_the_colour_it_went_in(store: SqliteStore) -> None:
+    """The picture the detector is shown has to be the picture the camera took.
+
+    `Image.from_numpy` defaults to BGR and the ingest holds RGB, so the default labels
+    the channels backwards and `to_rgb()` then swaps them for real. Nothing raises: the
+    frames look plausible until you notice brake lights are blue, and OWLv2 asked for
+    "a car" on a street full of cars refuses every one of them.
+    """
+    from dimos.mapping.hyperspace.detect import DetectConfig, RecordingFrames
+    from dimos.mapping.hyperspace.ingest import frame_stream_for
+
+    ingestor = fill(store, ring(2, 2.5), flat=True)
+    ingestor.config.keep_frames = True
+    # One frame whose channels are all different, so a swap cannot hide.
+    painted = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+    painted[..., 0], painted[..., 1], painted[..., 2] = 200, 120, 40
+    ingestor._keep_frame(CAMERA, 50.0, painted)
+
+    kept = store.streams[frame_stream_for("")].at(50.0, tolerance=0.01).to_list()
+    assert kept, "the frame was written"
+    frames = RecordingFrames(store, config=DetectConfig(world_frame=WORLD))
+    shown = frames.color(50.0)
+    assert shown is not None
+    back = np.asarray(shown.to_rgb().data)
+    # The store's codec is JPEG, so a couple of levels of drift is the compression,
+    # not the channels. A swap would land ~160 levels away on two of the three.
+    assert np.allclose(back[0, 0], (200, 120, 40), atol=8), (
+        f"channels came back as {tuple(int(v) for v in back[0, 0])}, wanted (200, 120, 40)"
+    )
