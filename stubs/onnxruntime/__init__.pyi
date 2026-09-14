@@ -9,6 +9,12 @@ class NodeArg:
     type: str
     shape: list[int | str | None]
 
+class SessionOptions:
+    intra_op_num_threads: int
+
+class ModelMetadata:
+    custom_metadata_map: dict[str, str]
+
 class InferenceSession:
     def __init__(
         self,
@@ -27,6 +33,7 @@ class InferenceSession:
     def get_inputs(self) -> list[NodeArg]: ...
     def get_outputs(self) -> list[NodeArg]: ...
     def get_providers(self) -> list[str]: ...
+    def get_modelmeta(self) -> ModelMetadata: ...
 
 def get_available_providers() -> list[str]: ...
 def get_device() -> str: ...
