@@ -15,12 +15,6 @@ TASK_FACTORIES = {
     "joint_hold": "dimos.control.tasks.joint_hold_task.joint_hold_task:create_task",
 }
 
-# Broadcast: the base's twist is consumed by whoever drives the base as well.
-TASK_CONSUMES: dict[str, dict[str, tuple[str, str]]] = {
-    "joint_hold": {
-        "twist_command": ("on_twist_command", "broadcast"),
-    },
-}
 
 TASK_EXPOSES: dict[str, list[str]] = {
     "joint_hold": ["start", "stop", "hold", "release", "set_enabled", "get_status"],

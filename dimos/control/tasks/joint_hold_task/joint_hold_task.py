@@ -16,8 +16,15 @@
 
 A mobile base accelerating under an arm that nothing is commanding leaves the
 arm to swing on its own inertia; on a bimanual robot the two can reach each
-other. This task watches the base's twist and, while the base is moving, holds
-its joints at the pose they were in when the motion started.
+other. This task watches the base's own joints on the coordinator and, while
+the base is moving, holds its arm joints at the pose they were in when the
+motion started.
+
+The base is read from CoordinatorState rather than from a twist stream: for BASE
+hardware the coordinator fills the virtual joints' velocity from the commanded
+twist, and every writer - teleop, a route follower, the base half of a whole-body
+plan - is already aggregated there. Watching one command stream would see only
+one of them.
 
 It claims SERVO_POSITION like the trajectory task but at a lower priority, so a
 real plan preempts it: hold is what happens when nothing else wants the arm.
@@ -29,7 +36,7 @@ back it latches wherever the arm now is rather than snapping to a stale pose.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -45,7 +52,6 @@ from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
     from dimos.control.coordinator import TaskConfig
-    from dimos.msgs.geometry_msgs.Twist import Twist
 
 logger = setup_logger()
 
@@ -60,6 +66,9 @@ class JointHoldTaskConfig:
     Attributes:
         joint_names: Joints to hold. Usually the arms; leave the lift out, it
             carries its own load and does not swing.
+        base_joint_names: The base's virtual twist joints (vx, vy, wz) to read
+            motion from. Empty disables the automatic trigger, leaving only the
+            explicit hold() rpc.
         priority: Arbitration priority. Must stay below the trajectory task or
             hold would fight every plan.
         linear_threshold: Base speed (m/s) above which the base counts as moving.
@@ -71,6 +80,7 @@ class JointHoldTaskConfig:
     """
 
     joint_names: list[str]
+    base_joint_names: list[str] = field(default_factory=list)
     priority: int = DEFAULT_HOLD_PRIORITY
     linear_threshold: float = 0.02
     angular_threshold: float = 0.05
@@ -88,10 +98,12 @@ class JointHoldTask(BaseControlTask):
     Example:
         >>> task = JointHoldTask(
         ...     "hold_arms",
-        ...     JointHoldTaskConfig(joint_names=["left/joint1", "left/joint2"]),
+        ...     JointHoldTaskConfig(
+        ...         joint_names=["left/joint1", "left/joint2"],
+        ...         base_joint_names=["base/vx", "base/vy", "base/wz"],
+        ...     ),
         ... )
-        >>> task.on_twist_command(Twist(linear=Vector3(0.3, 0.0, 0.0)), t_now=1.0)
-        >>> task.is_active()
+        >>> task.claim().priority < 10  # a plan always outranks the hold
         True
     """
 
@@ -105,6 +117,7 @@ class JointHoldTask(BaseControlTask):
         self._config = config
         self._joint_names = frozenset(config.joint_names)
         self._joint_names_list = list(config.joint_names)
+        self._base_joint_names = list(config.base_joint_names)
 
         self._lock = threading.Lock()
         self._enabled = True
@@ -129,18 +142,32 @@ class JointHoldTask(BaseControlTask):
         )
 
     def is_active(self) -> bool:
-        """Active while the base is moving, or inside the release window."""
+        """Participate whenever enabled; compute() decides if there is a hold.
+
+        The base's motion is only legible from CoordinatorState, which is_active
+        does not receive, so the decision moves into compute(). This task sits at
+        the bottom of the stack, so claiming the joints and then declining to
+        command them blocks nothing underneath.
+        """
         with self._lock:
-            return self._enabled and self._hold_until is not None
+            return self._enabled
 
     def compute(self, state: CoordinatorState) -> JointCommandOutput | None:
         """Hold the latched pose, latching it on the first tick of a hold."""
+        moving = self._base_is_moving(state)
         with self._lock:
-            if not self._enabled or self._hold_until is None:
+            if not self._enabled:
                 return None
 
-            # The release window is measured on the coordinator clock, so a
-            # twist stream that simply stops still releases the joints.
+            if moving:
+                self._hold_until = state.t_now + self._config.release_after_s
+
+            if self._hold_until is None:
+                return None
+
+            # The release window runs on the coordinator clock, so a base that
+            # stops being commanded still releases the joints rather than
+            # holding them until something says so.
             if state.t_now >= self._hold_until:
                 self._reset_locked()
                 return None
@@ -169,24 +196,31 @@ class JointHoldTask(BaseControlTask):
             self._warned_drift.clear()
         logger.debug(f"JointHoldTask {self._name} preempted by {by_task}, latch dropped")
 
-    def on_twist_command(self, msg: Twist, t_now: float) -> None:
-        """Card-routed twist_command handler; extends the hold while the base moves."""
-        linear = (float(msg.linear.x) ** 2 + float(msg.linear.y) ** 2) ** 0.5
-        angular = abs(float(msg.angular.z))
-        moving = linear > self._config.linear_threshold or angular > self._config.angular_threshold
-        if not moving:
-            return
+    def _base_is_moving(self, state: CoordinatorState) -> bool:
+        """True when any base axis is being commanded above its threshold.
 
-        with self._lock:
-            if not self._enabled:
-                return
-            starting = self._hold_until is None
-            self._hold_until = t_now + self._config.release_after_s
-        if starting:
-            logger.debug(f"JointHoldTask {self._name} holding: base moving")
+        For BASE hardware the coordinator reports the commanded twist as the
+        virtual joints' velocity, so this reads the aggregate of every writer.
+        """
+        if not self._base_joint_names:
+            return False
+        linear_sq = 0.0
+        angular = 0.0
+        for index, joint in enumerate(self._base_joint_names):
+            value = state.joints.get_velocity(joint)
+            if value is None:
+                continue
+            # vx, vy, wz by position: the first two are linear, the third angular.
+            if index < 2:
+                linear_sq += float(value) ** 2
+            else:
+                angular = max(angular, abs(float(value)))
+        return (
+            linear_sq > self._config.linear_threshold**2 or angular > self._config.angular_threshold
+        )
 
     def start(self) -> None:
-        """Enable the task. ``auto_start`` calls this; holding still waits for a twist."""
+        """Enable the task. ``auto_start`` calls this; holding still waits for the base."""
         self.set_enabled(True)
 
     def stop(self) -> None:
@@ -280,6 +314,7 @@ class JointHoldTask(BaseControlTask):
 class JointHoldTaskParams(BaseConfig):
     """Validated ``TaskConfig.params`` for the joint hold task."""
 
+    base_joint_names: list[str] = []
     linear_threshold: float = 0.02
     angular_threshold: float = 0.05
     release_after_s: float = 0.5
@@ -288,12 +323,17 @@ class JointHoldTaskParams(BaseConfig):
 
 def joint_hold_task(
     joint_names: list[str],
+    base_joint_names: list[str],
     *,
     name: str = "joint_hold",
     priority: int = DEFAULT_HOLD_PRIORITY,
     release_after_s: float = 0.5,
 ) -> TaskConfig:
-    """A ``TaskConfig`` for holding ``joint_names`` while the base drives."""
+    """A ``TaskConfig`` for holding ``joint_names`` while the base drives.
+
+    ``base_joint_names`` are the base's virtual twist joints on the same
+    coordinator; their commanded velocity is what triggers the hold.
+    """
     from dimos.control.coordinator import TaskConfig
 
     return TaskConfig(
@@ -302,7 +342,10 @@ def joint_hold_task(
         joint_names=list(joint_names),
         priority=priority,
         auto_start=True,
-        params={"release_after_s": release_after_s},
+        params={
+            "release_after_s": release_after_s,
+            "base_joint_names": list(base_joint_names),
+        },
     )
 
 
@@ -312,6 +355,7 @@ def create_task(cfg: Any, hardware: Any) -> JointHoldTask:
         cfg.name,
         JointHoldTaskConfig(
             joint_names=cfg.joint_names,
+            base_joint_names=params.base_joint_names,
             priority=cfg.priority,
             linear_threshold=params.linear_threshold,
             angular_threshold=params.angular_threshold,
