@@ -76,3 +76,15 @@ def test_set_gps_travel_points_multiple(agent_setup) -> None:
     )
 
     assert "success" in history[-1].content.lower()
+
+
+def test_demo_gps_nav_has_websocket_vis() -> None:
+    from dimos.agents.skills.demo_gps_nav import demo_gps_nav
+    from dimos.web.websocket_vis.websocket_vis_module import WebsocketVisModule
+
+    module_classes = {
+        atom.module
+        for atom in demo_gps_nav.blueprints
+        if hasattr(atom, "module")
+    }
+    assert WebsocketVisModule in module_classes
