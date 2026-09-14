@@ -21,6 +21,8 @@ all_blueprints = {
     "alfred-mls-nav": "dimos.robot.diy.alfred.blueprints.alfred_mls_nav:alfred_mls_nav",
     "alfred-mls-nav-lidar": "dimos.robot.diy.alfred.blueprints.alfred_mls_nav_lidar:alfred_mls_nav_lidar",
     "alfred-autotune": "dimos.robot.diy.alfred.blueprints.alfred_autotune:alfred_autotune",
+    "alfred-benchmark": "dimos.robot.diy.alfred.blueprints.alfred_benchmark:alfred_benchmark",
+    "alfred-holonomic-controller": "dimos.robot.diy.alfred.blueprints.alfred_benchmark:alfred_holonomic_controller",
     "alfred-nav": "dimos.robot.diy.alfred.blueprints.alfred_nav:alfred_nav",
     "alfred-pillar": "dimos.robot.diy.alfred.blueprints.pillar:alfred_pillar",
     "alfred-sim": "dimos.robot.diy.alfred.blueprints.alfred_sim:alfred_sim",
