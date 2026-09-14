@@ -5,6 +5,16 @@ The user switched from ACT to classical manipulation with GraspGen and requested
 Branch: `feat/r1pro-classical-apartment`. Permanent checkout: `/home/mustafa/dimos-wt/r1pro-classical-apartment`. The former `/tmp/dimos-r1pro-primitives` path is a compatibility symlink. The existing ACT branch/checkpoints and Alfred checkout were not modified. The isolated runtime's launchers and package path were relocated with the worktree.
 
 
+## Cross-hand navigation and placement follow-up (under validation)
+
+User session `recordings/r1pro-primitives/1ace56306dfe4c07a73fafdbaf19dd1d`, seed 1498950867: left-hand blue-cup pickup across the body succeeded; navigation was rejected from the resulting diagonal stance. Right-hand green-bottle pickup then succeeded with the other hand still holding. Bimanual navigation also rejected the fixed diagonal route. Left cup placement into tray succeeded; right bottle placement into tray aborted during SDK base positioning twice, then placement onto the table succeeded.
+
+Saved-state collision replay found that the first grasp stance is clear at the 2 cm manipulation margin but lies inside the 6 cm transit margin. Both saved cases admit an 8 cm retreat followed by a corridor-aligned turn. New departure checks explicitly bridge manipulation clearance to transit clearance. Local SDK-planned base paths now execute through the existing measured-progress holonomic task, with checked separate translation/turn stages and a 1.5 cm tracking guard. Collision and grasp checks are retained.
+
+The old wall-clock base trajectory reproduced the placement abort at 0.50 rad yaw lag in a replay with 0.2x physics speed. The revised separated progress execution reaches the target with 1.89 mm maximum combined path deviation. Physics-only benchmarks of the user's snapshots: 2.42x real time before tray placement, 0.55x after it; contact count rises from 100 to 196. The full run's later intervals advanced at 0.24–0.33x wall time, including planning/rendering overhead. Deliberate caps are still 0.3 m/s base, 0.4 rad/s yaw, loaded torso 0.08 rad/s and arms 0.25 rad/s. Dense arm paths currently stop at each waypoint, and final support checks add settling waits. Speed caps have not been raised.
+
+Focused checks: 50 tests and strict mypy on five changed implementations. Diagnostics are under `/tmp/r1pro-crosshand/`. Next native validation uses the same seed: left pick, dining and return, right pick while retaining left hold, bimanual dining and return, then independent tray placements. The supervisor caps output at 512 MB and stops below 1 GB free. The previously verified baseline below remains the delivered reference until this passes; do not push this follow-up yet.
+
 ## Verified navigation fix
 
 The user's failing seed **1646757217** now passes a complete native seven-action run on source commit `2fb06a753f`: right-hand glue-stick pick, dining navigation, dining placement, kitchen navigation, right-hand cup pick, worktable navigation, worktable placement. Both objects remain held during travel and end upright, released, settled and supported by the intended furniture. No recovery or reset was needed.

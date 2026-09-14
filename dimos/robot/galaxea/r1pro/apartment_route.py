@@ -59,6 +59,38 @@ def navigation_tracking_error(path: list[list[float]], pose: list[float]) -> flo
     return float(np.min(np.linalg.norm(error[:, :2], axis=1) + np.abs(error[:, 2])))
 
 
+def apartment_departure(local: PlanarTransport, transit: PlanarTransport) -> list[list[float]]:
+    """Leave a close manipulation stance before reserving corridor clearance.
+
+    The apartment's cabinet corridor needs the robot aligned with its long
+    direction. A grasp may finish diagonally and inside the transit margin.
+    Check the initial retreat with the manipulation margin, then check the turn
+    and departure endpoint with the larger transit/settling margin.
+    """
+    start = local.start
+    headings = sorted(
+        (0.0, np.pi),
+        key=lambda yaw: abs(np.arctan2(np.sin(yaw - start[2]), np.cos(yaw - start[2]))),
+    )
+    backward = -np.array([np.cos(start[2]), np.sin(start[2])])
+    for distance in (0.0, 0.08, 0.12, 0.18, 0.24, 0.3, 0.4):
+        for direction in ((-1.0, 0.0), backward, (0.0, -1.0), (0.0, 1.0), (1.0, 0.0)):
+            backed = start.copy()
+            backed[:2] += distance * np.asarray(direction)
+            if not local.clear_pose_segment(start, backed):
+                continue
+            for yaw in headings:
+                turned = backed.copy()
+                turned[2] = start[2] + np.arctan2(np.sin(yaw - start[2]), np.cos(yaw - start[2]))
+                if transit.clear_pose_segment(backed, turned):
+                    result = [start]
+                    for pose in (backed, turned):
+                        if np.linalg.norm(pose - result[-1]) > 1e-6:
+                            result.append(pose)
+                    return [[float(value) for value in pose] for pose in result]
+    raise RuntimeError("No clear retreat and corridor-aligned departure with the current cargo")
+
+
 def apartment_approach(
     checker: PlanarTransport, preposition: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:

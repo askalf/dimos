@@ -24,8 +24,11 @@ from dimos.control.tasks.trajectory_task.trajectory_task import (
     TrajectoryExecutionResult,
     TrajectoryExecutionStatus,
 )
+from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
+from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
 from dimos.msgs.trajectory_msgs.TrajectoryStatus import TrajectoryState
 from dimos.robot.galaxea.r1pro.classical_skills import R1ProClassicalSkills
+from dimos.robot.galaxea.r1pro.config import R1PRO_PLANAR_BASE
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
 
 
@@ -205,3 +208,31 @@ def test_departing_checked_navigation_corridor_fails_before_route_continues(skil
 
     assert report["commanded_paths"] == [path]
     assert report["max_navigation_tracking_error_m"] == pytest.approx(0.05)
+
+
+def test_local_positioning_checks_sdk_plan_then_follows_measured_progress(skills, mocker):
+    names = list(R1PRO_PLANAR_BASE.joint_names)
+    trajectory = JointTrajectory(
+        joint_names=[names[2], names[0], names[1]],
+        points=[
+            TrajectoryPoint(positions=[0, 0, 0], time_from_start=0),
+            TrajectoryPoint(positions=[0.4, 0.1, 0.2], time_from_start=1),
+        ],
+    )
+    skills._manipulation = mocker.Mock()
+    skills._manipulation.plan_to_joints.return_value = mocker.Mock(
+        succeeded=True, plan=mocker.Mock(trajectory=trajectory, plan_id="checked-local")
+    )
+    skills._sim.primitive_state.side_effect = [
+        {"base_pose": [0, 0, 0]},
+        {"base_pose": [0.1, 0.2, 0.4]},
+    ]
+    follow = mocker.patch.object(skills, "_execute_base_path")
+    mocker.patch.object(skills, "_pause")
+    report = {}
+
+    skills._position_base({"base_waypoints": [[0, 0, 0], [0.1, 0.2, 0.4]]}, report)
+
+    skills._sim.validate_primitive_base_plan.assert_called_once_with(trajectory)
+    follow.assert_called_once_with([[0, 0, 0], [0.1, 0.2, 0.4]], report, tracking_limit=0.015)
+    skills._manipulation.execute.assert_not_called()

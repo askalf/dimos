@@ -208,7 +208,7 @@ class PlanarTransport:
             return [self.start.tolist(), departure.tolist(), *path]
         raise RuntimeError("No collision-free departure turn and route to the destination")
 
-    def plan_stance(self, goal: list[float]) -> list[list[float]]:
+    def plan_stance(self, goal: list[float], *, separate_turns: bool = False) -> list[list[float]]:
         """Plan a nearby body adjustment, including yaw, before room-level navigation."""
         target = np.asarray(goal, dtype=float).copy()
         if (
@@ -223,10 +223,11 @@ class PlanarTransport:
         translated = np.r_[target[:2], self.start[2]]
         turned = np.r_[self.start[:2], target[2]]
         paths = [
-            [self.start, target],
             [self.start, translated, target],
             [self.start, turned, target],
         ]
+        if not separate_turns:
+            paths.insert(0, [self.start, target])
         forward = np.array([math.cos(self.start[2]), math.sin(self.start[2])])
         for distance in (0.1, 0.2, 0.3):
             backed = self.start.copy()

@@ -21,7 +21,11 @@ import mujoco
 import numpy as np
 import pytest
 
-from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach, refine_apartment_route
+from dimos.robot.galaxea.r1pro.apartment_route import (
+    apartment_approach,
+    apartment_departure,
+    refine_apartment_route,
+)
 from dimos.robot.galaxea.r1pro.classical_sim import R1ProClassicalSim
 from dimos.robot.galaxea.r1pro.grasping_blueprint import R1ProGraspingSim
 from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
@@ -340,9 +344,40 @@ def test_classical_arrival_reserves_transit_clearance_and_settling_room(classica
 
     result = sim.prepare_object_navigation("worktable")
 
-    scene.transport_planner.assert_called_once_with(collision_margin=0.08)
+    assert scene.transport_planner.call_args_list[0].kwargs == {"collision_margin": 0.08}
+    assert scene.transport_planner.call_args_list[1].kwargs == {}
     checker = PlanarTransport(
         scene.model, scene.data, cargo_bodies=(), carry_tray=False, collision_margin=0.08
     )
     assert checker.clear_pose_segment(*np.asarray(result["arrival"]))
     assert result["arrival"][0] == result["goal"]
+
+
+def test_departure_can_leave_a_grasp_stance_inside_the_transit_margin(checker):
+    checker.model.body_pos[checker.model.body("wall").id, 0] = 0.29
+    checker.probe.qpos[checker.qids[2]] = np.pi / 4
+    mujoco.mj_forward(checker.model, checker.probe)
+    local = PlanarTransport(checker.model, checker.probe, cargo_bodies=(), collision_margin=0.02)
+    transit = PlanarTransport(checker.model, checker.probe, cargo_bodies=(), collision_margin=0.08)
+    assert local.clear_pose_segment(local.start, local.start)
+    assert not transit.clear_pose_segment(transit.start, transit.start)
+
+    departure = np.asarray(apartment_departure(local, transit))
+
+    np.testing.assert_allclose(departure[0], local.start)
+    assert departure[-1, 2] == pytest.approx(0)
+    assert len(departure) == 3
+    assert local.clear_pose_segment(departure[0], departure[1])
+    assert transit.clear_pose_segment(departure[1], departure[2])
+
+
+def test_separate_stance_uses_checked_translation_and_turn(checker):
+    goal = [-0.1, 0.1, -np.pi / 4]
+
+    path = np.asarray(checker.plan_stance(goal, separate_turns=True))
+
+    np.testing.assert_allclose(path[-1], goal)
+    assert len(path) == 3
+    for first, second in pairwise(path):
+        assert first[2] == second[2] or np.array_equal(first[:2], second[:2])
+        assert checker.clear_pose_segment(first, second)

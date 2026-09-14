@@ -256,6 +256,12 @@ class R1ProClassicalSkills(Module):
         if len(path) < 2:
             return
         path = self._sim.validate_object_navigation(path)
+        self._execute_base_path(path, report, CLASSICAL_TRACKING_LIMIT_M)
+
+    def _execute_base_path(
+        self, path: list[list[float]], report: dict[str, Any], tracking_limit: float
+    ) -> None:
+        """Follow an already checked route by measured progress, including turns."""
         report.setdefault("commanded_paths", []).append(path)
         before = self._sim.primitive_state()
         self._pause(0)
@@ -290,7 +296,7 @@ class R1ProClassicalSkills(Module):
             report["max_navigation_tracking_error_m"] = max(
                 report.get("max_navigation_tracking_error_m", 0.0), deviation
             )
-            if deviation > CLASSICAL_TRACKING_LIMIT_M:
+            if deviation > tracking_limit:
                 raise RuntimeError(
                     f"Navigation exceeded its checked tracking allowance ({deviation:.3f} m); "
                     "stopping before continuing the route"
@@ -326,7 +332,7 @@ class R1ProClassicalSkills(Module):
         plan = self._sim.prepare_object_navigation(destination, arm, stance)
         report["navigation"] = plan
         try:
-            self._follow(plan["departure"], report)
+            self._position_base({"base_waypoints": plan["departure"]}, report)
             self._navigation.request_object_route(
                 plan["goal"], plan["footprint_offset"], plan["cloud"]
             )
@@ -366,28 +372,13 @@ class R1ProClassicalSkills(Module):
                 raise RuntimeError(f"SDK prepositioning plan failed: {plan.message}")
             self._sim.validate_primitive_base_plan(plan.plan.trajectory)
             report["base_plan_ids"].append(plan.plan.plan_id)
-            self._pause(0)
-            report["motion_started"] = True
-            execution = self._manipulation.execute(blocking=False, plan_id=plan.plan.plan_id)
-            if execution.status is not ExecutionStatus.ACCEPTED:
-                raise RuntimeError(f"SDK prepositioning was rejected: {execution}")
-            deadline = time.monotonic() + 90
-            while True:
-                self._pause(0.05)
-                state = self._sim.primitive_state()
-                if state["error"]:
-                    raise RuntimeError(state["error"])
-                execution = self._manipulation.wait_for_execution(timeout=0.01)
-                if execution.succeeded:
-                    break
-                if execution.status not in (
-                    ExecutionStatus.EXECUTING,
-                    ExecutionStatus.TIMED_OUT,
-                    ExecutionStatus.ACCEPTED,
-                ):
-                    raise RuntimeError(f"SDK prepositioning failed: {execution}")
-                if time.monotonic() > deadline:
-                    raise RuntimeError("SDK prepositioning timed out")
+            trajectory = plan.plan.trajectory
+            columns = [trajectory.joint_names.index(name) for name in R1PRO_PLANAR_BASE.joint_names]
+            path = [[float(point.positions[i]) for i in columns] for point in trajectory.points]
+            # SDK planning still supplies and checks the path. Execute by
+            # measured progress so slow physics cannot advance a wall-time
+            # reference beyond the robot's physical pose.
+            self._execute_base_path(path, report, tracking_limit=0.015)
             self._sim.stop_primitive_base()
             self._pause(1.0)
             if np.max(np.abs(target - self._sim.primitive_state()["base_pose"])) > 0.01:

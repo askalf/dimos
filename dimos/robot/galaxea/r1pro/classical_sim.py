@@ -26,8 +26,9 @@ from numpy.typing import NDArray
 from dimos.core.core import rpc
 from dimos.msgs.manipulation_msgs.GraspCandidateArray import GraspCandidateArray
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.robot.galaxea.r1pro.apartment_navigation import ApartmentSimSpec
-from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach
+from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach, apartment_departure
 from dimos.robot.galaxea.r1pro.apartment_sim import R1ProApartmentSim
 from dimos.robot.galaxea.r1pro.classical_perception import segmented_object_cloud
 from dimos.robot.galaxea.r1pro.classical_planning import ClassicalGraspPlanner
@@ -70,7 +71,7 @@ class R1ProClassicalSim(R1ProApartmentSim):
     ) -> list[list[float]]:
         yaw = np.arctan2(np.sin(pose[2] - planner.start[2]), np.cos(pose[2] - planner.start[2]))
         if abs(yaw) > 0.02:
-            return planner.plan_stance(pose.tolist())
+            return planner.plan_stance(pose.tolist(), separate_turns=True)
         return super()._reachable_base_path(planner, pose)
 
     @rpc
@@ -289,6 +290,25 @@ class R1ProClassicalSim(R1ProApartmentSim):
         ]
 
     @rpc
+    def validate_primitive_base_plan(self, trajectory: JointTrajectory) -> None:
+        """Check SDK local motion with held cargo during manipulation or departure."""
+        if self._active is None and self._transport_initial is None:
+            raise RuntimeError("No selected primitive or prepared departure")
+        if set(trajectory.joint_names) != set(VIRTUAL_BASE_JOINTS) or not trajectory.points:
+            raise ValueError("Prepositioning requires a nonempty base-only trajectory")
+        scene = self._snapshot()
+        if self._transport_initial is not None:
+            scene.validate(self._transport_initial, arm="right", selected=-1)
+        planner = scene.transport_planner()
+        columns = [trajectory.joint_names.index(name) for name in VIRTUAL_BASE_JOINTS]
+        start = planner.start
+        for point in trajectory.points:
+            target = np.asarray(point.positions)[columns]
+            if not np.isfinite(target).all() or not planner.clear_pose_segment(start, target):
+                raise RuntimeError("DimOS base plan is obstructed with the held objects")
+            start = target
+
+    @rpc
     def prepare_object_navigation(
         self, destination: str, arm: str = "right", stance: list[float] | None = None
     ) -> dict[str, Any]:
@@ -330,34 +350,22 @@ class R1ProClassicalSim(R1ProApartmentSim):
         planner = scene.transport_planner(
             collision_margin=self.config.navigation_clearance_m + 0.02
         )
-        goal, docking = apartment_approach(planner, goal)
-        yaw = float(goal[2])
+        local = scene.transport_planner()
+        departure = apartment_departure(local, planner)
+        # The approach turn begins from the departure heading, not the grasp's
+        # diagonal heading. Rebase the planning copy including measured cargo.
+        pose = np.asarray(departure[-1])
+        planner.clear_pose_segment(pose, pose)
+        aligned = PlanarTransport(
+            scene.model,
+            planner.probe,
+            cargo_bodies=planner.cargo_bodies,
+            carry_tray=False,
+            sweep_spacing=planner.sweep_spacing,
+            collision_margin=planner.collision_margin,
+        )
+        goal, docking = apartment_approach(aligned, goal)
         offset = carrying_offset(scene.model, scene.data, planner.robot_bodies)
-        departure = None
-        if abs(np.arctan2(np.sin(yaw - planner.start[2]), np.cos(yaw - planner.start[2]))) < 0.01:
-            departure = [planner.start.tolist()]
-        else:
-            rotation = np.array(
-                [
-                    [np.cos(planner.start[2]), -np.sin(planner.start[2])],
-                    [np.sin(planner.start[2]), np.cos(planner.start[2])],
-                ]
-            )
-            for retreat in (0.2, 0.3, 0.4, 0.1):
-                backed = planner.start.copy()
-                backed[:2] -= rotation @ np.array([retreat, 0])
-                turned = np.r_[
-                    backed[:2],
-                    planner.start[2]
-                    + np.arctan2(np.sin(yaw - planner.start[2]), np.cos(yaw - planner.start[2])),
-                ]
-                if planner.clear_pose_segment(planner.start, backed) and planner.clear_pose_segment(
-                    backed, turned
-                ):
-                    departure = [planner.start.tolist(), backed.tolist(), turned.tolist()]
-                    break
-        if departure is None:
-            raise RuntimeError("No clear departure turn with the current hands and cargo")
         with self._engine._lock:
             self._transport_initial = scene.inventory()
             self._active = None
