@@ -227,7 +227,7 @@ The config is a plain aggregate struct. `config.parse<PongConfig>()` reflects ov
 `run_with_transport` picks LCM or zenoh from `DIMOS_TRANSPORT`, which the coordinator sets from the global `transport` setting. The zenoh side is built on [zenoh-c](https://github.com/eclipse-zenoh/zenoh-c) 1.10 (`zenohc::lib` in CMake, `zenoh-c` in nixpkgs). It opens the session the stdin `session` block describes and applies each output's publisher QoS, so a C++ module behaves like a Rust one on either transport.
 
 
-A complete ping-pong pair lives at [/examples/native-modules/cpp/](/examples/native-modules/cpp/), and [`dimos/hardware/sensors/lidar/livox/cpp/main.cpp`](/dimos/hardware/sensors/lidar/livox/cpp/main.cpp) is a real driver example.
+A complete ping-pong pair lives at [/examples/native-modules/cpp/](/examples/native-modules/cpp/), and [`dimos/hardware/sensors/lidar/fastlio2/cpp/main.cpp`](/dimos/hardware/sensors/lidar/fastlio2/cpp/main.cpp) is a real driver example.
 
 ## Examples
 
@@ -235,7 +235,7 @@ For language interop examples (subscribing to dimOS topics from C++, TypeScript,
 
 ### Livox Mid-360 Module
 
-The Livox Mid-360 LiDAR driver is a complete example at [`dimos/hardware/sensors/lidar/livox/module.py`](/dimos/hardware/sensors/lidar/livox/module.py):
+The Livox Mid-360 LiDAR driver is a complete example at [`dimos/hardware/sensors/lidar/livox/module.py`](/dimos/hardware/sensors/lidar/livox/module.py), wrapping a Rust binary:
 
 ```python skip
 from dimos.core.stream import Out
@@ -245,15 +245,15 @@ from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.spec import perception
 
 class Mid360Config(NativeModuleConfig):
-    cwd: str | None = "cpp"
-    executable: str = "result/bin/mid360_native"
-    build_command: str | None = "nix build .#mid360_native"
-    host_ip: str = "192.168.1.5"
+    cwd: str | None = "rust"
+    executable: str = str(DIMOS_PROJECT_ROOT / "target" / "release" / "mid360_native")
+    build_command: str | None = "cargo build --release"
+    host_ip: str | None = None  # auto-detected on the lidar's subnet
     lidar_ip: str = "192.168.1.155"
     frequency: float = 10.0
     enable_imu: bool = True
     frame_id: str = "lidar_link"
-    # ... SDK port configuration
+    # ... pcap replay and SDK port configuration
 
 class Mid360(NativeModule, perception.Lidar, perception.IMU):
     config: Mid360Config
