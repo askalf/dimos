@@ -331,5 +331,9 @@ Both paths share the first step, so they can be compared rather than chosen betw
 - Recall: with three models, the 2nd-lowest beats the lowest -- P 0.73 R 0.88 against
   min's P 0.74 R 0.71. Untested: whether min is simply degenerating to whichever model
   scores lowest overall, which per-model z-scoring would fix.
+- OWLv2's threshold is one global number (0.5) and its scores are not comparable across
+  words: a green plastic basket scores 0.66 and a real loaf of bread 0.42, so "bread"
+  answers nothing on grocery while its correct answers sit just under the line. Accepted
+  as a blind spot 2026-09-13; per-word calibration is the fix if it starts to matter.
 - The tf that an in-place ingest used to copy into the recording (fixed 2026-09-12: it
   had duplicated grocery.db's tf 5.3x). The dedupe is separate from the layout work.

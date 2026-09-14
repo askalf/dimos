@@ -65,7 +65,17 @@ class DetectConfig:
     # OWLv2's own per-box acceptance score. Its scores are calibrated, so this is a real
     # refusal threshold rather than a ranking cut, and half is Jeff's call (2026-09-13):
     # the runs at 0.15 answered with boxes down at 0.16-0.23 that were the detector
-    # reaching rather than finding, and every one of them cost a place.
+    # reaching rather than finding, and every one of them cost a place. On grocery and
+    # sf_office it left the two real cones, both real whiteboards and six of seven real
+    # baskets, and it dropped the AprilTag board that used to win "a whiteboard".
+    #
+    # KNOWN BLIND SPOT, measured and accepted rather than discovered later: OWLv2 does
+    # not score two words on the same scale. A green plastic basket comes back at 0.66
+    # and a real loaf of bread at 0.42, so at half "bread" on grocery answers nothing at
+    # all while its correct answers sit just under the line. ("cheese" also answers
+    # nothing, but that one costs no recall -- its best was 0.35 on a table of packaged
+    # bread.) One global number cannot be right for both; per-word calibration is the
+    # fix if the blind spot ever matters more than the quiet.
     threshold: float = 0.5
     checkpoint: str = OWLV2_CHECKPOINT
     device: str = ""
