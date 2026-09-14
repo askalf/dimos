@@ -27,7 +27,7 @@ from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.manipulation.manipulation_module import ManipulationModule
-from dimos.navigation.movement_manager.movement_manager import MovementManager
+from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
 from dimos.robot.diy.alfred.alfred_model import (
     ALFRED_LIFT_LOWER_M,
     ALFRED_LIFT_UPPER_M,
@@ -90,11 +90,11 @@ def test_alfred_nav_leaves_the_flowbase_to_alfred_high_level() -> None:
     assert base.adapter_type == "transport_lcm"
 
 
-def test_alfred_nav_routes_the_planned_base_twist_through_movement_manager() -> None:
-    """The base adapter's raw topics must meet the module streams that face them."""
+def test_alfred_nav_leaves_the_base_command_on_the_coordinator_topic() -> None:
+    """One arbitrated base command leaves the coordinator; AlfredHighLevel drives it."""
     topics = {name: spec.args[0] for (name, _type), spec in alfred_nav.transport_map.items()}
-    assert topics["manip_cmd_vel"] == f"/{ALFRED_BASE_HARDWARE_ID}/cmd_vel"
-    # Odometry feedback for the base trajectory task is StartRelay's pose.
+    assert topics["cmd_vel"] == f"/{ALFRED_BASE_HARDWARE_ID}/cmd_vel"
+    # Odometry feedback for the base tasks is StartRelay's pose.
     assert topics["start_pose"] == f"/{ALFRED_BASE_HARDWARE_ID}/odom"
 
 
@@ -132,9 +132,26 @@ def test_alfred_nav_holds_the_arms_under_the_trajectory_task() -> None:
     assert hold.priority < trajectory.priority
 
 
-def test_alfred_nav_feeds_the_hold_the_muxed_base_twist() -> None:
-    """hold_arms only knows the base is moving if cmd_vel reaches the coordinator."""
-    assert alfred_nav.remapping_map[("ControlCoordinator", "twist_command")] == "cmd_vel"
+def test_alfred_nav_routes_teleop_into_the_coordinator() -> None:
+    """Teleop is a joint claim like any other, not a mux input upstream of the base."""
+    assert alfred_nav.remapping_map[("ControlCoordinator", "twist_command")] == "tele_cmd_vel"
+    # A viewer click is the navigation goal; nothing relays it any more.
+    assert alfred_nav.remapping_map[("rerunwebsocketserver", "clicked_point")] == "goal"
+
+
+def test_alfred_nav_arbitrates_the_base_on_one_coordinator() -> None:
+    """Teleop > a plan's base segment > navigation, by priority on shared joints."""
+    tasks = {t.name: t for t in cast("list[TaskConfig]", _coordinator_kwargs(alfred_nav)["tasks"])}
+    teleop = tasks["vel_flowbase"]
+    base_plan = tasks["base_trajectory"]
+    follower = tasks["holonomic_follower"]
+
+    base_joints = {frozenset(t.joint_names) for t in (teleop, base_plan, follower)}
+    assert len(base_joints) == 1, "the three base claims must contend for the same joints"
+    assert teleop.priority > base_plan.priority > follower.priority
+
+    # The follower replaces DanHolonomicTC; both in one coordinator would fight.
+    assert not _atoms(alfred_nav, DanHolonomicTC)
 
 
 def test_alfred_nav_runs_on_lidar_odometry() -> None:
@@ -168,7 +185,6 @@ def test_alfred_mount_tree_reroots_onto_the_lidar_without_losing_a_frame() -> No
 
 
 def test_alfred_nav_composes_nav_planner_pillar_and_viewer_teleop() -> None:
-    assert _atoms(alfred_nav, MovementManager)
     assert _atoms(alfred_nav, PillarConnection)
     assert _atoms(alfred_nav, ManipulationModule)
     assert _atoms(alfred_nav, RerunWebSocketServer), "viewer teleop source missing"
