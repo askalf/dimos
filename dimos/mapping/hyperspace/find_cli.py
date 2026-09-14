@@ -111,6 +111,11 @@ def main(
         "--tower-device",
         help="where the text towers run; 'cpu' keeps the card for the detector",
     ),
+    contrast: bool = typer.Option(
+        DetectConfig.contrast,
+        "--contrast/--no-contrast",
+        help="subtract generic floor/wall/ceiling prompts from every patch score",
+    ),
     no_scene: bool = typer.Option(False, "--no-scene", help="skip the point cloud in the 3D page"),
 ) -> None:
     recording_path = recording_path.expanduser()
@@ -150,6 +155,7 @@ def main(
         depth_band_m=band_m,
         depth2depth=depth2depth,
         world_frame=world_frame,
+        contrast=contrast,
     )
     frames = RecordingFrames(
         recording,

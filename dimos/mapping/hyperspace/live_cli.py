@@ -139,6 +139,11 @@ def main(
         "--dtype",
         help="detector precision: '' for float32, or fp16 (2x on CUDA). bf16 moves scores",
     ),
+    contrast: bool = typer.Option(
+        DetectConfig.contrast,
+        "--contrast/--no-contrast",
+        help="subtract generic floor/wall/ceiling prompts from every patch score",
+    ),
     gpu_preprocess: bool = typer.Option(
         DetectConfig.gpu_preprocess,
         "--gpu-preprocess/--cpu-preprocess",
@@ -172,6 +177,7 @@ def main(
                 depth2depth=depth2depth,
                 dtype=dtype,
                 gpu_preprocess=gpu_preprocess,
+                contrast=contrast,
             ),
             models=wanted,
             merge_m=merge_m,

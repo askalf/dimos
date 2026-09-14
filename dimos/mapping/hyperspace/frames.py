@@ -236,6 +236,7 @@ def hot_frames(
     threshold: float = DEFAULT_THRESHOLD,
     device: str = "cpu",
     resident: Any = None,
+    contrast: bool = True,
 ) -> list[Frame]:
     """Frames that matched *text*, in time order.
 
@@ -245,6 +246,13 @@ def hot_frames(
     gone; the index is loaded once, at startup or as a recording is ingested.
 
     *models* names the member tags to search; the default is every model in the store.
+
+    *contrast* subtracts the best of a handful of generic prompts -- floor, wall,
+    ceiling, shelf, a room -- from the score, which is what stops a wall from answering
+    every question moderately well. On by default for that reason. Turning it off gives
+    the plain similarity to the query, which is the honest comparison to have when
+    asking whether the contrast is helping on some particular recording, and the right
+    answer when the thing being looked for IS a wall or a floor.
     """
     from dimos.mapping.hyperspace.resident import RESIDENT
 
@@ -258,7 +266,9 @@ def hot_frames(
                 continue
             spec = spec_of(tag)
             query = towers.query(spec, text)
-            background = towers.background(spec)
+            background = (
+                towers.background(spec) if contrast else np.empty((0, len(query)), np.float32)
+            )
 
             held = held_by.of(store, tag, name)
             picked, scored = held.hot(query, background, threshold=threshold, limit=top_k)

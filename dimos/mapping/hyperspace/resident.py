@@ -162,9 +162,16 @@ class ResidentPatches:
         search into 18 s -- so a half-precision index has to be promoted to be usable
         at all, and blocks keep that from costing the whole index in memory at once.
         At single precision the block is a view and the loop costs nothing.
+
+        Passing no background rows turns the contrast off and leaves the plain
+        similarity to the query. That is worth having as a comparison -- the contrast is
+        a correction for CLIP scoring almost everything somewhat highly, and what it
+        subtracts is a guess at what "generic" looks like -- but it is on by default
+        because without it a wall answers most questions moderately well.
         """
         # The query and the backgrounds go through together: one pass over the index
         # rather than one for the words and another for the room.
+        background = np.asarray(background, dtype=np.float32).reshape(-1, len(query))
         texts = np.vstack([np.asarray(query, dtype=np.float32)[None, :], background])
         rows = self.rows
         out = np.empty(rows, dtype=np.float32)
@@ -173,7 +180,9 @@ class ResidentPatches:
                 self.vectors[start : min(start + SCORE_CHUNK, rows)], dtype=np.float32
             )
             against = block @ texts.T
-            out[start : start + len(block)] = against[:, 0] - against[:, 1:].max(axis=1)
+            out[start : start + len(block)] = (
+                against[:, 0] - against[:, 1:].max(axis=1) if len(background) else against[:, 0]
+            )
         return out
 
     def hot(

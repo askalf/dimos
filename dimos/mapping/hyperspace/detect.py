@@ -112,6 +112,15 @@ class DetectConfig:
     # gone. Not bit-identical -- see `Owlv2Config.gpu_preprocess` -- so it stays off until
     # a whole run's answers say it changes nothing.
     gpu_preprocess: bool = False
+    # Subtract the best of a handful of generic prompts -- floor, wall, ceiling, shelf,
+    # a room -- from every patch's score. On by default because CLIP scores almost
+    # everything somewhat highly, so without it a wall answers most questions moderately
+    # well and the frame ranking stops meaning much. Off gives the plain similarity to
+    # the query, which is the comparison to make when asking whether the correction is
+    # earning its place on a particular recording -- and the right answer when the thing
+    # being looked for IS a wall or a floor, since then the contrast subtracts the
+    # target. The prompts themselves are `frames.BACKGROUND_PROMPTS`.
+    contrast: bool = True
     # Episodes considered before the strongest `max_episodes` of them are detected.
     # Only bounds the work of placing them; a query with more candidates than this is
     # already answering about a very common thing.
@@ -1156,7 +1165,14 @@ def find(
     frames = frames or RecordingFrames(recording, config=config)
     boxes = boxes or Owlv2Boxes(config)
     asked = at = time.monotonic()
-    matched = hot_frames(store, query, towers=towers, models=models, resident=resident)
+    matched = hot_frames(
+        store,
+        query,
+        towers=towers,
+        models=models,
+        resident=resident,
+        contrast=config.contrast,
+    )
     if timings is not None:
         timings["search"] = time.monotonic() - at
         timings["frames_matched"] = float(len(matched))

@@ -342,6 +342,9 @@ class HyperspaceConfig(MemoryModuleConfig):
     # Where the text towers run. "cpu" by default: on an 8 GB card three of them leave
     # the detector no room at all. See `LiveConfig.tower_device` for the measurement.
     tower_device: str = "cpu"
+    # Subtract generic floor/wall/ceiling prompts from every patch score. See
+    # `DetectConfig.contrast`; off is the right answer when the query IS a wall.
+    contrast: bool = True
 
     # Demo: after this many seconds, run demo_queries and publish the answers,
     # then repeat every demo_every_s. 0 disables.
@@ -443,6 +446,7 @@ class Hyperspace(MemoryModule):
                     depth2depth=self.config.detect_depth2depth,
                     max_depth_m=self.config.max_depth_m,
                     world_frame=self.config.world_frame,
+                    contrast=self.config.contrast,
                 ),
                 models=list(self.config.detect_models),
                 merge_m=self.config.merge_m,

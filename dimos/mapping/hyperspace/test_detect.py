@@ -1226,3 +1226,46 @@ def test_the_first_answer_is_timed_from_the_question(recording: SqliteStore, mon
     assert timings["first_result"] == answers[0].arrived, (
         "the reported wait and the answer's own arrival have to be the same number"
     )
+
+
+def test_the_background_contrast_can_be_turned_off() -> None:
+    """The floor/wall/ceiling subtraction is a setting, not a law.
+
+    It is on by default and should stay that way -- CLIP scores nearly everything
+    somewhat highly, so without it a wall answers most questions moderately well and the
+    frame ranking stops discriminating. But it is a correction with a guess inside it,
+    and there are two times to turn it off: to check whether it is earning its place on
+    a given recording, and when the thing being asked for IS a wall or a floor, where
+    the contrast subtracts the target.
+
+    With no background rows the score has to fall back to the plain similarity.
+    """
+    import numpy as np
+
+    from dimos.mapping.hyperspace.detect import DetectConfig
+    from dimos.mapping.hyperspace.resident import ResidentPatches
+
+    assert DetectConfig.contrast is True, "on unless asked otherwise"
+
+    vectors = np.array([[1.0, 0.0], [0.0, 1.0], [0.6, 0.8]], dtype=np.float32)
+    held = ResidentPatches(
+        tag="t",
+        stream="s",
+        vectors=vectors,
+        last_id=3,
+        frame_of=np.zeros(3, np.int32),
+        ts=np.zeros(3, np.float64),
+        cell=np.arange(3, dtype=np.int32),
+        grid=np.ones((3, 2), np.int16),
+        ray=np.zeros((3, 2), np.float32),
+        depth=np.ones(3, np.float32),
+        camera_frames=["cam"],
+    )
+    query = np.array([1.0, 0.0], dtype=np.float32)
+    background = np.array([[0.0, 1.0]], dtype=np.float32)
+
+    plain = held.scores(query, np.empty((0, 2), np.float32))
+    contrasted = held.scores(query, background)
+
+    assert np.allclose(plain, [1.0, 0.0, 0.6]), "no background rows means the raw similarity"
+    assert np.allclose(contrasted, [1.0, -1.0, -0.2]), "the background is subtracted off"
