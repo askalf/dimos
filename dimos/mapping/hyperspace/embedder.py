@@ -59,6 +59,16 @@ SIGLIP2_MODEL_NAME = "google/siglip2-so400m-patch16-384"
 # "google/siglip2-base-patch32-256" and pooling with "2nd" keeps the full
 # recall at 1.6-3x the frame rate instead.
 DEFAULT_MEMBERS = ["google/siglip2-base-patch16-224", "google/siglip2-base-patch16-256"]
+# The three the agreement step wants. Two resolutions of one checkpoint agreeing is weak
+# evidence -- they are the same weights -- so the trio is one small fixed-resolution
+# model and two different NaFlex towers at a real token budget. Demanding all three cut
+# sf_office's "a traffic cone" from eighteen places to three with both real cones kept,
+# and there was no setting where two of three found something three of three missed.
+DEFAULT_TRIO = [
+    "google/siglip2-base-patch16-224",
+    "google/siglip2-base-patch16-naflex@1024",
+    "google/siglip2-so400m-patch16-naflex@1024",
+]
 
 
 def parse_member(spec: str) -> tuple[str, int | None, tuple[int, int] | None]:

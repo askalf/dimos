@@ -48,6 +48,7 @@ from dimos.constants import RECORDINGS_DIR
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
+from dimos.mapping.hyperspace.embedder import DEFAULT_TRIO
 from dimos.mapping.hyperspace.module import Hyperspace, HyperspacePatches
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM
 from dimos.robot.diy.alfred.config import ALFRED
@@ -59,15 +60,6 @@ from dimos.visualization.rerun.bridge import RerunBridgeModule
 # may be separate processes, so this is sqlite in WAL mode doing the handoff: the
 # query re-reads the patch rows it has not seen before every question.
 HYPERSPACE_DB = str(RECORDINGS_DIR / "alfred_hyperspace.db")
-
-# The three checkpoints the agreement step wants. Two resolutions of one base
-# checkpoint agreeing is weak evidence -- they are the same weights -- so the trio is
-# one small model and two different NaFlex towers at a real token budget.
-TRIO = [
-    "google/siglip2-base-patch16-224",
-    "google/siglip2-base-patch16-naflex@1024",
-    "google/siglip2-so400m-patch16-naflex@1024",
-]
 
 # librealsense leaks usbfs fds in this worker; keep socket-accepting modules out of its
 # fd table so EMFILE cannot take the rest of the graph down with it.
@@ -92,7 +84,7 @@ alfred_hyperspace = autoconnect(
     _alfred_seeing,
     HyperspacePatches.blueprint(
         db_path=HYPERSPACE_DB,
-        models=TRIO,
+        models=DEFAULT_TRIO,
         # The colour frame behind each embedding frame is kept, because live there is
         # no recording to go back to and the detector has to be shown a picture of
         # somewhere the robot has already left.

@@ -26,7 +26,6 @@ once the transform buffer lets a rewrite win (see test_rewriting_tf_moves_the_an
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 import json
 import threading
 import time
@@ -45,7 +44,8 @@ from dimos.mapping.hyperspace.embedder import (
     PatchEnsemble,
 )
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
-from dimos.mapping.hyperspace.msgs import FoundObject, FoundObjects
+from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
+from dimos.mapping.hyperspace.msgs import FoundObjects
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import refine_config_of
 from dimos.memory.module import MemoryModule, MemoryModuleConfig
@@ -140,57 +140,6 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
 
 def _optional(value: float) -> float | None:
     return None if value < 0 else value
-
-
-def _held_members(held: Any) -> list[tuple[str, Any]]:
-    """(tag, patches) for every model the resident index is holding."""
-    return [(patches.tag, patches) for patches in held._held.values()]
-
-
-def _objects_of(answers: Sequence[Any], top: int) -> list[FoundObject]:
-    """One `FoundObject` per place, strongest first.
-
-    One per place, not one per answer: a second look at a cone already found is a
-    better box for that cone, not another cone. The look that gets reported is the
-    one the detector was surest of, and it brings its own frame with it.
-    """
-    best: dict[int, Any] = {}
-    for answer in answers:
-        if answer.box3d is None:
-            continue
-        place = answer.place_id if answer.place_id is not None else -answer.rank
-        if place not in best or answer.score > best[place].score:
-            best[place] = answer
-    ordered = sorted(best.values(), key=lambda answer: -answer.score)
-    if top > 0:
-        ordered = ordered[:top]
-    seen: dict[int, int] = {}
-    for answer in answers:
-        place = answer.place_id if answer.place_id is not None else -answer.rank
-        seen[place] = seen.get(place, 0) + (1 if answer.box3d is not None else 0)
-    found = []
-    for answer in ordered:
-        place = answer.place_id if answer.place_id is not None else -answer.rank
-        # The refined box when there is one: a place looked at twice has a sharper box
-        # than either look gave on its own.
-        box = answer.refined or answer.box3d
-        found.append(
-            FoundObject(
-                frame=box.frame,
-                centre=tuple(float(v) for v in box.centre),
-                extent=tuple(float(v) for v in box.extent),
-                depth_m=float(box.depth_m),
-                confidence=float(answer.score),
-                image=answer.image,
-                camera_frame=answer.camera_frame,
-                stamp=float(answer.ts),
-                box2d=tuple(float(v) for v in (answer.box2d or (0, 0, 0, 0))),
-                place_id=place,
-                views=seen.get(place, 1),
-                models=list(answer.models),
-            )
-        )
-    return found
 
 
 def store_members(store: Any, wait_s: float = 0.0) -> list[str]:
@@ -467,54 +416,36 @@ class Hyperspace(MemoryModule):
         the transforms are a pass over the store. Left lazy, all of that lands on
         whoever asks first -- which on a robot is someone waiting on an answer.
         """
-        from dimos.mapping.hyperspace.detect import DetectConfig, Owlv2Boxes, RecordingFrames
-        from dimos.mapping.hyperspace.frames import TextTowers
-        from dimos.mapping.hyperspace.resident import ResidentIndex
+        from dimos.mapping.hyperspace.detect import DetectConfig
 
         device = pick_device(self.config.owl_device, allow_mps=False)
-        self.detect_config = DetectConfig(
-            threshold=self.config.owl_threshold,
-            checkpoint=self.config.owl_checkpoint or DetectConfig.checkpoint,
-            device=device,
-            attempts=self.config.detect_attempts,
-            batch=self.config.detect_batch,
-            max_episodes=self.config.max_episodes,
-            min_episode_frames=self.config.min_episode_frames,
-            episode_gap_s=self.config.episode_gap_s,
-            depth_band_m=self.config.depth_band_m,
-            max_depth_m=self.config.max_depth_m,
-            world_frame=self.config.world_frame,
+        self.live = LiveQuery(
+            self.store,
+            LiveConfig(
+                detect=DetectConfig(
+                    threshold=self.config.owl_threshold,
+                    checkpoint=self.config.owl_checkpoint or DetectConfig.checkpoint,
+                    device=device,
+                    attempts=self.config.detect_attempts,
+                    batch=self.config.detect_batch,
+                    max_episodes=self.config.max_episodes,
+                    min_episode_frames=self.config.min_episode_frames,
+                    episode_gap_s=self.config.episode_gap_s,
+                    depth_band_m=self.config.depth_band_m,
+                    max_depth_m=self.config.max_depth_m,
+                    world_frame=self.config.world_frame,
+                ),
+                models=list(self.config.detect_models),
+                merge_m=self.config.merge_m,
+            ),
         )
-        self.frames = RecordingFrames(self.store, config=self.detect_config)
-        self.boxes = self.register_disposable(Owlv2Boxes(self.detect_config))
-        self.towers = self.register_disposable(TextTowers(device))
-        self.held = ResidentIndex()
-        self._members = list(self.config.detect_models)
-        started = time.monotonic()
-        for spec in self._members or specs:
-            self.towers.background(spec)
-        warmed = self.boxes.warm()
+        self.register_disposable(self.live)
+        loaded = self.live.warm(self.config.detect_models or specs)
         logger.info(
-            f"hyperspace detect: OWLv2 {self.detect_config.checkpoint} on {device} in "
-            f"{warmed:.1f}s, text towers in {time.monotonic() - started - warmed:.1f}s, "
+            f"hyperspace detect: OWLv2 on {device} in {loaded['detector']:.1f}s, text towers "
+            f"in {loaded['towers']:.1f}s, {int(loaded['index'])} patches already indexed, "
             f"threshold {self.config.owl_threshold}"
         )
-
-    def _catch_up(self) -> int:
-        """Take in whatever the ingest has written since the last question.
-
-        The db is empty at boot and fills while the robot drives, so an index loaded
-        once would answer off the map as it was at startup. Cheap when nothing is new.
-        """
-        from dimos.mapping.hyperspace.frames import member_streams
-
-        wanted = set(self._members)
-        members = [
-            (tag, stream)
-            for tag, stream in member_streams(self.store)
-            if not wanted or tag in wanted
-        ]
-        return self.held.grow(self.store, members) if members else 0
 
     @rpc
     def find_objects(self, text: str, top: int = 0) -> FoundObjects:
@@ -524,49 +455,14 @@ class Hyperspace(MemoryModule):
         frames, the models' agreement picks the places worth looking at, OWLv2 draws a
         box on the best frame of each, and that box plus the frame's depth becomes a box
         in the world. Answers come back strongest-first, one per place.
-        """
-        from dimos.mapping.hyperspace.detect import find, merge_duplicates
 
-        text = text.strip()
-        if not text:
-            raise ValueError("find_objects needs something to look for")
-        with self._lock:
-            started = time.monotonic()
-            timings: dict[str, float] = {}
-            added = self._catch_up()
-            timings["index"] = time.monotonic() - started
-            models = [tag for tag, _ in _held_members(self.held)]
-            answers = list(
-                find(
-                    self.store,
-                    self.store,
-                    text,
-                    config=self.detect_config,
-                    models=models,
-                    towers=self.towers,
-                    frames=self.frames,
-                    boxes=self.boxes,
-                    keep_images=True,
-                    resident=self.held,
-                    timings=timings,
-                )
-            )
-            merge_duplicates(answers, self.config.merge_m)
-            result = FoundObjects(
-                query=text,
-                frame=self.config.world_frame,
-                objects=_objects_of(answers, top),
-                refused=sum(1 for answer in answers if not answer.found),
-                ms=round((time.monotonic() - started) * 1000, 1),
-                timings={name: round(value, 4) for name, value in timings.items()},
-            )
-            self.found.publish(result)
-            logger.info(
-                f"hyperspace find {text!r}: {len(result)} place(s), {result.refused} refused, "
-                f"{result.ms} ms over {sum(p.rows for _, p in _held_members(self.held))} patches "
-                f"(+{added} new)"
-            )
-            return result
+        The same object `dimos map live` drives, so what a page shows offline is what
+        the robot does.
+        """
+        self.live.config.top = top
+        result = self.live.ask(text)
+        self.found.publish(result)
+        return result
 
     def answer(
         self, text: str, request_id: int | None = None, frame: str | None = None

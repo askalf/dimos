@@ -1137,7 +1137,7 @@ def test_one_answer_per_place_carries_its_own_frame() -> None:
     made from cannot be checked by anyone.
     """
     from dimos.mapping.hyperspace.detect import Box3D, Detection
-    from dimos.mapping.hyperspace.module import _objects_of
+    from dimos.mapping.hyperspace.live import objects_of
 
     def looked(
         rank: int, place: int, score: float, centre: tuple[float, float, float]
@@ -1179,11 +1179,11 @@ def test_one_answer_per_place_carries_its_own_frame() -> None:
         ),
     ]
 
-    objects = _objects_of(answers, top=0)
+    objects = objects_of(answers, top=0)
     assert [round(found.confidence, 2) for found in objects] == [0.9, 0.7], "strongest first"
     assert [found.place_id for found in objects] == [1, 2], "one row per place"
     assert objects[0].views == 2, "and it says how many looks agreed"
     assert objects[0].image is not None and objects[0].camera_frame == CAMERA
     assert objects[0].stamp == 102.0, "the stamp of the look that was reported"
     assert objects[0].box2d == (1.0, 2.0, 3.0, 4.0)
-    assert _objects_of(answers, top=1) == objects[:1]
+    assert objects_of(answers, top=1) == objects[:1]
