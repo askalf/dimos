@@ -34,6 +34,7 @@
             ../../../../dimos/navigation/nav_3d/mls_planner/rust/py
             ../../../../dimos/hardware/sensors/lidar/livox/rust
             ../../../../dimos/hardware/sensors/lidar/virtual_mid360
+            ../../../../dimos/hardware/sensors/camera/depth_cloud/rust
             ../../../../examples/native-modules/rust
           ];
         };
