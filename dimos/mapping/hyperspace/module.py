@@ -334,6 +334,11 @@ class HyperspaceConfig(MemoryModuleConfig):
     # be to be one place.
     depth_band_m: float = 0.5
     merge_m: float = 0.75
+    # Fill stereo's holes as boxes are placed, for a store nobody has run `fill_depth`
+    # over: "auto" only when there is no filled-depth stream, "" off, or a checkpoint
+    # by name. Live there usually is one -- the depth2depth module writes it as the
+    # robot drives -- and then this costs nothing.
+    detect_depth2depth: str = "auto"
 
     # Demo: after this many seconds, run demo_queries and publish the answers,
     # then repeat every demo_every_s. 0 disables.
@@ -432,6 +437,7 @@ class Hyperspace(MemoryModule):
                     min_episode_frames=self.config.min_episode_frames,
                     episode_gap_s=self.config.episode_gap_s,
                     depth_band_m=self.config.depth_band_m,
+                    depth2depth=self.config.detect_depth2depth,
                     max_depth_m=self.config.max_depth_m,
                     world_frame=self.config.world_frame,
                 ),

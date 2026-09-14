@@ -47,6 +47,7 @@ from dimos.mapping.hyperspace.detect import (
     spread_by_place,
 )
 from dimos.mapping.hyperspace.frames import Episode, Frame, Hit, episodes, ranked_episodes
+from dimos.mapping.hyperspace.ingest import filled_stream_for
 from dimos.memory.codecs.lcm import LcmCodec
 from dimos.memory.codecs.lz4 import Lz4Codec
 from dimos.memory.store.sqlite import SqliteStore
@@ -140,8 +141,8 @@ def test_ranked_episodes_drop_strays_and_rank_by_score() -> None:
 
 def test_object_points_measure_the_planted_square() -> None:
     found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), planted_depth(), intrinsics())
-    assert found is not None
-    points, median = found
+    assert found, found.why
+    points, median = found.points, found.median
     assert median == pytest.approx(SQUARE_DEPTH)
     assert len(points) == 8 * 8
     assert points[:, 2].min() == pytest.approx(SQUARE_DEPTH)
@@ -154,8 +155,8 @@ def test_the_depth_band_drops_the_background_showing_through_the_box() -> None:
     depth = planted_depth()
     box = (28.0, 20.0, 40.0, 28.0)  # four columns wider than the square
     found = object_points(box, (WIDTH, HEIGHT), depth, intrinsics())
-    assert found is not None
-    points, median = found
+    assert found, found.why
+    points, median = found.points, found.median
     assert median == pytest.approx(SQUARE_DEPTH)
     # Only the square's own 64 pixels survive; the 32 background ones are 6 m away.
     assert len(points) == 8 * 8
@@ -164,13 +165,40 @@ def test_the_depth_band_drops_the_background_showing_through_the_box() -> None:
 
 def test_no_usable_depth_inside_the_box_is_reported_rather_than_guessed() -> None:
     empty = np.zeros((HEIGHT, WIDTH), dtype=np.float32)
-    assert object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), empty, intrinsics()) is None
+    found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), empty, intrinsics())
+    assert not found
+    assert found.why == "the depth image has no reading at all inside the box"
+
+
+def test_depth_past_the_cut_off_is_not_reported_as_no_depth() -> None:
+    """The distinction Jeff asked for: a working sensor, refused, says so.
+
+    Everything in the box reads 40 m. That is not a hole -- depth2depth has nothing to
+    fix -- it is the far cut-off doing its job, and the two used to arrive under the
+    same sentence, which is how "no usable depth" came to look like a depth bug.
+    """
+    far = np.full((HEIGHT, WIDTH), 40.0, dtype=np.float32)
+    found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), far, intrinsics())
+    assert not found
+    assert (
+        found.why == "every depth reading inside the box is past the 10 m cut-off (nearest 40.0 m)"
+    )
+
+
+def test_too_few_readings_says_how_many_there_were() -> None:
+    depth = np.zeros((HEIGHT, WIDTH), dtype=np.float32)
+    depth[20:28, 28:31] = SQUARE_DEPTH  # 24 pixels of object, spread over three columns
+    found = object_points(
+        (28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), depth, intrinsics(), min_pixels=30
+    )
+    assert not found
+    assert found.why == "only 24 depth reading(s) inside the box within 10 m, 30 needed"
 
 
 def test_box_from_points_under_the_identity_pose() -> None:
     found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), planted_depth(), intrinsics())
-    assert found is not None
-    points, median = found
+    assert found, found.why
+    points, median = found.points, found.median
     box = box_from_points(points, np.eye(4), WORLD, median)
     assert box.frame == WORLD
     assert box.centre == pytest.approx((0.0, 0.0, SQUARE_DEPTH), abs=1e-6)
@@ -196,8 +224,8 @@ def test_box_from_points_carries_the_camera_pose() -> None:
     )
     pose[:3, 3] = [10.0, -4.0, 1.0]
     found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), planted_depth(), intrinsics())
-    assert found is not None
-    points, median = found
+    assert found, found.why
+    points, median = found.points, found.median
     box = box_from_points(points, pose, WORLD, median)
     assert box.centre == pytest.approx((10.0, -4.0 + SQUARE_DEPTH, 1.0), abs=1e-6)
     # The square's width is now along world x and its height along world z.
@@ -215,8 +243,8 @@ def test_a_box_on_a_different_grid_than_the_intrinsics_still_lands() -> None:
     found = object_points(
         (28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), half, intrinsics(), min_pixels=8
     )
-    assert found is not None
-    points, median = found
+    assert found, found.why
+    points, median = found.points, found.median
     assert len(points) == 4 * 4
     box = box_from_points(points, np.eye(4), WORLD, median)
     assert box.centre == pytest.approx((0.0, 0.0, SQUARE_DEPTH), abs=1e-6)
@@ -403,7 +431,7 @@ def test_a_detection_without_depth_still_reports_the_2d_box(recording: SqliteSto
     )
     assert found.found and found.box2d is not None
     assert found.box3d is None
-    assert found.note == "no usable depth inside the box"
+    assert found.note == "the depth image has no reading at all inside the box"
 
 
 def test_one_model_falls_back_to_episodes(recording: SqliteStore, monkeypatch) -> None:
@@ -623,8 +651,8 @@ def test_geometry_matches_a_hand_computation() -> None:
     by_hand_y = np.percentile(ys, 98) - np.percentile(ys, 2)
 
     found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), planted_depth(), intrinsics())
-    assert found is not None
-    box = box_from_points(found[0], np.eye(4), WORLD, found[1])
+    assert found, found.why
+    box = box_from_points(found.points, np.eye(4), WORLD, found.median)
     assert box.extent[0] == pytest.approx(by_hand_x)
     assert box.extent[1] == pytest.approx(by_hand_y)
     assert math.isclose(box.extent[0], 2 * HALF_EXTENT, rel_tol=1e-9)
@@ -695,7 +723,7 @@ def test_a_detection_that_can_never_be_placed_is_still_returned(recording: Sqlit
     )
     assert found.found and found.box3d is None
     assert found.ts == pytest.approx(70.0), "the first, strongest attempt is the one kept"
-    assert found.note == "no usable depth inside the box"
+    assert found.note == "the depth image has no reading at all inside the box"
 
 
 def placed(rank: int, score: float, centre: tuple[float, float, float]) -> Detection:
@@ -990,3 +1018,134 @@ def test_the_ingests_own_camera_record_is_enough_to_place_a_box(tmp_path: Path) 
     frames = RecordingFrames(store, config=DetectConfig(world_frame=WORLD))
     assert CAMERA in frames.intrinsics, "the ingest's own record is read"
     store.stop()
+
+
+# --- depth2depth where the recording never had it run -------------------------------
+
+
+class StubFusion:
+    """Stands in for the depth model: reports every hole filled at a fixed depth."""
+
+    def __init__(self, **named: object) -> None:
+        self.named = named
+        self.started = 0
+        self.calls: list[tuple[int, int]] = []
+
+    def start(self) -> None:
+        self.started += 1
+
+    def fuse(self, rgb: np.ndarray, raw: np.ndarray) -> SimpleNamespace:
+        self.calls.append(rgb.shape[:2])
+        filled = np.array(raw, dtype=np.float32)
+        filled[filled == 0.0] = 4.0
+        return SimpleNamespace(fused=filled)
+
+
+@pytest.fixture
+def stub_fusion(monkeypatch) -> StubFusion:
+    held: list[StubFusion] = []
+
+    def build(**named: object) -> StubFusion:
+        held.append(StubFusion(**named))
+        return held[-1]
+
+    monkeypatch.setattr("dimos.perception.depth2depth.fusion.Depth2Depth", build)
+    return held  # type: ignore[return-value]
+
+
+def test_a_recording_with_no_filled_stream_fills_its_depth_as_it_places(
+    recording: SqliteStore, stub_fusion
+) -> None:
+    """Jeff, 2026-09-14: "we should be able to run depth2depth live".
+
+    Before this the placer only ever READ filled depth, so a recording nobody had run
+    `fill_depth` over was placed off stereo's holes and said nothing about it.
+    """
+    holed = planted_depth()
+    holed[:4, :] = 0.0  # four rows the stereo gave up on
+    recording.streams["depth_image"].append(
+        Image.from_numpy(
+            (holed * 1000).astype(np.uint16), format=ImageFormat.DEPTH16, frame_id=CAMERA, ts=50.0
+        ),
+        ts=50.0,
+    )
+    recording.streams["color_image"].append(
+        Image.from_numpy(
+            np.full((HEIGHT, WIDTH, 3), 128, dtype=np.uint8), frame_id=CAMERA, ts=50.0
+        ),
+        ts=50.0,
+    )
+    config = DetectConfig(world_frame=WORLD, depth2depth="auto")
+    frames = RecordingFrames(recording, config=config)
+    depth = frames.depth(CAMERA, 50.0)
+    assert depth is not None
+    assert stub_fusion[0].started == 1
+    # Everything the stereo did not see reads 4 m now, and what it saw is untouched.
+    assert float(depth[0, 0]) == pytest.approx(4.0)
+    assert float(depth[24, 32]) == pytest.approx(SQUARE_DEPTH)
+
+
+def test_the_model_is_paid_once_a_photograph_however_many_boxes_land_on_it(
+    recording: SqliteStore, stub_fusion
+) -> None:
+    config = DetectConfig(world_frame=WORLD, depth2depth="auto")
+    frames = RecordingFrames(recording, config=config)
+    for _ in range(4):
+        frames.depth(CAMERA, 10.0)
+    frames.depth(CAMERA, 30.0)
+    assert len(stub_fusion[0].calls) == 2, "one call per distinct frame, not per placement"
+
+
+def test_auto_does_not_pay_for_a_model_on_a_recording_already_filled(
+    recording: SqliteStore, stub_fusion
+) -> None:
+    """`fill_depth` and this do the same arithmetic; doing it twice buys nothing."""
+    recording.stream(filled_stream_for(""), dict).append(
+        {
+            "camera_frame": CAMERA,
+            "ts": 10.0,
+            "depth_mm": np.full((HEIGHT, WIDTH), 7000, dtype=np.uint16),
+        },
+        ts=10.0,
+    )
+    config = DetectConfig(world_frame=WORLD, depth2depth="auto")
+    depth = RecordingFrames(recording, config=config).depth(CAMERA, 10.0)
+    assert depth is not None and float(depth[0, 0]) == pytest.approx(7.0)
+    assert not stub_fusion, "the model must not even be built"
+
+
+def test_a_model_that_will_not_load_places_off_raw_depth_rather_than_failing(
+    recording: SqliteStore, monkeypatch
+) -> None:
+    """Worse depth beats no answer, and it must not be tried again on the next frame."""
+    tries = []
+
+    def explode(**named: object) -> object:
+        tries.append(named)
+        raise RuntimeError("no such checkpoint")
+
+    monkeypatch.setattr("dimos.perception.depth2depth.fusion.Depth2Depth", explode)
+    config = DetectConfig(world_frame=WORLD, depth2depth="auto")
+    frames = RecordingFrames(recording, config=config)
+    depth = frames.depth(CAMERA, 10.0)
+    assert depth is not None and float(depth[24, 32]) == pytest.approx(SQUARE_DEPTH)
+    frames.depth(CAMERA, 30.0)
+    assert len(tries) == 1, "one failure is enough; the knob turns itself off"
+
+
+def test_far_depth_survives_the_read_so_the_cut_off_can_be_reported(
+    recording: SqliteStore,
+) -> None:
+    """The 10 m cut used to happen at read time, which erased the evidence for it."""
+    store = recording
+    depths = store.streams["depth_image"]
+    far = np.full((HEIGHT, WIDTH), 40000, dtype=np.uint16)  # 40 m, well past the cut
+    depths.append(
+        Image.from_numpy(far, format=ImageFormat.DEPTH16, frame_id=CAMERA, ts=50.0), ts=50.0
+    )
+    config = DetectConfig(world_frame=WORLD)
+    depth = RecordingFrames(store, config=config).depth(CAMERA, 50.0)
+    assert depth is not None
+    assert float(depth[0, 0]) == pytest.approx(40.0), "not zeroed on the way out"
+    found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), depth, intrinsics())
+    assert not found and "past the 10 m cut-off" in found.why

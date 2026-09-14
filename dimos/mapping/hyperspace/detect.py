@@ -144,6 +144,13 @@ class DetectConfig:
     trim_percentile: float = 2.0
     # How far a depth frame may be from the colour frame to be its pair.
     depth_max_dt: float = 0.05
+    # Run depth2depth on the frames a query places, when the recording carries no
+    # filled-depth stream: "" off, "auto" only when nothing has filled it already,
+    # "default" the package checkpoint, or a checkpoint by name. Off here and "auto"
+    # from the CLIs, because a library default that quietly downloads a depth model the
+    # first time a box is placed is a surprise; the recordings this is aimed at have a
+    # filled stream anyway, and for them "auto" costs nothing.
+    depth2depth: str = ""
     world_frame: str = "odom"
 
 
@@ -220,6 +227,24 @@ class Detection:
         }
 
 
+@dataclass
+class Measured:
+    """The object's points in the camera's frame, or why the box could not be measured.
+
+    The reason is half the value. "No usable depth inside the box" was one sentence for
+    four different situations, and the one that matters -- a working sensor whose every
+    reading in the box is past the cut-off -- looked exactly like the one depth2depth
+    exists to fix. They are told apart here so that nobody has to guess which happened.
+    """
+
+    points: NDArray[np.float64] | None = None
+    median: float = 0.0
+    why: str = ""
+
+    def __bool__(self) -> bool:
+        return self.points is not None
+
+
 def object_points(
     box: Sequence[float],
     image_size: tuple[int, int],
@@ -229,7 +254,7 @@ def object_points(
     max_depth_m: float = 10.0,
     band_m: float = 0.5,
     min_pixels: int = 20,
-) -> tuple[NDArray[np.float64], float] | None:
+) -> Measured:
     """The object's points, in the camera's own frame, from a 2D box and a depth image.
 
     *box* is ``(x1, y1, x2, y2)`` in the pixels of an image of *image_size*; *depth* is
@@ -239,11 +264,15 @@ def object_points(
     see whatever is behind. So the box's median depth is taken to be the object -- for a
     box that is mostly its subject, it is -- and pixels further than *band_m* from that
     are dropped as background showing through.
+
+    The *max_depth_m* cut lives here rather than where the depth was read, because here
+    it can be counted: a box on something twelve metres out has perfectly good depth and
+    is refused, and that is worth saying out loud instead of reporting it as no depth.
     """
     height, width = depth.shape
     image_width, image_height = image_size
     if not image_width or not image_height or not width or not height:
-        return None
+        return Measured(why="the box or the depth image has no size")
     # The box arrives in the decoded image's pixels; the depth may be on a different
     # grid. Going through fractions of the frame keeps the two independent of each other.
     left = int(np.clip(np.floor(box[0] / image_width * width), 0, width - 1))
@@ -252,13 +281,27 @@ def object_points(
     bottom = int(np.clip(np.ceil(box[3] / image_height * height), top + 1, height))
 
     window = np.asarray(depth[top:bottom, left:right], dtype=np.float64)
-    usable = np.isfinite(window) & (window > 0) & (window <= max_depth_m)
+    read = np.isfinite(window) & (window > 0)
+    usable = read & (window <= max_depth_m)
+    if not int(read.sum()):
+        return Measured(why="the depth image has no reading at all inside the box")
+    if not int(usable.sum()):
+        return Measured(
+            why=f"every depth reading inside the box is past the {max_depth_m:g} m cut-off "
+            f"(nearest {float(window[read].min()):.1f} m)"
+        )
     if int(usable.sum()) < min_pixels:
-        return None
+        return Measured(
+            why=f"only {int(usable.sum())} depth reading(s) inside the box within "
+            f"{max_depth_m:g} m, {min_pixels} needed"
+        )
     median = float(np.median(window[usable]))
     keep = usable & (np.abs(window - median) <= band_m)
     if int(keep.sum()) < min_pixels:
-        return None
+        return Measured(
+            why=f"only {int(keep.sum())} depth reading(s) within {band_m:g} m of the box's "
+            f"median {median:.1f} m, {min_pixels} needed"
+        )
 
     rows, cols = np.nonzero(keep)
     z = window[rows, cols]
@@ -266,7 +309,7 @@ def object_points(
     scale_x, scale_y = width / intrinsics.width, height / intrinsics.height
     us = (cols + left + 0.5 - intrinsics.cx * scale_x) / (intrinsics.fx * scale_x)
     vs = (rows + top + 0.5 - intrinsics.cy * scale_y) / (intrinsics.fy * scale_y)
-    return np.stack([us * z, vs * z, z], axis=1), median
+    return Measured(np.stack([us * z, vs * z, z], axis=1), median)
 
 
 def box_from_points(
@@ -345,6 +388,8 @@ class RecordingFrames:
         self._kept_frames = kept if kept in recording.list_streams() else None
         if self._kept_frames:
             logger.info(f"hyperspace: showing the detector {kept}")
+        self._fusion: Any = None
+        self._fused_cache: dict[tuple[str, float], NDArray[np.float32]] = {}
 
     def warm(self) -> float:
         """Do the first lookup's work now, while nobody is waiting on an answer.
@@ -386,9 +431,7 @@ class RecordingFrames:
         nearest = min(found, key=lambda observation: abs(float(observation.ts) - ts))
         if abs(float(nearest.ts) - ts) > tolerance:
             return None
-        metres = np.asarray(nearest.data["depth_mm"], dtype=np.float32) * 0.001
-        metres[(metres > self.config.max_depth_m) | ~np.isfinite(metres)] = 0.0
-        return metres
+        return _holes_as_zero(np.asarray(nearest.data["depth_mm"], dtype=np.float32) * 0.001)
 
     def pose(self, camera_frame: str, ts: float, world_frame: str) -> NDArray[np.float64] | None:
         self.load_tf()
@@ -414,13 +457,24 @@ class RecordingFrames:
     def depth(self, camera_frame: str, ts: float) -> NDArray[np.float32] | None:
         """Metres on the colour camera's grid, zero where there is no reading.
 
-        Filled depth if the recording has any -- written live by the depth2depth module
-        or afterwards by `fill_depth`, either way already on the colour grid and
-        already aligned, so nothing here pays for a model.
+        Three sources, cheapest first. Filled depth if the recording carries any --
+        written live by the depth2depth module or afterwards by `fill_depth`, either way
+        already on the colour grid and already aligned. Otherwise the stereo, run
+        through depth2depth here and now if this instance was given a model: a query
+        places a dozen boxes and the model is fifty milliseconds against the detector's
+        seven hundred, so a recording nobody thought to fill is not thereby placed off
+        stereo's holes. Otherwise the stereo as it came.
         """
         filled = self.filled(camera_frame, ts)
         if filled is not None:
             return filled
+        raw = self.raw_depth(camera_frame, ts)
+        if raw is None:
+            return None
+        return self.fused(camera_frame, ts, raw)
+
+    def raw_depth(self, camera_frame: str, ts: float) -> NDArray[np.float32] | None:
+        """The stereo's own depth, in metres, re-rendered onto the colour camera's grid."""
         tolerance = self.config.depth_max_dt
         if self.depth_stream not in self.recording.list_streams():
             return None
@@ -432,8 +486,7 @@ class RecordingFrames:
             return None
         image = decoded(nearest.data)
         raw = np.asarray(image.as_numpy())
-        metres = raw.astype(np.float32) * (0.001 if raw.dtype == np.uint16 else 1.0)
-        metres[(metres > self.config.max_depth_m) | ~np.isfinite(metres)] = 0.0
+        metres = _holes_as_zero(raw.astype(np.float32) * (0.001 if raw.dtype == np.uint16 else 1.0))
 
         color = self.intrinsics.get(camera_frame)
         depth_frame = image.frame_id
@@ -449,6 +502,85 @@ class RecordingFrames:
         if not valid[0]:
             return metres
         return hs.reproject_depth(metres, depth_intrinsics, color, poses[0])
+
+    def depth2depth(self) -> Any:
+        """The fusion model, loaded on first use, or None if this run does not want one.
+
+        ``"auto"`` means "only if nobody has filled this recording already", which is
+        the honest reading of the knob: `fill_depth` and this do the same arithmetic,
+        and paying for it twice buys nothing.
+        """
+        wanted = self.config.depth2depth
+        if not wanted or wanted == "off":
+            return None
+        if wanted == "auto" and self._filled_stream is not None:
+            return None
+        if self._fusion is None:
+            from dimos.mapping.hyperspace.module import depth2depth_model_of
+            from dimos.perception.depth2depth.fusion import Depth2Depth
+
+            name = depth2depth_model_of("default" if wanted == "auto" else wanted)
+            try:
+                model = Depth2Depth(model_name=name, device=self.config.device or "auto")
+                model.start()
+            except Exception as failure:  # no checkpoint, no network, OOM -- all survivable
+                # Worse depth beats no answer: the boxes still land, off the stereo, and
+                # the log says why they are the ones from before rather than the better
+                # ones somebody asked for.
+                logger.warning(
+                    f"hyperspace: {name} would not load, placing off raw depth: {failure}"
+                )
+                self.config = replace(self.config, depth2depth="")
+                return None
+            logger.info(f"hyperspace: filling depth with {name} as boxes are placed")
+            self._fusion = model
+        return self._fusion
+
+    def fused(self, camera_frame: str, ts: float, raw: NDArray[np.float32]) -> NDArray[np.float32]:
+        """*raw* with stereo's holes filled, if this run carries a model; *raw* if not.
+
+        Cached per frame: one photograph is placed once per box the detector drew on it,
+        and the model must not be paid four times for the same picture.
+        """
+        model = self.depth2depth()
+        if model is None:
+            return raw
+        key = (camera_frame, round(float(ts), 4))
+        held = self._fused_cache.get(key)
+        if held is not None:
+            return held
+        image = self.color(ts)
+        if image is None:
+            return raw
+        rgb = np.ascontiguousarray(np.asarray(image.to_rgb().data, dtype=np.uint8))
+        if rgb.shape[:2] != raw.shape[:2]:
+            from PIL import Image as PILImage
+
+            resized = PILImage.fromarray(rgb).resize((raw.shape[1], raw.shape[0]))
+            rgb = np.ascontiguousarray(np.asarray(resized, dtype=np.uint8))
+        try:
+            filled = np.asarray(model.fuse(rgb, raw).fused, dtype=np.float32)
+        except Exception as failure:  # a bad frame, an OOM -- the raw depth still places
+            logger.warning(f"hyperspace: depth2depth failed, placing off raw depth: {failure}")
+            self.config = replace(self.config, depth2depth="")
+            return raw
+        # The frames a query places are scattered through the recording, so the cache is
+        # bounded rather than the whole run: it exists for the repeat within one frame.
+        if len(self._fused_cache) > 64:
+            self._fused_cache.clear()
+        self._fused_cache[key] = filled
+        return filled
+
+
+def _holes_as_zero(metres: NDArray[np.float32]) -> NDArray[np.float32]:
+    """Zero where the sensor said nothing. Everything it did say is kept.
+
+    The far cut-off deliberately does NOT happen here. It used to, and it turned "the
+    stereo returned 65 m" and "the stereo returned nothing" into the same array, so the
+    only thing `object_points` could report was that there was no depth.
+    """
+    metres[~np.isfinite(metres) | (metres < 0)] = 0.0
+    return metres
 
 
 class Owlv2Boxes:
@@ -825,10 +957,10 @@ def _place(
         band_m=config.depth_band_m,
         min_pixels=config.min_depth_pixels,
     )
-    if measured is None:
-        detection.note = "no usable depth inside the box"
+    if not measured:
+        detection.note = measured.why
         return
-    points, median = measured
+    points, median = measured.points, measured.median
     pose = frames.pose(frame.frame, frame.ts, config.world_frame)
     if pose is None:
         detection.note = f"no transform {config.world_frame} <- {frame.frame}"

@@ -98,6 +98,12 @@ def main(
         0.75, "--merge", help="answers whose centres are this close are one place (m)"
     ),
     world_frame: str = typer.Option("odom", "--world-frame"),
+    depth2depth: str = typer.Option(
+        "auto",
+        "--depth2depth",
+        help="fill stereo's holes as boxes are placed: 'auto' only when the recording "
+        "has no filled-depth stream, '' off, or a checkpoint by name",
+    ),
     device: str = typer.Option("auto", "--device"),
     no_scene: bool = typer.Option(False, "--no-scene", help="skip the point cloud in the 3D page"),
 ) -> None:
@@ -136,6 +142,7 @@ def main(
         min_episode_frames=min_episode_frames,
         episode_gap_s=gap_s,
         depth_band_m=band_m,
+        depth2depth=depth2depth,
         world_frame=world_frame,
     )
     frames = RecordingFrames(
