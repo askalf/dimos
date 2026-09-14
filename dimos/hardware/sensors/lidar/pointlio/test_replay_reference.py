@@ -16,25 +16,29 @@
 
 ``mid360_athens_stairs`` is a 305 s handheld Mid-360 recording kept as two LFS
 artifacts: the raw ``.pcap`` (the input) and a ``.db`` holding the trajectory
-recorded alongside it (``pointlio_odometry``, the golden).
+recorded alongside it (``pointlio_odometry``, the reference).
 
-The golden was not produced by this repo's C++ module: go2web captured it with
-Point-LIO Lite, an aarch64-static build it embeds and supervises as a sidecar.
-Its tuning is the same -- ``go2web/assets/pointlio-default.yaml`` matches
-``PointLioTuning`` field for field, extrinsics and gravity included -- but the
-build, the architecture (aarch64 contracts FMA where the x86 builds do not) and
-the realtime scheduling all differ, and on this walk each of those is enough on
-its own to land on a different branch. Treat it as one valid trajectory over
-this walk, not as the answer.
+Reference, not ground truth and not a golden: it is one Point-LIO run, and
+Point-LIO is chaotic on this walk. Eight C++ runs of the same input, differing
+only by a 1-ULP nudge to one float or one dropped IMU packet, end anywhere in a
+3.7 m band -- three of them on the branch this reference took, two 3.8 m below
+it. The Rust spans the same band and reaches the same branches. So there is no
+single absolute answer here to match, and an absolute bound would mostly report
+which branch a run happened to take.
 
-Point-LIO is chaotic at the ULP level, so this is a band check, not equality --
-see ``rust/PARITY.md`` for the C++'s own spread under benign perturbation
-(0.17-0.80 m RMSE on this recording). The tight assertion is the first 150 s,
-where every run of either implementation still agrees to centimetres; the walk
-descends stairs at ~275 s and every run bifurcates there by a metre or more.
+Nor did this repo's C++ module produce it: go2web captured it with Point-LIO
+Lite, an aarch64-static build it embeds and supervises as a sidecar. The tuning
+is the same -- ``go2web/assets/pointlio-default.yaml`` matches ``PointLioTuning``
+field for field, extrinsics and gravity included -- but the build, the
+architecture (aarch64 contracts FMA where the x86 builds do not) and realtime
+scheduling all differ, and each of those alone is enough to select a branch.
 
-Measured: 144.9 m path against the golden's 143.8 m, 0.51 m APE RMSE overall,
-34 mm median over the first 150 s.
+What every branch does agree on is local motion: across those same runs the RPE
+median stays within a few centimetres while final position spreads metres. That
+is what this bounds. Please don't "tighten" it back into an absolute check --
+it will pass until the first branch flip and then flake for good.
+
+Measured: 64 mm RPE median over ~10 s windows, 144.9 m path against 143.8 m.
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ MAX_RPE_MEDIAN_M = 0.15
 EXPECTED_FRAMES = 3041
 
 
-def _golden() -> tuple[np.ndarray, np.ndarray]:
+def _reference() -> tuple[np.ndarray, np.ndarray]:
     store = SqliteStore(path=str(get_data("mid360_athens_stairs.db")), must_exist=True)
     store.start()
     try:
@@ -71,7 +75,7 @@ def _golden() -> tuple[np.ndarray, np.ndarray]:
 
 
 @pytest.mark.self_hosted
-def test_rust_tracks_the_cpp_trajectory(tmp_path: Path) -> None:
+def test_rust_tracks_the_reference_trajectory(tmp_path: Path) -> None:
     binary = DIMOS_PROJECT_ROOT / "target" / "release" / "pointlio_replay"
     if not binary.exists():
         pytest.fail(f"{binary} missing; run: cargo build --release -p dimos-pointlio")
@@ -83,27 +87,29 @@ def test_rust_tracks_the_cpp_trajectory(tmp_path: Path) -> None:
         check=True,
         timeout=600,
     )
-    rust = np.loadtxt(out)
-    assert len(rust) == EXPECTED_FRAMES, f"expected {EXPECTED_FRAMES} frames, got {len(rust)}"
-    rt, rp = rust[:, 0] - rust[0, 0], rust[:, 1:4]
+    estimate = np.loadtxt(out)
+    assert len(estimate) == EXPECTED_FRAMES, (
+        f"expected {EXPECTED_FRAMES} frames, got {len(estimate)}"
+    )
+    et, ep = estimate[:, 0] - estimate[0, 0], estimate[:, 1:4]
 
-    gt, gp = _golden()
-    # The golden publishes at IMU rate; take the nearest golden sample per frame.
-    hi = np.searchsorted(gt, rt).clip(0, len(gt) - 1)
+    ref_t, ref_p = _reference()
+    # The reference publishes at IMU rate; take its nearest sample per frame.
+    hi = np.searchsorted(ref_t, et).clip(0, len(ref_t) - 1)
     lo = (hi - 1).clip(0)
-    pick = np.where(np.abs(gt[lo] - rt) < np.abs(gt[hi] - rt), lo, hi)
-    matched = gp[pick]
+    pick = np.where(np.abs(ref_t[lo] - et) < np.abs(ref_t[hi] - et), lo, hi)
+    matched = ref_p[pick]
 
     # Total distance travelled still has to be right; a branch flip barely moves
     # it (144-152 m across every perturbation) but a real break would.
-    path = np.linalg.norm(np.diff(rp, axis=0), axis=1).sum()
-    golden_path = np.linalg.norm(np.diff(gp, axis=0), axis=1).sum()
-    assert abs(path - golden_path) / golden_path < 0.05, f"path {path:.1f} m vs {golden_path:.1f} m"
+    path = np.linalg.norm(np.diff(ep, axis=0), axis=1).sum()
+    ref_path = np.linalg.norm(np.diff(ref_p, axis=0), axis=1).sum()
+    assert abs(path - ref_path) / ref_path < 0.05, f"path {path:.1f} m vs {ref_path:.1f} m"
 
     k = RPE_WINDOW_FRAMES
-    drift = np.linalg.norm((rp[k:] - rp[:-k]) - (matched[k:] - matched[:-k]), axis=1)
+    drift = np.linalg.norm((ep[k:] - ep[:-k]) - (matched[k:] - matched[:-k]), axis=1)
     median = float(np.median(drift))
     assert median < MAX_RPE_MEDIAN_M, (
         f"RPE median {median * 1000:.0f} mm over {k}-frame windows; the port no "
-        f"longer tracks the C++'s local motion"
+        f"longer tracks the reference's local motion"
     )

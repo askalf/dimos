@@ -93,7 +93,7 @@ removed once the band was measured; it is at commit 3ac24e801 if a future
 question needs it.
 
 What remains is `pointlio_replay --pcap`, which feeds the estimator frame by
-frame and writes a TUM trajectory, and `test_replay_golden.py`, which holds the
+frame and writes a TUM trajectory, and `test_replay_reference.py`, which holds the
 port inside the band above against the C++ module's own recorded trajectory
 (`mid360_athens_stairs.db`): 0.51 m APE RMSE over the full recording, 34 mm
 median over the first 150 s, 17 s to run.

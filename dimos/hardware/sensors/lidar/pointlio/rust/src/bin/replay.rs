@@ -17,7 +17,7 @@
 // Frame by frame, not wall-clock paced: the next packet is only read once the
 // estimator has finished the previous frame, so the result is the same on a
 // loaded machine as on an idle one and no frame can be dropped. That is what
-// makes it comparable against a recorded golden; the live module's LCM path has
+// makes it comparable against a recorded reference; the live module's LCM path has
 // no backpressure and would silently drop under load.
 
 use std::fs::File;
