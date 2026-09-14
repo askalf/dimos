@@ -61,6 +61,7 @@ import threading
 from typing import Any
 
 import numpy as np
+from pydantic import Field
 
 from dimos.control.autotune.drive import play_run
 from dimos.control.autotune.excitation import ExcitationRun, step_battery
@@ -163,7 +164,13 @@ def project_to_axis(
 
 
 class AlfredAutotuneRecorderConfig(RecorderConfig):
-    pass
+    # There is no `world` frame in this blueprint - Point-LIO publishes `odom`
+    # and the mount tree roots at the lidar - so the default root_frame makes
+    # every pose lookup fail, twice per message, at odometry rate. That flood
+    # buries the gate prompts the operator is meant to be reading.
+    root_frame: str = ODOM_FRAME
+    # A twist and an episode marker have no pose to anchor, by nature.
+    poseless_streams: list[str] = Field(default_factory=lambda: ["cmd_vel", "status"])
 
 
 class AlfredAutotuneRecorder(Recorder):
@@ -452,7 +459,10 @@ alfred_autotune = autoconnect(
     # The operator's console: their gate (a click) and their hands on the base
     # (the viewer's keyboard) both arrive here. The robot is headless over ssh,
     # so this is the console - there is no pygame window to open on it.
-    vis_module(viewer_backend=global_config.viewer),
+    # rerun_open="none": the robot is headless, so trying to open a native
+    # window here only produces a winit error about DISPLAY not being set. The
+    # operator connects a viewer from their own machine.
+    vis_module(viewer_backend=global_config.viewer, rerun_config={"rerun_open": "none"}),
     AlfredHighLevel.blueprint().remappings([(AlfredHighLevel, "wheel_odometry", "odom_sources")]),
     AlfredMountTf.blueprint(root_frame=LIDAR_FRAME),
     # Pose feedback. Point-LIO owns odom -> mid360_link, so the mount tree roots
