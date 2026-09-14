@@ -690,7 +690,13 @@ class SonicPipeline:
         return self._mode_queue[-1] if self._mode_queue else self._mode_override
 
     def set_velocity(self, vx: float, vy: float, wz: float) -> None:
-        if abs(vx - self._vx) > 0.05 or abs(vy - self._vy) > 0.05 or abs(wz - self._yaw_rate) > 0.1:
+        yaw_started_or_stopped = (wz == 0.0) != (self._yaw_rate == 0.0)
+        if (
+            abs(vx - self._vx) > 0.05
+            or abs(vy - self._vy) > 0.05
+            or abs(wz - self._yaw_rate) > 0.1
+            or yaw_started_or_stopped
+        ):
             self._needs_replan = True
         self._vx, self._vy, self._yaw_rate = vx, vy, wz
 
@@ -1259,12 +1265,13 @@ class SonicPipeline:
             cold_start_ms=round(self._planner_cold_start_ms, 3),
         )
 
-    def _submit_planner(self) -> None:
+    def _submit_planner(self) -> bool:
         if self._planner_future is not None and not self._planner_future.done():
-            return
+            return False
         inputs = self._build_planner_inputs()
         self._planner_started_at = time.perf_counter()
         self._planner_future = self._planner_executor.submit(self._planner.run, None, inputs)
+        return True
 
     def _check_planner_result(self) -> None:
         if self._planner_future is None:
@@ -1415,7 +1422,12 @@ class SonicPipeline:
         self._replan_timer += POLICY_DT
         speed = math.hypot(self._vx, self._vy)
         mode = self._mode_override if self._mode_override is not None else self._auto_mode(speed)
-        moving = speed > 0.05 or (self._mode_override is not None and mode not in STATIC_MODES)
+        # A held yaw command needs fresh facing targets even without translation.
+        moving = (
+            speed > 0.05
+            or self._yaw_rate != 0.0
+            or (self._mode_override is not None and mode not in STATIC_MODES)
+        )
         if speed >= 1.2 or mode == 3:
             interval = REPLAN_INTERVAL_RUNNING
         elif mode == 8:  # CRAWLING replans faster (C++ 0.2 s)
@@ -1439,9 +1451,10 @@ class SonicPipeline:
             or traj_low
             or mode_needs_traj
         ):
-            self._submit_planner()
-            self._replan_timer = 0.0
-            self._needs_replan = False
+            # Preserve command changes, including a stop, while the worker is busy.
+            if self._submit_planner():
+                self._replan_timer = 0.0
+                self._needs_replan = False
 
         # Encoder token
         if self._use_stream and self._streamed is not None and self._streamed.timesteps > 0:
