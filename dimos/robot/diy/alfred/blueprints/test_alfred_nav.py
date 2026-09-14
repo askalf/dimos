@@ -37,7 +37,12 @@ from dimos.robot.diy.alfred.alfred_model import (
     alfred_model_config,
     alfred_rerun_urdf,
 )
-from dimos.robot.diy.alfred.blueprints.alfred_nav import ALFRED_BASE_HARDWARE_ID, alfred_nav
+from dimos.robot.diy.alfred.blueprints.alfred_nav import (
+    ALFRED_BASE_HARDWARE_ID,
+    PLANNER_CLEARANCE_HEIGHT_M,
+    WALL_CLEARANCE_M,
+    alfred_nav,
+)
 from dimos.robot.diy.alfred.blueprints.alfred_sim import alfred_sim
 from dimos.robot.diy.alfred.effector_high_level import AlfredHighLevel
 from dimos.robot.diy.alfred.mount_tf import AlfredMountTf, mount_transforms
@@ -264,14 +269,13 @@ def test_nav_and_autotune_agree_on_where_the_artifact_lives() -> None:
     assert ALFRED_ARTIFACT_PATH == ALFRED_FOLLOWER_ARTIFACT
 
 
-def test_the_planner_is_given_alfreds_real_size() -> None:
-    """The constants must not fall below what the URDF says the robot is.
+def test_alfreds_measured_size_constants_match_the_urdf() -> None:
+    """The size constants must not fall below what the URDF says the robot is.
 
-    The MLS planner's wall_clearance is a HARD clearance measured from base_link,
-    and its robot_height is the headroom a cell needs to be standable. Both were
-    set well under Alfred: 0.20 m clearance against a 0.255 m inscribed radius -
-    the distance at which it collides whatever its yaw - and 0.5 m of headroom
-    for a 1.86 m machine.
+    These describe the robot. What the planner is *given* is a separate question
+    - see test_the_planner_is_sized_under_the_robot_deliberately - because the
+    MLS planner models a cylinder and Alfred is a short wide base under a thin
+    mast.
 
     Re-derived from the collision scene rather than pinned to a literal, so a
     change to the URDF fails here instead of on a wall.
@@ -304,12 +308,40 @@ def test_the_planner_is_given_alfreds_real_size() -> None:
     )
 
 
+def test_the_planner_is_sized_under_the_robot_deliberately() -> None:
+    """Both planner sizes sit under Alfred's measured size, on purpose.
+
+    Pinned because the obvious "fix" - feeding the planner the URDF numbers -
+    stops it planning at all, and the reason is not local to the call site:
+
+    robot_height is not a height check. It is clearance_cells, and surfaces.rs
+    is_standable() uses it to decide whether a cell is floor: a cell is only
+    standable if the gap to the next occupied cell above exceeds it. Give it
+    1.86 m and every cell under an indoor ceiling stops being floor, the surface
+    map empties, the node graph is empty, and plan_or_truncate returns n=0
+    without ever searching. The accepted risk is the mast under a low overhang.
+
+    wall_clearance_m is a genuine hard clearance and 0.2 is under the inscribed
+    radius, so the planner may route Alfred through a gap it cannot fit. Raising
+    it toward 0.373 is correct in principle and costs feasible routes indoors;
+    it is a commissioning decision, not a code fix.
+    """
+    from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
+    from dimos.robot.diy.alfred.alfred_model import (
+        ALFRED_FOOTPRINT_RADIUS_M,
+        ALFRED_HEIGHT_M,
+    )
+
+    (planner,) = _atoms(alfred_nav, MLSPlannerNative)
+    assert planner.kwargs["wall_clearance_m"] == WALL_CLEARANCE_M
+    assert planner.kwargs["robot_height"] == PLANNER_CLEARANCE_HEIGHT_M
+    assert WALL_CLEARANCE_M < ALFRED_FOOTPRINT_RADIUS_M
+    assert PLANNER_CLEARANCE_HEIGHT_M < ALFRED_HEIGHT_M
+
+
 def test_the_planner_and_its_visualization_agree_on_clearance() -> None:
     """A drawn clearance that is not the enforced one is worse than none."""
     from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
-    from dimos.robot.diy.alfred.alfred_model import ALFRED_FOOTPRINT_RADIUS_M
 
     (planner,) = _atoms(alfred_nav, MLSPlannerNative)
-    assert planner.kwargs["wall_clearance_m"] == ALFRED_FOOTPRINT_RADIUS_M
-    # ALFRED.body_height is 0.5 and is NOT the planner's headroom any more.
-    assert planner.kwargs["robot_height"] > 1.5
+    assert planner.kwargs["wall_clearance_m"] == WALL_CLEARANCE_M
