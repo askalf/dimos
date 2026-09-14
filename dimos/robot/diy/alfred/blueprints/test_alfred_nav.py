@@ -236,3 +236,29 @@ def test_rerun_urdf_is_materialized_with_resolved_meshes_and_coordinator_joints(
     assert 'name="pillar/lift"' in xml, "renamed lift joint must reach the rerun model"
     meshes = re.findall(r'filename="([^"]+)"', xml)
     assert meshes and all(Path(m).is_file() for m in meshes), "unresolved mesh path"
+
+
+def test_the_follower_falls_back_to_the_go2_artifact_until_alfred_has_one(
+    tmp_path, monkeypatch
+) -> None:
+    """A robot that has never been characterized must still start.
+
+    The follower raises on a missing artifact, so alfred-nav cannot simply point at
+    Alfred's before autotune has written it - it resolves, and says so loudly.
+    """
+    from dimos.robot.diy.alfred import alfred_model
+
+    missing = tmp_path / "alfred_posedomain.json"
+    monkeypatch.setattr(alfred_model, "ALFRED_FOLLOWER_ARTIFACT", str(missing))
+    assert alfred_model.alfred_follower_artifact() == alfred_model._GO2_FOLLOWER_ARTIFACT
+
+    missing.write_text("{}")
+    assert alfred_model.alfred_follower_artifact() == str(missing)
+
+
+def test_nav_and_autotune_agree_on_where_the_artifact_lives() -> None:
+    """Autotune writing somewhere the follower does not read would be silent."""
+    from dimos.robot.diy.alfred.alfred_model import ALFRED_FOLLOWER_ARTIFACT
+    from dimos.robot.diy.alfred.blueprints.alfred_autotune import ALFRED_ARTIFACT_PATH
+
+    assert ALFRED_ARTIFACT_PATH == ALFRED_FOLLOWER_ARTIFACT

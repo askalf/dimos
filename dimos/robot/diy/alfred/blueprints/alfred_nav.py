@@ -16,9 +16,11 @@
 
     dimos --rerun-host 0.0.0.0 run alfred-nav
 
-Navigation is the Go2 pattern on Point-LIO odometry (voxel map, MLS planner, dannav
-holonomic follower, MovementManager) with AlfredHighLevel as the only FlowBase writer and
-the alfred_v1 sensor mounts published rooted at the lidar. The pillar and the OpenArms sit on a
+Navigation is the Go2 pattern on Point-LIO odometry (voxel map, MLS planner, holonomic
+pose follower) with AlfredHighLevel as the only FlowBase writer and the alfred_v1 sensor
+mounts published rooted at the lidar. Teleop, a plan's base segment and navigation are
+three tasks contending for the same base joints on the one coordinator, ordered by
+priority - there is no mux upstream of the hardware. The pillar and the OpenArms sit on a
 ControlCoordinator and are planned through viser on the alfred_v1 model; the arms are real
 when OPENARM_LEFT_CAN and OPENARM_RIGHT_CAN are set, mock otherwise. Teleop comes from the
 viewer. Transport is pinned to LCM because the Point-LIO C++ native does not speak zenoh.
@@ -50,6 +52,7 @@ from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
 from dimos.robot.diy.alfred.alfred_model import (
     ALFRED_PLANAR_BASE,
     alfred_arm_joints,
+    alfred_follower_artifact,
     alfred_planar_model_config,
     alfred_rerun_urdf,
 )
@@ -101,9 +104,10 @@ BASE_TRAJECTORY_TASK_NAME = "base_trajectory"
 BASE_VELOCITY_TASK_NAME = "vel_flowbase"
 NAV_FOLLOWER_TASK_NAME = "holonomic_follower"
 JOINT_TRAJECTORY_TASK_NAME = "joint_trajectory"
-# The coordinator does not own the FlowBase: it publishes a twist that MovementManager
-# muxes, so AlfredHighLevel stays the only writer. Odometry comes back on the same
-# hardware's odom topic, which `.transports()` below points at StartRelay's start_pose.
+# The coordinator does not own the FlowBase: it publishes the twist its base tasks
+# arbitrate down to, and AlfredHighLevel consumes it, so AlfredHighLevel stays the only
+# Portal writer. Odometry comes back on the same hardware's odom topic, which
+# `.transports()` below points at StartRelay's start_pose.
 _flowbase_hardware = HardwareComponent(
     hardware_id=ALFRED_BASE_HARDWARE_ID,
     hardware_type=HardwareType.BASE,
@@ -160,9 +164,10 @@ def alfred_manipulation_tasks() -> list[TaskConfig]:
                 "speed": 0.4,
                 "goal_tolerance": 0.20,
                 "orientation_tolerance": 0.25,
-                # TODO: replace with Alfred's own artifact from `dimos run
-                # alfred-autotune`. The default is the Go2's plant model, so until
-                # then the follower is calibrated for the wrong robot.
+                # Alfred's own plant model once alfred-autotune has written it,
+                # the Go2's with a warning until then. The follower raises on a
+                # missing artifact, so this resolves rather than hardcodes.
+                "artifact_path": alfred_follower_artifact(),
             },
         ),
         TaskConfig(
