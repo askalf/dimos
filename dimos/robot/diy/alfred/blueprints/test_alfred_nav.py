@@ -273,9 +273,9 @@ def test_alfreds_measured_size_constants_match_the_urdf() -> None:
     """The size constants must not fall below what the URDF says the robot is.
 
     These describe the robot. What the planner is *given* is a separate question
-    - see test_the_planner_is_sized_under_the_robot_deliberately - because the
-    MLS planner models a cylinder and Alfred is a short wide base under a thin
-    mast.
+    - see test_the_planner_gets_the_real_height_and_a_footprint_under_the_robot -
+    because the MLS planner models a cylinder and Alfred is a short wide base
+    under a thin mast.
 
     Re-derived from the collision scene rather than pinned to a literal, so a
     change to the URDF fails here instead of on a wall.
@@ -308,23 +308,25 @@ def test_alfreds_measured_size_constants_match_the_urdf() -> None:
     )
 
 
-def test_the_planner_is_sized_under_the_robot_deliberately() -> None:
-    """Both planner sizes sit under Alfred's measured size, on purpose.
+def test_the_planner_gets_the_real_height_and_a_footprint_under_the_robot() -> None:
+    """The two planner sizes are set from different evidence. Pinned separately.
 
-    Pinned because the obvious "fix" - feeding the planner the URDF numbers -
-    stops it planning at all, and the reason is not local to the call site:
+    robot_height is the robot's height, because it is not a headroom nicety:
+    Config::headroom_cells turns it into clearance_cells and surfaces.rs
+    is_standable() uses that to decide whether a cell is floor at all. A cell
+    under something lower than Alfred is not somewhere Alfred can go, so the
+    honest value is the measured height. Normal ceilings clear it comfortably -
+    max_overhead_m caps the map at sensor_z + 2 m and 24 cells is 1.92 m - and
+    tables, shelves and sub-2 m doorways do not, which is correct.
 
-    robot_height is not a height check. It is clearance_cells, and surfaces.rs
-    is_standable() uses it to decide whether a cell is floor: a cell is only
-    standable if the gap to the next occupied cell above exceeds it. Give it
-    1.86 m and every cell under an indoor ceiling stops being floor, the surface
-    map empties, the node graph is empty, and plan_or_truncate returns n=0
-    without ever searching. The accepted risk is the mast under a low overhang.
-
-    wall_clearance_m is a genuine hard clearance and 0.2 is under the inscribed
-    radius, so the planner may route Alfred through a gap it cannot fit. Raising
-    it toward 0.373 is correct in principle and costs feasible routes indoors;
-    it is a commissioning decision, not a code fix.
+    wall_clearance_m is a hard footprint clearance and is knowingly set BELOW
+    Alfred's inscribed radius, so the planner can route it through a gap it will
+    not fit at some yaws. Measured on the robot: 0.2 plans, 0.28 cannot. The
+    reason the step is so sharp is spawn_floor in nodes.rs, which gates where new
+    graph nodes may appear at wall_clearance_m + 0.5 * wall_buffer_m - 0.575 m
+    today, so 8 cm of clearance moves a threshold that is already large. Raising
+    it wants wall_buffer_m lowered in the same change, and a mapped space to test
+    in; it is a commissioning decision, not a config edit.
     """
     from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
     from dimos.robot.diy.alfred.alfred_model import (
@@ -335,8 +337,8 @@ def test_the_planner_is_sized_under_the_robot_deliberately() -> None:
     (planner,) = _atoms(alfred_nav, MLSPlannerNative)
     assert planner.kwargs["wall_clearance_m"] == WALL_CLEARANCE_M
     assert planner.kwargs["robot_height"] == PLANNER_CLEARANCE_HEIGHT_M
+    assert PLANNER_CLEARANCE_HEIGHT_M == ALFRED_HEIGHT_M
     assert WALL_CLEARANCE_M < ALFRED_FOOTPRINT_RADIUS_M
-    assert PLANNER_CLEARANCE_HEIGHT_M < ALFRED_HEIGHT_M
 
 
 def test_the_planner_and_its_visualization_agree_on_clearance() -> None:
