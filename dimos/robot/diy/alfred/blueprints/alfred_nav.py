@@ -50,6 +50,7 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNat
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
 from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
 from dimos.robot.diy.alfred.alfred_model import (
+    ALFRED_HEIGHT_M,
     ALFRED_PLANAR_BASE,
     alfred_arm_joints,
     alfred_follower_artifact,
@@ -90,9 +91,14 @@ STEP_THRESHOLD_M = 0.06  # wheeled base: a kerb is an obstacle (Go2 uses 0.16)
 # planner may route Alfred through a gap it cannot fit; raising it toward the
 # circumscribed radius (0.373) costs feasible routes indoors. Commissioned value.
 WALL_CLEARANCE_M = 0.2
-# Headroom a cell needs to be standable - see the planner config below. This is
-# a floor-detection parameter, not the robot's height.
-PLANNER_CLEARANCE_HEIGHT_M = ALFRED.body_height
+# Vertical room a cell must have to count as floor. This IS the robot's height:
+# Alfred cannot drive under anything lower than it is, so anything lower is not
+# floor. At VOXEL_SIZE_M it rounds up to 24 cells, i.e. the planner demands 2.0 m
+# of headroom - so an interior doorway below about 2.0 m reads as blocked. That
+# is the conservative direction (it refuses to plan rather than driving the mast
+# into a frame), but it is the failure that costs an evening, so if routes go
+# missing at doorways this is the first thing to drop.
+PLANNER_CLEARANCE_HEIGHT_M = ALFRED_HEIGHT_M
 PLANNER_VIZ_HZ = 0.0  # raise to draw the planner's search (nodes, edges, surface)
 ALFRED_RERUN_ROOT = "world/alfred"
 
@@ -307,14 +313,12 @@ alfred_nav = (
             world_frame=ODOM_FRAME,
             base_frame="base_link",
             voxel_size=VOXEL_SIZE_M,
-            # NOT the robot's 1.86 m height. This is the gap a column must have
-            # above a cell for that cell to be standable at all (surfaces.rs
-            # is_standable), so it also decides what counts as floor. Set to the
-            # true height, every cell under an indoor ceiling stops being
-            # standable, the surface map empties, and the node graph goes empty -
-            # the planner then returns n=0 without ever running a search.
-            # Kept at the body height it was commissioned with; the mast passing
-            # under a low overhang is a real and accepted risk here.
+            # The gap a column must have above a cell for that cell to be floor
+            # at all (surfaces.rs is_standable), which is what makes this the
+            # robot's height rather than a headroom nicety. A normal ceiling is
+            # well clear of it - max_overhead_m caps the map at sensor_z + 2 m,
+            # so a 2.4 m ceiling leaves 30 cells against a 24-cell requirement -
+            # but a shelf, a table or a low doorway is not, and should not be.
             robot_height=PLANNER_CLEARANCE_HEIGHT_M,
             start_z_offset_m=0.0,
             # Cells closer than this to a wall are impassable, measured from
