@@ -159,12 +159,16 @@ class PicoTrackingSession:
         device_id: str | None = None,
         stale_timeout: float = 1.0,
         linear_scale: float = 0.3,
+        linear_min_speed: float = 0.0,
         yaw_scale: float = 0.3,
         deadzone: float = 0.18,
     ) -> None:
         self.device_id = device_id
         self.stale_timeout = stale_timeout
         self.linear_scale = linear_scale
+        if not 0.0 <= linear_min_speed <= linear_scale:
+            raise ValueError("linear_min_speed must be between zero and linear_scale")
+        self.linear_min_speed = linear_min_speed
         self.yaw_scale = yaw_scale
         self.deadzone = deadzone
         self.reason = "waiting_for_headset"
@@ -315,14 +319,20 @@ class PicoTrackingSession:
             buttons.left_primary = False
             buttons.right_primary = False
         self.reason = "release_a_and_x" if self._release_required else "tracking"
-        forward = left.axis_y if abs(left.axis_y) >= self.deadzone else 0.0
+        magnitude = math.hypot(left.axis_x, left.axis_y)
+        forward = sideways = 0.0
+        if magnitude > self.deadzone:
+            fraction = (min(magnitude, 1.0) - self.deadzone) / (1.0 - self.deadzone)
+            speed = self.linear_min_speed + (self.linear_scale - self.linear_min_speed) * fraction
+            # Native +Y is forward; +X is right, opposite Twist's +Y (left).
+            forward = left.axis_y / magnitude * speed
+            sideways = -left.axis_x / magnitude * speed
         turn = right.axis_x if abs(right.axis_x) >= self.deadzone else 0.0
-        # Unity's native stick Y is positive forward (WebXR gamepad Y is negative).
         velocity = (
             Twist.zero()
             if right.axis_click or self._release_required
             else Twist(
-                linear=Vector3(forward * self.linear_scale, 0.0, 0.0),
+                linear=Vector3(forward, sideways, 0.0),
                 angular=Vector3(0.0, 0.0, -turn * self.yaw_scale),
             )
         )

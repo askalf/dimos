@@ -50,6 +50,7 @@ class PicoTeleopConfig(ModuleConfig):
     stale_timeout: float = Field(default=1.0, gt=0, le=1.0)
     reconnect_interval: float = Field(default=1.0, gt=0)
     linear_scale: float = Field(default=0.3, ge=0, allow_inf_nan=False)
+    linear_min_speed: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     yaw_scale: float = Field(default=0.3, ge=0, allow_inf_nan=False)
     deadzone: float = Field(default=0.18, ge=0, lt=1)
 
@@ -72,6 +73,7 @@ class PicoTeleopModule(Module):
             device_id=self.config.device_id,
             stale_timeout=self.config.stale_timeout,
             linear_scale=self.config.linear_scale,
+            linear_min_speed=self.config.linear_min_speed,
             yaw_scale=self.config.yaw_scale,
             deadzone=self.config.deadzone,
         )

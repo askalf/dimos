@@ -30,7 +30,9 @@ from dimos.teleop.pico.module import PicoTeleopModule
 from dimos.teleop.pico.video import PicoVideoModule
 
 unitree_g1_sonic_pico_teleop = autoconnect(
-    PicoTeleopModule.blueprint(),
+    PicoTeleopModule.blueprint(
+        linear_scale=0.6, linear_min_speed=0.1, yaw_scale=1.5, deadzone=0.15
+    ),
     *((PicoVideoModule.blueprint(),) if global_config.simulation == "mujoco" else ()),
     _g1_sonic_control_blueprint(
         task_type="g1_sonic_teleop",

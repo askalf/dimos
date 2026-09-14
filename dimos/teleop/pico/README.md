@@ -112,10 +112,35 @@ module restarts; another headset cannot take it over.
 
 In simulation, let the pose buffer fill, then press **A+X together** to enter
 POSE. Release both and press A+X again to return to PLANNER. In PLANNER, left
-stick Y commands forward/back motion and right stick X turns. In POSE, the
-body controls motion and the right stick adjusts heading. Holding the right
-stick click sends zero velocity. Check these directions with small movements
-during the first live test.
+stick Y commands forward/back motion, left stick X commands sideways motion,
+and right stick X continuously turns the desired heading. Translation follows
+that heading. The left stick has a 0.15 radial deadzone; diagonals preserve the same
+maximum speed. The blueprint maps stick travel outside the deadzone to
+0.1–0.6 m/s and starts with `SLOW_WALK` selected. The right stick uses NVIDIA's
+PICO gain of 1.5 rad/s at full deflection (about 86°/s), with a 0.15 deadzone.
+These are planner speed targets,
+not a guarantee of measured robot speed. Centering the left stick requests IDLE
+while retaining the selected gait; centering the right stick holds the last
+desired heading. Holding the right stick click sends zero velocity. In POSE,
+the body controls motion and the right stick adjusts heading.
+
+Select a gait through the SONIC task in the RPC shell:
+
+```bash
+dimos --transport zenoh shell
+```
+
+```python
+c = app.ControlCoordinator
+c.task_invoke("sonic_teleop", "set_locomotion_mode", {"mode": "WALK"})
+c.task_invoke("sonic_teleop", "set_locomotion_mode", {"mode": "SLOW_WALK"})
+c.task_invoke("sonic_teleop", "state_snapshot")
+```
+
+`set_locomotion_mode` is a task method, so `c.set_locomotion_mode(...)` is not a
+coordinator RPC. `WALK` uses SONIC's default walking speed; the 0.6 m/s slow-walk
+target limit does not apply to it. Rearming or resetting policy state restores
+`SLOW_WALK`. Gait selection does not activate a disarmed policy.
 
 **A+B+X+Y together latches a damping stop.** Releasing the buttons, pressing A+X,
 or receiving fresh tracking cannot resume motion. The stop buttons bypass the

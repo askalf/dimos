@@ -33,6 +33,10 @@ from dimos.teleop.webxr.controller_types import Buttons
 
 blueprint = get_blueprint_by_name("unitree-g1-sonic-pico-teleop")
 source = next(atom for atom in blueprint.blueprints if atom.module.__name__ == "PicoTeleopModule")
+assert source.kwargs["linear_scale"] == 0.6
+assert source.kwargs["linear_min_speed"] == 0.1
+assert source.kwargs["yaw_scale"] == 1.5
+assert source.kwargs["deadzone"] == 0.15
 coordinator = next(atom for atom in blueprint.blueprints if atom.name == "ControlCoordinator")
 outputs = {(stream.name, stream.type) for stream in source.streams if stream.direction == "out"}
 inputs = {

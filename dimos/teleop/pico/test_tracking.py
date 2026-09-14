@@ -73,6 +73,87 @@ def test_native_buttons_axes_and_right_stick_stop(packet_factory):
     assert update.cmd_vel.linear.x == update.cmd_vel.angular.z == 0.0
 
 
+@pytest.mark.parametrize(
+    ("x", "y", "expected_x", "expected_y"),
+    [
+        (0.0, 1.0, 0.6, 0.0),
+        (0.0, -1.0, -0.6, 0.0),
+        (-1.0, 0.0, 0.0, 0.6),
+        (1.0, 0.0, 0.0, -0.6),
+        (1.0, 1.0, 0.6 / np.sqrt(2), -0.6 / np.sqrt(2)),
+        (0.0, 0.575, 0.35, 0.0),
+        (0.1, 0.1, 0.0, 0.0),
+        (0.0, 0.15, 0.0, 0.0),
+        (0.0, 0.151, 0.100588235, 0.0),
+    ],
+)
+def test_planar_stick_direction_deadzone_and_speed_range(
+    packet_factory: Callable[[int], dict[str, Any]],
+    x: float,
+    y: float,
+    expected_x: float,
+    expected_y: float,
+) -> None:
+    session = PicoTrackingSession(
+        linear_scale=0.6, linear_min_speed=0.1, yaw_scale=1.5, deadzone=0.15
+    )
+    session.receive("pico", decode(packet_factory(0)), now=0.0, wall_time=100.0)
+    session.receive("pico", decode(packet_factory(1)), now=0.02, wall_time=100.02)
+    payload = packet_factory(2)
+    payload["Controller"]["left"].update(axisX=x, axisY=y)
+    update = session.receive("pico", decode(payload), now=0.04, wall_time=100.04)
+    assert update is not None
+    assert update.cmd_vel.linear.x == pytest.approx(expected_x)
+    assert update.cmd_vel.linear.y == pytest.approx(expected_y)
+    assert update.cmd_vel.linear.z == update.cmd_vel.angular.z == 0.0
+
+
+@pytest.mark.parametrize(
+    ("stick", "yaw_rate"), [(-1.0, 1.5), (1.0, -1.5), (0.5, -0.75), (0.14, 0.0)]
+)
+def test_pico_reference_turn_rate(
+    packet_factory: Callable[[int], dict[str, Any]], stick: float, yaw_rate: float
+) -> None:
+    session = PicoTrackingSession(yaw_scale=1.5, deadzone=0.15)
+    session.receive("pico", decode(packet_factory(0)), now=0.0, wall_time=100.0)
+    session.receive("pico", decode(packet_factory(1)), now=0.02, wall_time=100.02)
+    payload = packet_factory(2)
+    payload["Controller"]["right"]["axisX"] = stick
+    update = session.receive("pico", decode(payload), now=0.04, wall_time=100.04)
+    assert update is not None
+    assert update.cmd_vel.angular.z == yaw_rate
+
+
+@pytest.mark.parametrize("stop", ["center", "stick_click", "focus_lost", "abxy"])
+def test_stop_clears_sideways_motion_and_turning(
+    packet_factory: Callable[[int], dict[str, Any]], stop: str
+) -> None:
+    session = PicoTrackingSession(linear_scale=0.6, linear_min_speed=0.1)
+    session.receive("pico", decode(packet_factory(0)), now=0.0, wall_time=100.0)
+    session.receive("pico", decode(packet_factory(1)), now=0.02, wall_time=100.02)
+    payload = packet_factory(2)
+    payload["Controller"]["left"].update(axisX=1.0, axisY=1.0)
+    payload["Controller"]["right"].update(axisX=-1.0)
+    moving = session.receive("pico", decode(payload), now=0.04, wall_time=100.04)
+    assert moving is not None
+    assert moving.cmd_vel.linear.y < 0.0 < moving.cmd_vel.angular.z
+
+    payload["timeStampNs"] += 20_000_000
+    if stop == "center":
+        payload["Controller"]["left"].update(axisX=0.0, axisY=0.0)
+        payload["Controller"]["right"].update(axisX=0.0)
+    elif stop == "stick_click":
+        payload["Controller"]["right"]["axisClick"] = True
+    elif stop == "focus_lost":
+        payload["appState"]["focus"] = False
+    else:
+        for controller in payload["Controller"].values():
+            controller.update(primaryButton=True, secondaryButton=True)
+    update = session.receive("pico", decode(payload), now=0.06, wall_time=100.06)
+    assert update is not None
+    assert update.cmd_vel.linear.x == update.cmd_vel.linear.y == update.cmd_vel.angular.z == 0.0
+
+
 def test_repeated_body_cannot_be_kept_alive_by_new_packets(packet_factory):
     session = PicoTrackingSession(stale_timeout=0.1)
     session.receive("pico", decode(packet_factory(0)), now=0.0, wall_time=100.0)

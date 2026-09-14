@@ -383,6 +383,7 @@ DEFAULT_HEIGHT = 0.788740
 POLICY_DT = 0.02
 REPLAN_INTERVAL_DEFAULT = 1.0
 REPLAN_INTERVAL_RUNNING = 0.1
+REPLAN_INTERVAL_TURNING = 0.1
 REPLAN_INTERVAL_CRAWLING = 0.2  # C++ replan_interval_crawling_
 BLEND_FRAMES = 8
 LOOK_AHEAD_FRAMES = 2
@@ -635,6 +636,7 @@ class SonicPipeline:
             max_workers=1, thread_name_prefix="sonic-planner"
         )
         self._planner_future: Future[list[Any]] | None = None
+        self._planner_generation_frame: int | None = None
         self._planner_started_at: float | None = None
         self._replan_timer = 0.0
         self._needs_replan = True
@@ -644,6 +646,8 @@ class SonicPipeline:
         self._vx = 0.0
         self._vy = 0.0
         self._yaw_rate = 0.0
+        self._desired_heading: float | None = None
+        self._last_planned_velocity = (0.0, 0.0, 0.0)
         self._height_cmd = -1.0  # -1 = mode default
         self._mode_override: int | None = None
         self._mode_queue: list[int | None] = []
@@ -690,15 +694,19 @@ class SonicPipeline:
         return self._mode_queue[-1] if self._mode_queue else self._mode_override
 
     def set_velocity(self, vx: float, vy: float, wz: float) -> None:
+        """Set forward/left speed about the desired heading and yaw rate in rad/s."""
+        previous_mode = self._locomotion_mode(math.hypot(self._vx, self._vy))
         yaw_started_or_stopped = (wz == 0.0) != (self._yaw_rate == 0.0)
+        self._vx, self._vy, self._yaw_rate = vx, vy, wz
+        planned_vx, planned_vy, planned_wz = self._last_planned_velocity
         if (
-            abs(vx - self._vx) > 0.05
-            or abs(vy - self._vy) > 0.05
-            or abs(wz - self._yaw_rate) > 0.1
+            abs(vx - planned_vx) > 0.05
+            or abs(vy - planned_vy) > 0.05
+            or abs(wz - planned_wz) > 0.1
             or yaw_started_or_stopped
+            or previous_mode != self._locomotion_mode(math.hypot(vx, vy))
         ):
             self._needs_replan = True
-        self._vx, self._vy, self._yaw_rate = vx, vy, wz
 
     def set_mode(self, mode: int | str | None) -> int | None:
         """Force a LocomotionMode (int or name); None returns to speed-auto.
@@ -889,6 +897,7 @@ class SonicPipeline:
         if self._planner_future is not None and not self._planner_future.done():
             self._planner_future.cancel()
         self._planner_future = None
+        self._planner_generation_frame = None
         self._planner_started_at = None
 
     def _clear_planner_transition_prepare(self) -> None:
@@ -930,6 +939,7 @@ class SonicPipeline:
     def _reset_heading_alignment(self) -> None:
         self._heading_delta_quat = np.array([1, 0, 0, 0], dtype=np.float64)
         self._heading_initialized = False
+        self._desired_heading = None
 
     def apply_heading_increment(self, increment_rad: float) -> None:
         """Operator yaw adjustment (pose-topic heading_increment field, pico
@@ -1022,12 +1032,14 @@ class SonicPipeline:
         self._replan_timer = 0.0
         self._step_count = 0
         self._needs_replan = True
-        self._heading_delta_quat = np.array([1, 0, 0, 0], dtype=np.float64)
-        self._heading_initialized = False
+        self._reset_heading_alignment()
+        self._vx = self._vy = self._yaw_rate = 0.0
+        self._last_planned_velocity = (0.0, 0.0, 0.0)
         if self._planner_future is not None and not self._planner_future.done():
             self._planner_future.cancel()
         self._planner_future = None
         self._upper_targets_dds = DEFAULT_ANGLES_DDS[15:].copy()
+        self._planner_generation_frame = None
         self._mode_override = None
         self._mode_queue = []
         self._mode_dwell = 0.0
@@ -1166,6 +1178,14 @@ class SonicPipeline:
             return 2
         return 3
 
+    def _locomotion_mode(self, speed: float) -> int:
+        if self._mode_override is None:
+            return self._auto_mode(speed)
+        # Centering the stick stops walking without forgetting the selected gait.
+        if self._mode_override in (1, 2, 3) and speed < 0.05:
+            return 0
+        return self._mode_override
+
     def _build_planner_context(self) -> NDArray[Any]:
         context = np.zeros((4, 36), dtype=np.float32)
         if (
@@ -1176,16 +1196,20 @@ class SonicPipeline:
             traj = self._trajectory
             start = min(self._traj_frame + LOOK_AHEAD_FRAMES, traj.num_frames - 1)
             for n in range(4):
-                f = min(round(start + n * (50.0 / 30.0)), traj.num_frames - 1)
-                context[n, 0:3] = traj.root_pos[f]
-                context[n, 3:7] = traj.root_quat[f]
-                context[n, 7:36] = traj.joint_pos[f][DDS_TO_ONNX]
+                f = min(start + n * (50.0 / 30.0), traj.num_frames - 1)
+                f0, f1 = int(f), min(int(f) + 1, traj.num_frames - 1)
+                alpha = f - f0
+                context[n, 0:3] = (1 - alpha) * traj.root_pos[f0] + alpha * traj.root_pos[f1]
+                context[n, 3:7] = _quat_lerp(traj.root_quat[f0], traj.root_quat[f1], alpha)
+                context[n, 7:36] = ((1 - alpha) * traj.joint_pos[f0] + alpha * traj.joint_pos[f1])[
+                    DDS_TO_ONNX
+                ]
         else:
             root_pos = np.array([0.0, 0.0, DEFAULT_HEIGHT], dtype=np.float32)
             for n in range(4):
                 context[n, 0:3] = root_pos
                 context[n, 3:7] = self._cur_quat
-                context[n, 7:36] = self._cur_q_dds[DDS_TO_ONNX]
+                context[n, 7:36] = self._cur_q_dds
         return context
 
     def _build_planner_inputs(self) -> dict[str, NDArray[Any]]:
@@ -1196,23 +1220,28 @@ class SonicPipeline:
                 c["mode"], c["movement"], c["facing"], c["speed"], c["height"]
             )
         speed = math.hypot(self._vx, self._vy)
-        yaw = _yaw_from_quat(self._cur_quat)
+        yaw = self._desired_heading
+        if yaw is None or self._planner_transition_preparing:
+            yaw = _yaw_from_quat(self._cur_quat)
+        if self._heading_initialized and not self._planner_transition_preparing:
+            # The trajectory is in the planner's reference frame; the encoder
+            # applies this alignment when tracking it in the robot's world frame.
+            yaw -= _yaw_from_quat(self._heading_delta_quat)
         cos_h, sin_h = math.cos(yaw), math.sin(yaw)
         world_vx = self._vx * cos_h - self._vy * sin_h
         world_vy = self._vx * sin_h + self._vy * cos_h
 
-        mode = self._mode_override if self._mode_override is not None else self._auto_mode(speed)
+        mode = self._locomotion_mode(speed)
 
         if speed > 0.05 and mode not in STATIC_MODES:
             move_dir = np.array([world_vx / speed, world_vy / speed, 0.0], dtype=np.float32)
         else:
             move_dir = np.zeros(3, dtype=np.float32)
 
-        target_yaw = yaw + self._yaw_rate * 1.0
-        face_dir = np.array([math.cos(target_yaw), math.sin(target_yaw), 0.0], dtype=np.float32)
+        face_dir = np.array([cos_h, sin_h, 0.0], dtype=np.float32)
 
         if mode == 1:
-            target_vel = max(0.2, min(speed, 0.8))
+            target_vel = max(0.1, min(speed, 0.6))
         elif mode == 3:
             target_vel = max(1.5, min(speed, 3.0))
         else:
@@ -1269,8 +1298,16 @@ class SonicPipeline:
         if self._planner_future is not None and not self._planner_future.done():
             return False
         inputs = self._build_planner_inputs()
+        self._planner_generation_frame = (
+            min(self._traj_frame + LOOK_AHEAD_FRAMES, self._trajectory.num_frames - 1)
+            if not self._planner_transition_preparing
+            and self._trajectory is not None
+            and self._trajectory.num_frames > 4
+            else None
+        )
         self._planner_started_at = time.perf_counter()
         self._planner_future = self._planner_executor.submit(self._planner.run, None, inputs)
+        self._last_planned_velocity = (self._vx, self._vy, self._yaw_rate)
         return True
 
     def _check_planner_result(self) -> None:
@@ -1308,18 +1345,29 @@ class SonicPipeline:
             not self._planner_transition_preparing
             and self._trajectory is not None
             and self._trajectory.num_frames > 0
+            and self._planner_generation_frame is not None
         ):
             old, old_f = self._trajectory, self._traj_frame
-            blend = min(BLEND_FRAMES, new_traj.num_frames)
-            for f in range(blend):
+            # Context starts at the generation frame. Align the returned motion
+            # to playback now, including frames advanced during async inference.
+            offset = self._planner_generation_frame - old_f
+            length = offset + new_traj.num_frames
+            if length <= 0:
+                self._needs_replan = True
+                return
+            merged = _Trajectory(length)
+            blend_start = max(0, offset)
+            for f in range(length):
                 of = min(old_f + f, old.num_frames - 1)
-                w_new = (f + 1) / (blend + 1)
+                nf = max(0, min(f - offset, new_traj.num_frames - 1))
+                w_new = max(0.0, min(1.0, (f - blend_start) / BLEND_FRAMES))
                 w_old = 1.0 - w_new
-                new_traj.joint_pos[f] = w_old * old.joint_pos[of] + w_new * new_traj.joint_pos[f]
-                new_traj.root_pos[f] = w_old * old.root_pos[of] + w_new * new_traj.root_pos[f]
-                new_traj.root_quat[f] = _quat_lerp(old.root_quat[of], new_traj.root_quat[f], w_new)
-            for f in range(min(blend, new_traj.num_frames - 1)):
-                new_traj.joint_vel[f] = (new_traj.joint_pos[f + 1] - new_traj.joint_pos[f]) * 50.0
+                merged.joint_pos[f] = w_old * old.joint_pos[of] + w_new * new_traj.joint_pos[nf]
+                merged.joint_vel[f] = w_old * old.joint_vel[of] + w_new * new_traj.joint_vel[nf]
+                merged.root_pos[f] = w_old * old.root_pos[of] + w_new * new_traj.root_pos[nf]
+                merged.root_quat[f] = _quat_lerp(old.root_quat[of], new_traj.root_quat[nf], w_new)
+            merged.num_frames = length
+            new_traj = merged
 
         self._trajectory = new_traj
         self._traj_frame = 0
@@ -1410,6 +1458,13 @@ class SonicPipeline:
 
         self._check_planner_result()
 
+        if not self._use_stream and self._planner_cmd is None:
+            if self._desired_heading is None:
+                self._desired_heading = _yaw_from_quat(self._cur_quat)
+            # Integrate once per policy step, independent of packet arrival and
+            # measured yaw lag. Releasing the stick retains the desired heading.
+            self._desired_heading += self._yaw_rate * POLICY_DT
+
         # Staged floor transitions: hold each ladder rung for the dwell,
         # then advance (gamepad_manager.hpp transition timers).
         if self._mode_queue:
@@ -1421,7 +1476,7 @@ class SonicPipeline:
 
         self._replan_timer += POLICY_DT
         speed = math.hypot(self._vx, self._vy)
-        mode = self._mode_override if self._mode_override is not None else self._auto_mode(speed)
+        mode = self._locomotion_mode(speed)
         # A held yaw command needs fresh facing targets even without translation.
         moving = (
             speed > 0.05
@@ -1434,6 +1489,8 @@ class SonicPipeline:
             interval = REPLAN_INTERVAL_CRAWLING
         else:
             interval = REPLAN_INTERVAL_DEFAULT
+        if self._yaw_rate != 0.0:
+            interval = min(interval, REPLAN_INTERVAL_TURNING)
         traj_low = (
             self._trajectory is not None
             and self._traj_frame > self._trajectory.num_frames - 20
@@ -1594,7 +1651,7 @@ class SonicPipeline:
 
     def snapshot(self) -> dict[str, Any]:
         speed = math.hypot(self._vx, self._vy)
-        mode = self._mode_override if self._mode_override is not None else self._auto_mode(speed)
+        mode = self._locomotion_mode(speed)
         stream_backlog_frames = (
             max(self._streamed.timesteps - self._streamed_frame - 1, 0)
             if self._streamed is not None
@@ -1608,6 +1665,7 @@ class SonicPipeline:
             "mode_override": self._mode_override,
             "mode_queue": list(self._mode_queue),
             "speed": speed,
+            "desired_heading": self._desired_heading,
             "trajectory": self._trajectory is not None,
             "traj_frame": self._traj_frame,
             "traj_frames_total": (self._trajectory.num_frames if self._trajectory else 0),

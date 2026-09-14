@@ -154,6 +154,23 @@ def test_live_policy_enters_planner_without_controller_buttons(
     assert teleop["buffered_frames"] == 0
     assert task.state_snapshot()["reference_source"] == "planner"
     pipeline.set_pose_window.assert_not_called()
+    pipeline.set_mode.assert_called_with("SLOW_WALK")
+
+
+def test_task_gait_selection_survives_stick_updates_and_resets_to_slow_walk(
+    task_and_pipeline: tuple[G1SonicTeleopTask, Any],
+) -> None:
+    task, pipeline = task_and_pipeline
+    task.set_locomotion_mode("WALK")
+    pipeline.set_mode.assert_called_with("WALK")
+    task.on_twist_command(Twist(linear=Vector3(0.6, 0.0, 0.0)), t_now=0.54)
+    task.compute(_state(0.54))
+    task.on_twist_command(Twist.zero(), t_now=0.56)
+    task.compute(_state(0.56))
+    pipeline.set_mode.assert_called_with("WALK")
+
+    task.reset_runtime_state(reactivate=False)
+    pipeline.set_mode.assert_called_with("SLOW_WALK")
 
 
 def test_dry_run_keeps_webxr_planner_available(

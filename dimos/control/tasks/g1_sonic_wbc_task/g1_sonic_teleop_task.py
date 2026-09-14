@@ -253,6 +253,11 @@ class G1SonicTeleopTask(G1SonicWBCTask):
             pose_window_frames=self._pose_stream.window_frames,
         )
 
+    def _reset_policy_state(self) -> None:
+        super()._reset_policy_state()
+        # Stick magnitude controls speed within this gait; task RPCs select others.
+        self._pipeline.set_mode("SLOW_WALK")
+
     def stop(self) -> None:
         with self._teleop_lock:
             self._reset_teleop_locked("task_stopped")

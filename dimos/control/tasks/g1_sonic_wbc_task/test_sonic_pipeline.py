@@ -22,7 +22,6 @@ import onnxruntime as ort  # type: ignore[import-untyped]
 import pytest
 
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import (
-    DDS_TO_ONNX,
     DEFAULT_ANGLES_DDS,
     NUM_JOINTS,
     SMPL_JOINTS_OFFSET,
@@ -253,6 +252,8 @@ def test_forced_locomotion_replans_at_its_mode_interval(
 ) -> None:
     pipeline.set_mode("IDEL_KNEEL_TWO_LEGS")
     pipeline.set_mode(mode)
+    if mode in (1, 3):
+        pipeline.set_velocity(0.3, 0.0, 0.0)
     pipeline._needs_replan = False
     pipeline._replan_timer = elapsed
     pipeline._decoder.run.return_value = [np.zeros((1, NUM_JOINTS), dtype=np.float32)]
@@ -508,7 +509,7 @@ def test_planner_prepare_uses_measured_joint_context(pipeline: SonicPipeline) ->
     assert pipeline.prepare_planner_transition() is True
     context = pipeline._build_planner_context()
 
-    expected_q = np.broadcast_to(pipeline._cur_q_dds[DDS_TO_ONNX], (context.shape[0], 29))
+    expected_q = np.broadcast_to(pipeline._cur_q_dds, (context.shape[0], 29))
     np.testing.assert_array_equal(context[:, 7:36], expected_q)
 
 
