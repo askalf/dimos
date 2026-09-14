@@ -107,6 +107,11 @@ class DetectConfig:
     # 0.685 -> 0.610), which is enough to drop a box under the 0.5 acceptance cut and
     # lose a real answer. fp16 held seven of the eight within 0.008.
     dtype: str = ""
+    # Prepare the images in torch on the card instead of numpy on the CPU. MEASURED on an
+    # RTX 5070 at 1280x720: 347 ms a frame -> 3.5 ms, which is a third of a detection
+    # gone. Not bit-identical -- see `Owlv2Config.gpu_preprocess` -- so it stays off until
+    # a whole run's answers say it changes nothing.
+    gpu_preprocess: bool = False
     # Episodes considered before the strongest `max_episodes` of them are detected.
     # Only bounds the work of placing them; a query with more candidates than this is
     # already answering about a very common thing.
@@ -634,6 +639,8 @@ class Owlv2Boxes:
                 settings["device"] = self.config.device
             if self.config.dtype:
                 settings["dtype"] = _torch_dtype(self.config.dtype)
+            if self.config.gpu_preprocess:
+                settings["gpu_preprocess"] = True
             self._detector = Owlv2Detector(**settings)
         return self._detector
 

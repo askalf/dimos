@@ -139,6 +139,11 @@ def main(
         "--dtype",
         help="detector precision: '' for float32, or fp16 (2x on CUDA). bf16 moves scores",
     ),
+    gpu_preprocess: bool = typer.Option(
+        DetectConfig.gpu_preprocess,
+        "--gpu-preprocess/--cpu-preprocess",
+        help="prepare the detector's images on the card; 347 ms a frame becomes 3.5 ms",
+    ),
 ) -> None:
     """Answer each query the way the live module would, and write a page per query."""
     recording_path = recording_path.expanduser()
@@ -166,6 +171,7 @@ def main(
                 world_frame=world_frame,
                 depth2depth=depth2depth,
                 dtype=dtype,
+                gpu_preprocess=gpu_preprocess,
             ),
             models=wanted,
             merge_m=merge_m,

@@ -35,6 +35,23 @@ _FEATURE_CACHE_MAX = 128
 class Owlv2Config(HuggingFaceModelConfig):
     model_name: str = "google/owlv2-base-patch16-ensemble"
     dtype: torch.dtype = torch.float32
+    # Do the processor's image preparation in torch on the model's device instead of in
+    # numpy on the CPU. OFF by default: it is not bit-identical, and every caller of this
+    # detector should opt in deliberately rather than find its scores moved underneath it.
+    #
+    # WHY IT IS WORTH OPTING IN, measured on an RTX 5070 with 1280x720 frames:
+    # `Owlv2ImageProcessor` costs 347 ms a frame against the model's own 439 ms, so more
+    # than a third of a detection is numpy. It is slow because the resize is not a plain
+    # bilinear -- it is skimage's recipe, a scipy `gaussian_filter` with
+    # sigma = (factor - 1) / 2 followed by an order-1 `ndi.zoom`. The same four steps in
+    # torch cost **3.5 ms**, a hundredfold.
+    #
+    # THE COST, stated rather than buried: torch's antialiased bilinear is a different
+    # kernel from that gaussian-then-zoom, so the pixels differ (mean 0.001, max 0.17 on a
+    # 0-1 scale) and the scores move a little with them -- worst 0.022 over four frames,
+    # the same order as float16. Anything with a threshold should be re-checked against
+    # its own answers before turning this on, not just against a few frames.
+    gpu_preprocess: bool = False
 
 
 class Owlv2Detector(HuggingFaceModel):
@@ -82,6 +99,44 @@ class Owlv2Detector(HuggingFaceModel):
 
         return Owlv2Processor.from_pretrained(self.config.model_name)
 
+    def _pixel_values(self, pils: list) -> torch.Tensor:
+        """`Owlv2ImageProcessor`'s four steps, in torch, on the model's device.
+
+        Rescale to 0-1, pad to a square with grey on the bottom and right, resize to the
+        checkpoint's side, normalize by the CLIP mean and std -- in that order, which is
+        the order the processor uses and the only order that gives the same picture. The
+        padding value is 0.5 because the rescale has already happened by then.
+
+        The resize is where this diverges: the processor uses a gaussian pre-filter plus
+        an order-1 zoom, and `antialias=True` here is a different kernel with the same
+        purpose. See `Owlv2Config.gpu_preprocess` for what that costs in score.
+        """
+        processor = self._processor.image_processor
+        side = processor.size["height"]
+        device = self.config.device
+        mean = torch.tensor(processor.image_mean, device=device).view(1, 3, 1, 1)
+        deviation = torch.tensor(processor.image_std, device=device).view(1, 3, 1, 1)
+
+        squares = []
+        for pil in pils:
+            pixels = torch.from_numpy(np.asarray(pil, dtype=np.uint8)).to(device)
+            pixels = pixels.permute(2, 0, 1).unsqueeze(0).float().div_(255.0)
+            height, width = pixels.shape[-2:]
+            square = max(height, width)
+            pixels = torch.nn.functional.pad(
+                pixels, (0, square - width, 0, square - height), mode="constant", value=0.5
+            )
+            squares.append(
+                torch.nn.functional.interpolate(
+                    pixels,
+                    size=(side, side),
+                    mode="bilinear",
+                    align_corners=False,
+                    antialias=True,
+                )
+            )
+        return (torch.cat(squares, dim=0) - mean) / deviation
+
     def _autocast(self) -> torch.autocast:
         return torch.autocast(
             device_type="cuda",
@@ -118,9 +173,17 @@ class Owlv2Detector(HuggingFaceModel):
         self.forwards += len(images)
         pils = [PILImage.fromarray(image.to_rgb().data) for image in images]
         with torch.inference_mode(), self._autocast():
-            inputs = self._processor(
-                text=[queries] * len(pils), images=pils, return_tensors="pt"
-            ).to(self.config.device)
+            if self.config.gpu_preprocess:
+                # The text side stays with the processor -- it is a tokenizer, it is
+                # cheap, and it is the images that cost 347 ms apiece.
+                inputs = self._processor(
+                    text=[queries] * len(pils), return_tensors="pt", padding=True
+                ).to(self.config.device)
+                inputs["pixel_values"] = self._pixel_values(pils)
+            else:
+                inputs = self._processor(
+                    text=[queries] * len(pils), images=pils, return_tensors="pt"
+                ).to(self.config.device)
             outputs = self._model(**inputs)
             results = self._processor.post_process_grounded_object_detection(
                 outputs=outputs,

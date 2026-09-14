@@ -1167,3 +1167,22 @@ def test_a_detector_precision_is_named_or_refused() -> None:
     assert _torch_dtype("bf16") is torch.bfloat16
     with pytest.raises(ValueError, match="unknown detector dtype"):
         _torch_dtype("float8")
+
+
+def test_gpu_preprocessing_is_off_until_a_run_says_otherwise() -> None:
+    """The fast image path is opt-in, because it is not bit-identical.
+
+    `Owlv2ImageProcessor` resizes with a gaussian pre-filter and an order-1 zoom; the
+    torch version uses an antialiased bilinear. Same intent, different kernel, so the
+    pixels differ a little and the scores move with them. Anything comparing a score to a
+    threshold has to check its own answers before turning this on, so the default must
+    stay off and the flag must reach the detector when it is asked for.
+    """
+    from dimos.mapping.hyperspace.detect import DetectConfig
+    from dimos.perception.detection.detectors.owlv2 import Owlv2Config
+
+    assert DetectConfig.gpu_preprocess is False
+    # Owlv2Config is a pydantic model, so the default lives in the field, not on the class.
+    assert Owlv2Config().gpu_preprocess is False, (
+        "every caller of the shared detector, not just hyperspace, opts in deliberately"
+    )
