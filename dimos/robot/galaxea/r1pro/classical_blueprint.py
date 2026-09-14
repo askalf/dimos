@@ -32,6 +32,7 @@ from dimos.robot.galaxea.r1pro.apartment_coordinator import R1ProApartmentCoordi
 from dimos.robot.galaxea.r1pro.apartment_navigation import (
     APARTMENT_FRAME,
     APARTMENT_NAV_TASK,
+    CLASSICAL_POSITION_TASK,
     ApartmentNavigation,
 )
 from dimos.robot.galaxea.r1pro.apartment_route import CLASSICAL_NAVIGATION_CLEARANCE_M
@@ -148,6 +149,24 @@ def build_classical_apartment(*, agent: bool = False) -> Blueprint:
                         "goal_tolerance": 0.003,
                         "orientation_tolerance": 0.003,
                         "approach_decel": 0.2,
+                        "stop_hold_s": 0.5,
+                    },
+                )
+            )
+            tasks.append(
+                TaskConfig(
+                    name=CLASSICAL_POSITION_TASK,
+                    type="holonomic_pose_follower",
+                    joint_names=base_joints,
+                    priority=30,
+                    params={
+                        "artifact_path": str(CONTROLLER_ARTIFACT),
+                        "speed": 0.15,
+                        "lookahead": 0.01,
+                        "regulate_horizon": 0.1,
+                        "goal_tolerance": 0.003,
+                        "orientation_tolerance": 0.003,
+                        "approach_decel": 0.06,
                         "stop_hold_s": 0.5,
                     },
                 )

@@ -1,6 +1,6 @@
 # Classical R1Pro apartment
 
-A separate interactive demo on `feat/r1pro-classical-apartment`. The robot uses GraspGenX and DimOS planning; no ACT policy runs in this stack. Native MCP validation passed the complete pick → dining delivery → placement → re-pick → kitchen delivery → placement sequence. The reported cabinet collision was reproduced and fixed; seed 1646757217 now passes glue-stick delivery to dining, kitchen cup pickup, return navigation and worktable placement. Separate tests passed both-hand manipulation, carton handling and cup placement. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-classical-apartment.md) for evidence and scope.
+A separate interactive demo on `feat/r1pro-classical-apartment`. The robot uses GraspGenX and DimOS planning; no ACT policy runs in this stack. Native MCP validation passed the complete pick → dining delivery → placement → re-pick → kitchen delivery → placement sequence. The reported cabinet collision was reproduced and fixed; seed 1646757217 now passes glue-stick delivery to dining, kitchen cup pickup, return navigation and worktable placement. The cross-hand regression on seed 1498950867 also passes left-cup pickup, a dining round trip, right-bottle pickup while holding the cup, a bimanual dining round trip, and both tray placements. Separate tests passed carton handling. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-classical-apartment.md) for evidence and scope.
 
 ## This workstation
 
@@ -69,6 +69,10 @@ Objects are not welded or teleported during manipulation. Grips and support are 
 
 Navigation preserves KronkNav's waypoint sampling. Sparse visibility shortcuts can make corners untrackable even when the nominal line is collision-free. Classical transit checks 6 cm of clearance, and stops when combined position/yaw tracking deviation exceeds its 4 cm allowance. The exact commanded paths and maximum tracking deviation are saved with action evidence.
 
+Local base positioning uses SDK-planned, collision-checked translation and turn stages executed by the DimOS holonomic task using measured progress. It therefore tolerates slow simulation without a wall-clock reference running ahead. Final manipulation arrival accepts up to 3 cm of position error, checks the actual stopped footprint, and corrects the arm from measured TCP pose. Intermediate moves that establish clearance retain a 5 mm position target. Departure can retreat and align the body before requesting a corridor route. Arrival tolerance does not relax swept collision checks.
+
+Motion is deliberately conservative. Loaded arms are limited to 0.25 rad/s and torso joints to 0.08 rad/s; dense Cartesian paths currently stop at each waypoint. Final support checks wait for settling. In the reported failing scene, contact-only physics ran at about 0.55 times real time after the first tray placement, compared with 2.42 times real time beforehand. Rendering, planning and communication add further overhead.
+
 ## Development validation
 
 The local MCP harness runs without an external language model:
@@ -82,6 +86,6 @@ The local MCP harness runs without an external language model:
   --viewer --stay-open
 ```
 
-Use a fresh output directory and unused test ports. Per-action JSON contains requested/resolved targets, planning choices, outcome and physical state; `result.json` also records source hashes. The latest completed navigation evidence is in `recordings/r1pro-classical-navigation-fix/seed-1646757217/`. Its `stack-v6-status.json` reports all seven actions successful.
+Use a fresh output directory and unused test ports. Per-action JSON contains requested/resolved targets, planning choices, outcome and physical state; `result.json` also records source hashes. Navigation evidence is in `recordings/r1pro-classical-navigation-fix/seed-1646757217/` (seven actions) and `recordings/r1pro-classical-navigation-fix/cross-hand-1498950867/` (eight actions including both-hand transport and tray placement).
 
 For a fresh environment the project provides `manipulation` and `graspgenx` extras. GraspGenX source and model revisions are pinned by the existing DimOS provider. The workstation's `.classical-venv` adds that provider to the existing apartment runtime without modifying the user's ACT environment.

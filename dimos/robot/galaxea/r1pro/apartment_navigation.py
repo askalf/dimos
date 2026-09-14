@@ -38,6 +38,7 @@ from dimos.spec.utils import Spec
 
 APARTMENT_FRAME = "object_carrying_footprint"
 APARTMENT_NAV_TASK = "object_navigation"
+CLASSICAL_POSITION_TASK = "classical_positioning"
 
 
 class ApartmentSimSpec(PrimitiveSimSpec, Protocol):

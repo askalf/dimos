@@ -27,6 +27,7 @@ from dimos.control.tasks.trajectory_task.trajectory_task import (
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
 from dimos.msgs.trajectory_msgs.TrajectoryStatus import TrajectoryState
+from dimos.robot.galaxea.r1pro.apartment_navigation import CLASSICAL_POSITION_TASK
 from dimos.robot.galaxea.r1pro.classical_skills import R1ProClassicalSkills
 from dimos.robot.galaxea.r1pro.config import R1PRO_PLANAR_BASE
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
@@ -234,5 +235,77 @@ def test_local_positioning_checks_sdk_plan_then_follows_measured_progress(skills
     skills._position_base({"base_waypoints": [[0, 0, 0], [0.1, 0.2, 0.4]]}, report)
 
     skills._sim.validate_primitive_base_plan.assert_called_once_with(trajectory)
-    follow.assert_called_once_with([[0, 0, 0], [0.1, 0.2, 0.4]], report, tracking_limit=0.015)
+    follow.assert_called_once_with(
+        [[0, 0, 0], [0.1, 0.2, 0.4]],
+        report,
+        tracking_limit=0.015,
+        task_name=CLASSICAL_POSITION_TASK,
+        arrival_tolerance=0.03,
+    )
     skills._manipulation.execute.assert_not_called()
+
+
+def test_local_arrival_accepts_eighteen_mm_and_checks_the_measured_footprint(skills, mocker):
+    skills._sim.primitive_state.side_effect = [
+        dict(base_pose=[0, 0, 0], sim_time=1.0),
+        dict(base_pose=[1.018, 0, 0], sim_time=2.0, error=None),
+        dict(base_pose=[1.018, 0, 0], sim_time=2.5, error=None),
+    ]
+    mocker.patch.object(skills, "_pause")
+    report = {}
+
+    skills._execute_base_path(
+        [[0, 0, 0], [1, 0, 0]],
+        report,
+        tracking_limit=0.015,
+        task_name=CLASSICAL_POSITION_TASK,
+        arrival_tolerance=0.03,
+    )
+
+    checked = skills._sim.validate_primitive_base_plan.call_args.args[0]
+    assert checked.points[0].positions == [1.018, 0, 0]
+    assert report["base_arrivals"][0]["position_error_m"] == pytest.approx(0.018)
+    skills._control.task_invoke.assert_any_call(CLASSICAL_POSITION_TASK, "cancel", {})
+    skills._sim.stop_primitive_base.assert_called_once()
+
+
+def test_local_arrival_rejects_excess_drift_after_stopping(skills, mocker):
+    skills._sim.primitive_state.side_effect = [
+        dict(base_pose=[0, 0, 0], sim_time=1.0),
+        dict(base_pose=[1.018, 0, 0], sim_time=2.0, error=None),
+        dict(base_pose=[1.045, 0, 0], sim_time=2.5, error=None),
+    ]
+    mocker.patch.object(skills, "_pause")
+
+    with pytest.raises(RuntimeError, match="outside the docking tolerance"):
+        skills._execute_base_path(
+            [[0, 0, 0], [1, 0, 0]],
+            {},
+            tracking_limit=0.015,
+            task_name=CLASSICAL_POSITION_TASK,
+            arrival_tolerance=0.03,
+        )
+
+    skills._sim.validate_primitive_base_plan.assert_not_called()
+    skills._sim.stop_primitive_base.assert_called_once()
+
+
+def test_local_arrival_tolerance_does_not_accept_an_obstructed_footprint(skills, mocker):
+    skills._sim.primitive_state.return_value = dict(
+        base_pose=[1.018, 0, 0], sim_time=1.0, error=None
+    )
+    skills._sim.validate_primitive_base_plan.side_effect = RuntimeError("blocked footprint")
+    mocker.patch.object(skills, "_pause")
+    report = {}
+
+    with pytest.raises(RuntimeError, match="blocked footprint"):
+        skills._execute_base_path(
+            [[0, 0, 0], [1, 0, 0]],
+            report,
+            tracking_limit=0.015,
+            task_name=CLASSICAL_POSITION_TASK,
+            arrival_tolerance=0.03,
+        )
+
+    assert "base_arrivals" not in report
+    skills._sim.stop_primitive_base.assert_called_once()

@@ -5,7 +5,7 @@ The user switched from ACT to classical manipulation with GraspGen and requested
 Branch: `feat/r1pro-classical-apartment`. Permanent checkout: `/home/mustafa/dimos-wt/r1pro-classical-apartment`. The former `/tmp/dimos-r1pro-primitives` path is a compatibility symlink. The existing ACT branch/checkpoints and Alfred checkout were not modified. The isolated runtime's launchers and package path were relocated with the worktree.
 
 
-## Cross-hand navigation and placement follow-up (under validation)
+## Verified cross-hand navigation and placement follow-up
 
 User session `recordings/r1pro-primitives/1ace56306dfe4c07a73fafdbaf19dd1d`, seed 1498950867: left-hand blue-cup pickup across the body succeeded; navigation was rejected from the resulting diagonal stance. Right-hand green-bottle pickup then succeeded with the other hand still holding. Bimanual navigation also rejected the fixed diagonal route. Left cup placement into tray succeeded; right bottle placement into tray aborted during SDK base positioning twice, then placement onto the table succeeded.
 
@@ -13,7 +13,14 @@ Saved-state collision replay found that the first grasp stance is clear at the 2
 
 The old wall-clock base trajectory reproduced the placement abort at 0.50 rad yaw lag in a replay with 0.2x physics speed. The revised separated progress execution reaches the target with 1.89 mm maximum combined path deviation. Physics-only benchmarks of the user's snapshots: 2.42x real time before tray placement, 0.55x after it; contact count rises from 100 to 196. The full run's later intervals advanced at 0.24–0.33x wall time, including planning/rendering overhead. Deliberate caps are still 0.3 m/s base, 0.4 rad/s yaw, loaded torso 0.08 rad/s and arms 0.25 rad/s. Dense arm paths currently stop at each waypoint, and final support checks add settling waits. Speed caps have not been raised.
 
-Focused checks: 50 tests and strict mypy on five changed implementations. Diagnostics are under `/tmp/r1pro-crosshand/`. Next native validation uses the same seed: left pick, dining and return, right pick while retaining left hold, bimanual dining and return, then independent tray placements. The supervisor caps output at 512 MB and stops below 1 GB free. The previously verified baseline below remains the delivered reference until this passes; do not push this follow-up yet.
+The complete native eight-action regression passed on seed 1498950867: left cup pick, dining and return, right bottle pick while retaining the left hold, bimanual dining and return, then independent tray placements. Both objects finished upright, released, settled and supported by bin_floor; the first placement preserved the other hold. Maximum transit tracking deviation was 28.84 mm (below the 40 mm transit guard). The supervised run exited cleanly with no recovery, disk guard or timeout. Durable evidence: `recordings/r1pro-classical-navigation-fix/cross-hand-1498950867/result.json`; diagnostics remain under `/tmp/r1pro-crosshand/`.
+
+### Verified arrival tolerance and measured-pose compensation
+
+The user clarified that ordinary base arrival error should be compensated by manipulation. Final local positioning now accepts up to 3 cm translation error, stops the velocity task, checks the settled measured footprint, and lets measured-TCP IK correct the arm. Clearance-establishing intermediate/departure moves retain a 5 mm position target. Transit tracking/collision checks remain separate. A dedicated local holonomic profile brakes earlier than apartment travel, avoiding the first rerun's 18 mm endpoint overshoot failure.
+
+53 focused regressions and strict mypy on five changed implementation files passed. Regressions cover acceptance of 18 mm arrival error, rejection of excessive settling drift, and rejection of an obstructed measured endpoint. In the native eight-action run, the first cross-body left-cup pick succeeded with 27.9 mm measured final base error: fresh measured-TCP alignment compensated it. Both tray placements subsequently succeeded. Recorded source hashes match the validated checkout. No external language-provider request was made. All our test supervisors have completed; no test/training process is left running by this follow-up.
+
 
 ## Verified navigation fix
 

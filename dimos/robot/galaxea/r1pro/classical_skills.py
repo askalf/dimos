@@ -40,6 +40,7 @@ from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
 from dimos.msgs.trajectory_msgs.TrajectoryStatus import TrajectoryState
 from dimos.robot.galaxea.r1pro.apartment_navigation import (
     APARTMENT_NAV_TASK,
+    CLASSICAL_POSITION_TASK,
     ApartmentNavigationSpec,
 )
 from dimos.robot.galaxea.r1pro.apartment_route import (
@@ -259,15 +260,20 @@ class R1ProClassicalSkills(Module):
         self._execute_base_path(path, report, CLASSICAL_TRACKING_LIMIT_M)
 
     def _execute_base_path(
-        self, path: list[list[float]], report: dict[str, Any], tracking_limit: float
+        self,
+        path: list[list[float]],
+        report: dict[str, Any],
+        tracking_limit: float,
+        task_name: str = APARTMENT_NAV_TASK,
+        arrival_tolerance: float | None = None,
     ) -> None:
         """Follow an already checked route by measured progress, including turns."""
         report.setdefault("commanded_paths", []).append(path)
         before = self._sim.primitive_state()
         self._pause(0)
-        self._control.task_invoke(APARTMENT_NAV_TASK, "reset", {})
+        self._control.task_invoke(task_name, "reset", {})
         accepted = self._control.task_invoke(
-            APARTMENT_NAV_TASK,
+            task_name,
             "start_path",
             {
                 "path": Path(poses=[pose_message(p) for p in path], frame_id="world"),
@@ -296,12 +302,23 @@ class R1ProClassicalSkills(Module):
             report["max_navigation_tracking_error_m"] = max(
                 report.get("max_navigation_tracking_error_m", 0.0), deviation
             )
+            arrival_error = np.asarray(state["base_pose"]) - path[-1]
+            arrival_error[2] = np.arctan2(np.sin(arrival_error[2]), np.cos(arrival_error[2]))
+            if (
+                arrival_tolerance is not None
+                and np.linalg.norm(arrival_error[:2]) <= arrival_tolerance
+                and abs(arrival_error[2]) <= 0.005
+            ):
+                # Close-range manipulation can absorb measured arrival error.
+                # Stop here; verify the actual footprint before the arms replan.
+                self._control.task_invoke(task_name, "cancel", {})
+                break
             if deviation > tracking_limit:
                 raise RuntimeError(
                     f"Navigation exceeded its checked tracking allowance ({deviation:.3f} m); "
                     "stopping before continuing the route"
                 )
-            task = self._control.task_invoke(APARTMENT_NAV_TASK, "get_state", {})
+            task = self._control.task_invoke(task_name, "get_state", {})
             if task == "arrived":
                 break
             if task in ("aborted", "idle"):
@@ -317,8 +334,23 @@ class R1ProClassicalSkills(Module):
         final = np.asarray(self._sim.primitive_state()["base_pose"])
         error = final - path[-1]
         error[2] = np.arctan2(np.sin(error[2]), np.cos(error[2]))
-        if np.linalg.norm(error[:2]) > 0.025 or abs(error[2]) > 0.03:
+        tolerance = 0.025 if arrival_tolerance is None else arrival_tolerance
+        if np.linalg.norm(error[:2]) > tolerance or abs(error[2]) > 0.03:
             raise RuntimeError("Measured navigation endpoint is outside the docking tolerance")
+        if arrival_tolerance is not None:
+            self._sim.validate_primitive_base_plan(
+                JointTrajectory(
+                    joint_names=list(R1PRO_PLANAR_BASE.joint_names),
+                    points=[TrajectoryPoint(positions=final.tolist(), time_from_start=0.0)],
+                )
+            )
+            report.setdefault("base_arrivals", []).append(
+                dict(
+                    target=path[-1],
+                    measured=final.tolist(),
+                    position_error_m=float(np.linalg.norm(error[:2])),
+                )
+            )
 
     def _navigate(
         self, destination: str, arm: str, report: dict[str, Any], stance: list[float] | None = None
@@ -332,7 +364,9 @@ class R1ProClassicalSkills(Module):
         plan = self._sim.prepare_object_navigation(destination, arm, stance)
         report["navigation"] = plan
         try:
-            self._position_base({"base_waypoints": plan["departure"]}, report)
+            self._position_base(
+                {"base_waypoints": plan["departure"]}, report, arrival_tolerance=0.005
+            )
             self._navigation.request_object_route(
                 plan["goal"], plan["footprint_offset"], plan["cloud"]
             )
@@ -354,9 +388,13 @@ class R1ProClassicalSkills(Module):
             self._control.task_invoke(APARTMENT_NAV_TASK, "cancel", {})
             self._sim.stop_primitive_base()
 
-    def _position_base(self, selection: dict[str, Any], report: dict[str, Any]) -> None:
+    def _position_base(
+        self, selection: dict[str, Any], report: dict[str, Any], *, arrival_tolerance: float = 0.03
+    ) -> None:
         report["base_plan_ids"] = []
-        for waypoint in selection["base_waypoints"][1:]:
+        waypoints = selection["base_waypoints"][1:]
+        for index, waypoint in enumerate(waypoints):
+            tolerance = arrival_tolerance if index == len(waypoints) - 1 else 0.005
             target = np.asarray(waypoint)
             if np.max(np.abs(target - self._sim.primitive_state()["base_pose"])) <= 0.004:
                 continue
@@ -378,10 +416,19 @@ class R1ProClassicalSkills(Module):
             # SDK planning still supplies and checks the path. Execute by
             # measured progress so slow physics cannot advance a wall-time
             # reference beyond the robot's physical pose.
-            self._execute_base_path(path, report, tracking_limit=0.015)
+            self._execute_base_path(
+                path,
+                report,
+                tracking_limit=0.015,
+                task_name=CLASSICAL_POSITION_TASK,
+                arrival_tolerance=tolerance,
+            )
             self._sim.stop_primitive_base()
             self._pause(1.0)
-            if np.max(np.abs(target - self._sim.primitive_state()["base_pose"])) > 0.01:
+            actual = np.asarray(self._sim.primitive_state()["base_pose"])
+            delta = target - actual
+            delta[2] = np.arctan2(np.sin(delta[2]), np.cos(delta[2]))
+            if np.linalg.norm(delta[:2]) > tolerance or abs(delta[2]) > 0.03:
                 raise RuntimeError(
                     "Measured base is outside the classical prepositioning tolerance"
                 )
@@ -430,6 +477,7 @@ class R1ProClassicalSkills(Module):
 
     def _stop_control(self) -> None:
         self._control.task_invoke(APARTMENT_NAV_TASK, "cancel", {})
+        self._control.task_invoke(CLASSICAL_POSITION_TASK, "cancel", {})
         result = self._manipulation.cancel()
         if result.status in (ExecutionStatus.UNCERTAIN, ExecutionStatus.FAULT):
             raise RuntimeError(result.message)
