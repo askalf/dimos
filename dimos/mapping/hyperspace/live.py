@@ -79,6 +79,15 @@ class LiveConfig:
     depth_stream: str = ""
     color_info_stream: str = ""
     depth_info_stream: str = ""
+    # Where the text towers live, and the CPU is the right answer even when there is a
+    # GPU. They encode one short string per query; the detector is the thing that needs
+    # the card. MEASURED on an 8 GB RTX 5070 (2026-09-14): three towers on the GPU hold
+    # 6.0 GiB of 7.5, so OWLv2's warm-up asks for 594 MiB, finds 217 MiB, and the whole
+    # query dies before it looks at a single frame. On the CPU the same three cost
+    # 0.21 + 0.21 + 0.75 = ~1.2 s per NEW query string (cached after that) against a
+    # 6-14 s query -- about a tenth of the time for six gigabytes.
+    # Set it to the detector's device on a card with room to spare.
+    tower_device: str = "cpu"
 
 
 class LiveQuery:
@@ -104,7 +113,7 @@ class LiveQuery:
         }
         self.frames = RecordingFrames(store, config=self.config.detect, **named)
         self.boxes = Owlv2Boxes(self.config.detect)
-        self.towers = TextTowers(self.config.detect.device or "cpu")
+        self.towers = TextTowers(self.config.tower_device or self.config.detect.device or "cpu")
         self.held = ResidentIndex()
         self._lock = threading.Lock()
         self.loaded: dict[str, float] = {}

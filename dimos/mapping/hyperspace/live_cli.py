@@ -129,6 +129,11 @@ def main(
         "has no filled-depth stream, '' off, or a checkpoint by name",
     ),
     device: str = typer.Option("auto", "--device"),
+    tower_device: str = typer.Option(
+        LiveConfig.tower_device,
+        "--tower-device",
+        help="where the text towers run; 'cpu' keeps the card for the detector",
+    ),
 ) -> None:
     """Answer each query the way the live module would, and write a page per query."""
     recording_path = recording_path.expanduser()
@@ -158,6 +163,7 @@ def main(
             ),
             models=wanted,
             merge_m=merge_m,
+            tower_device=tower_device,
             # Named at construction, not patched afterwards: `RecordingFrames` reads the
             # camera intrinsics in its constructor, so a name set later is set too late.
             color_stream=pick_stream(store, None, "color", "image"),

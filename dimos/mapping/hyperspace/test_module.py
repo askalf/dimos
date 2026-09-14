@@ -1239,3 +1239,27 @@ def test_a_kept_frame_comes_back_the_colour_it_went_in(store: SqliteStore) -> No
     assert np.allclose(back[0, 0], (200, 120, 40), atol=8), (
         f"channels came back as {tuple(int(v) for v in back[0, 0])}, wanted (200, 120, 40)"
     )
+
+
+def test_the_text_towers_stay_off_the_card_the_detector_needs(store: SqliteStore) -> None:
+    """Three text towers plus OWLv2 does not fit in 8 GB, so the towers go on the CPU.
+
+    Measured on an RTX 5070 (2026-09-14): the towers held 6.0 GiB of 7.5 and OWLv2's
+    warm-up then asked for 594 MiB against 217 MiB free, so every query died before it
+    reached a frame. The towers encode one short string per question -- about a second
+    of CPU -- and the detector is what actually needs the card. A `device="cuda"` that
+    silently took the towers with it is the bug this pins down.
+    """
+    from dimos.mapping.hyperspace.detect import DetectConfig
+    from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
+
+    assert LiveConfig.tower_device == "cpu", "the default has to keep the card free"
+
+    live = LiveQuery(store, LiveConfig(detect=DetectConfig(device="cuda")))
+    assert live.towers.device == "cpu", (
+        f"the towers followed the detector onto {live.towers.device!r}"
+    )
+
+    # And an explicit choice still wins, for a card with room to spare.
+    shared = LiveQuery(store, LiveConfig(detect=DetectConfig(device="cuda"), tower_device="cuda"))
+    assert shared.towers.device == "cuda"

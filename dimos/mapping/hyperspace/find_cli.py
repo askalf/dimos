@@ -42,6 +42,7 @@ from dimos.mapping.hyperspace.detect import (
     merge_duplicates,
 )
 from dimos.mapping.hyperspace.frames import TextTowers, member_streams, spec_of
+from dimos.mapping.hyperspace.live import LiveConfig
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
@@ -105,6 +106,11 @@ def main(
         "has no filled-depth stream, '' off, or a checkpoint by name",
     ),
     device: str = typer.Option("auto", "--device"),
+    tower_device: str = typer.Option(
+        LiveConfig.tower_device,
+        "--tower-device",
+        help="where the text towers run; 'cpu' keeps the card for the detector",
+    ),
     no_scene: bool = typer.Option(False, "--no-scene", help="skip the point cloud in the 3D page"),
 ) -> None:
     recording_path = recording_path.expanduser()
@@ -154,7 +160,9 @@ def main(
         config=config,
     )
     boxes = Owlv2Boxes(config)
-    towers = TextTowers(config.device or "cpu")
+    # The towers stay off the card on purpose -- see `LiveConfig.tower_device`. Three of
+    # them beside OWLv2 does not fit in 8 GB, and they are a second of CPU per query.
+    towers = TextTowers(tower_device or config.device or "cpu")
 
     typer.echo(f"index: {index_path}  models {wanted} of {available}")
     typer.echo(f"detector: {config.checkpoint} on {config.device or 'auto'}")

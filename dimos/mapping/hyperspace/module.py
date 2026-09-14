@@ -339,6 +339,9 @@ class HyperspaceConfig(MemoryModuleConfig):
     # by name. Live there usually is one -- the depth2depth module writes it as the
     # robot drives -- and then this costs nothing.
     detect_depth2depth: str = "auto"
+    # Where the text towers run. "cpu" by default: on an 8 GB card three of them leave
+    # the detector no room at all. See `LiveConfig.tower_device` for the measurement.
+    tower_device: str = "cpu"
 
     # Demo: after this many seconds, run demo_queries and publish the answers,
     # then repeat every demo_every_s. 0 disables.
@@ -443,6 +446,7 @@ class Hyperspace(MemoryModule):
                 ),
                 models=list(self.config.detect_models),
                 merge_m=self.config.merge_m,
+                tower_device=self.config.tower_device,
             ),
         )
         self.register_disposable(self.live)
