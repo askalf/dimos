@@ -27,13 +27,15 @@ import requests
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.robot.galaxea.r1pro.classical_blueprint import build_classical_apartment
 from dimos.robot.galaxea.r1pro.classical_sim import R1ProClassicalSim
+from dimos.robot.galaxea.r1pro.open_space_blueprint import build_classical_open_space
+from dimos.robot.galaxea.r1pro.open_space_sim import R1ProOpenSpaceSim
 from dimos.robot.galaxea.r1pro.sim_session import reserve_demo_session
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     args.output.mkdir(parents=True, exist_ok=True)
-    sim_class = R1ProClassicalSim
-    source = build_classical_apartment()
+    sim_class = R1ProOpenSpaceSim if args.open_space else R1ProClassicalSim
+    source = build_classical_open_space() if args.open_space else build_classical_apartment()
     atoms = tuple(
         replace(
             a,
@@ -64,6 +66,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     sources = [
         *Path(__file__).parent.glob("classical*.py"),
+        *Path(__file__).parent.glob("open_space*.py"),
+        Path(__file__).with_name("primitive_sim.py"),
+        Path(__file__).with_name("home_kinematics.py"),
         Path(__file__).with_name("object_primitive_state.py"),
         Path(__file__).with_name("primitive_scene.py"),
     ]
@@ -166,6 +171,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=340000)
     parser.add_argument("--scene-package", type=Path)
+    parser.add_argument("--open-space", action="store_true")
     parser.add_argument("--occupied", type=int, default=0)
     parser.add_argument("--right-layout", action="store_true")
     parser.add_argument("--viewer", action="store_true")

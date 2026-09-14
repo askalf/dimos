@@ -71,14 +71,16 @@ GraspGenX proposes learned grasps; DimOS classical planning executes picks and p
 No ACT policy is running. Keep answers brief."""
 
 
-def build_classical_apartment(*, agent: bool = False) -> Blueprint:
+def build_classical_apartment(
+    *, agent: bool = False, simulator: type[R1ProClassicalSim] = R1ProClassicalSim
+) -> Blueprint:
     base_joints = make_twist_base_joints(CLASSICAL_BASE_ID)
     source = build_r1pro_manipulation(
         scene_path=RECORDINGS_DIR / "r1pro-classical/scene.xml",
         artifact="unused",
         device="cuda",
         headless=False,
-        simulator=R1ProClassicalSim,
+        simulator=simulator,
         policy_module=None,
         task_description="",
         prepare_scene_on_build=True,
@@ -118,7 +120,7 @@ def build_classical_apartment(*, agent: bool = False) -> Blueprint:
     atoms = []
     for atom in source.blueprints:
         kwargs = dict(atom.kwargs)
-        if atom.module is R1ProClassicalSim:
+        if atom.module is simulator:
             kwargs.update(width=320, height=240, fps=10, extra_cameras=[])
         if atom.module is R1ProApartmentCoordinator:
             tasks = [
@@ -231,8 +233,8 @@ def build_classical_apartment(*, agent: bool = False) -> Blueprint:
         autoconnect(*modules)
         .remappings(
             [
-                (R1ProClassicalSim, "base_cmd_vel", f"/{CLASSICAL_BASE_ID}/cmd_vel"),
-                (R1ProClassicalSim, "base_odom", f"/{CLASSICAL_BASE_ID}/odom"),
+                (simulator, "base_cmd_vel", f"/{CLASSICAL_BASE_ID}/cmd_vel"),
+                (simulator, "base_odom", f"/{CLASSICAL_BASE_ID}/odom"),
                 (MLSPlannerNative, "path", "planned_path"),
                 (MLSPlannerNative, "tf", "navigation_tf"),
                 (ApartmentNavigation, "base_odom", f"/{CLASSICAL_BASE_ID}/odom"),

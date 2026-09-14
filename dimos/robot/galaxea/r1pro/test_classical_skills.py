@@ -309,3 +309,22 @@ def test_local_arrival_tolerance_does_not_accept_an_obstructed_footprint(skills,
 
     assert "base_arrivals" not in report
     skills._sim.stop_primitive_base.assert_called_once()
+
+
+def test_transit_stops_at_accepted_endpoint_before_follower_overshoot(skills, mocker):
+    path = [[0, 0, 0], [1, 0, 0]]
+    skills._sim.validate_object_navigation.return_value = path
+    skills._sim.primitive_state.side_effect = [
+        dict(base_pose=[0, 0, 0], sim_time=1.0),
+        dict(base_pose=[0.98, 0, 0], sim_time=2.0, error=None),
+        dict(base_pose=[0.981, 0, 0], sim_time=2.5, error=None),
+    ]
+    mocker.patch.object(skills, "_pause")
+    report = {}
+
+    skills._follow(path, report)
+
+    skills._sim.stop_primitive_base.assert_called_once()
+    assert report["base_arrivals"][0]["position_error_m"] == pytest.approx(0.019)
+    checked = skills._sim.validate_primitive_base_plan.call_args.args[0]
+    assert checked.points[0].positions == [0.981, 0, 0]

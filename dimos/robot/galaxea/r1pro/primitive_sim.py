@@ -117,11 +117,8 @@ class R1ProPrimitiveSim(MujocoSimModule):
                 if (output / "scene.xml").exists():
                     raise FileExistsError(f"Choose a new session output: {output}")
                 package = global_config.scene_package or self.config.scene_package
-                scene, layout = prepare_primitive_scene(
-                    output / "scene.xml",
-                    layout,
-                    "right",
-                    scene_package=Path(package) if package else None,
+                scene, layout = self._prepare_scene(
+                    output / "scene.xml", layout, Path(package) if package else None
                 )
                 if self.config.randomize_locations:
                     if package is None:
@@ -144,6 +141,11 @@ class R1ProPrimitiveSim(MujocoSimModule):
                 scene=str(scene), output=str(scene.parent), seed=self._layout.seed, limits=limits
             )
             return dict(self._session)
+
+    def _prepare_scene(
+        self, output: Path, layout: ObjectLayout, package: Path | None
+    ) -> tuple[Path, ObjectLayout]:
+        return prepare_primitive_scene(output, layout, "right", scene_package=package)
 
     @rpc
     def build(self) -> None:

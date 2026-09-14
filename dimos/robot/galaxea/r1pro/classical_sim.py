@@ -308,6 +308,9 @@ class R1ProClassicalSim(R1ProApartmentSim):
                 raise RuntimeError("DimOS base plan is obstructed with the held objects")
             start = target
 
+    def _navigation_heading(self, region: str) -> float:
+        return {"worktable": 0.0, "dining_table": -np.pi / 2, "kitchen": np.pi}[region]
+
     @rpc
     def prepare_object_navigation(
         self, destination: str, arm: str = "right", stance: list[float] | None = None
@@ -338,7 +341,7 @@ class R1ProClassicalSim(R1ProApartmentSim):
             if region_name not in self._regions:
                 raise ValueError("Use a measured apartment region or an object ID")
             target = np.asarray(self._regions[region_name].center)
-        yaw = {"worktable": 0.0, "dining_table": -np.pi / 2, "kitchen": np.pi}[region_name]
+        yaw = self._navigation_heading(region_name)
         goal = scene.preposition_pose(cast("Arm", arm), target, yaw=float(yaw))
         if stance is not None:
             goal = np.asarray(stance, dtype=float)

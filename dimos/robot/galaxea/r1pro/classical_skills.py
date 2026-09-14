@@ -257,7 +257,7 @@ class R1ProClassicalSkills(Module):
         if len(path) < 2:
             return
         path = self._sim.validate_object_navigation(path)
-        self._execute_base_path(path, report, CLASSICAL_TRACKING_LIMIT_M)
+        self._execute_base_path(path, report, CLASSICAL_TRACKING_LIMIT_M, arrival_tolerance=0.025)
 
     def _execute_base_path(
         self,
@@ -787,7 +787,7 @@ class R1ProClassicalSkills(Module):
 
     @skill
     def go_to(self, destination: str) -> str:
-        """Navigate to kitchen, dining_table or worktable while keeping held objects. Never release."""
+        """Navigate to a named region from get_surfaces while keeping all held objects. Never release."""
 
         def operation(report: dict[str, Any]) -> None:
             self._phase("navigate", report)

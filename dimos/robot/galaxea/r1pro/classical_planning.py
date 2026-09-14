@@ -197,10 +197,12 @@ class ClassicalGraspPlanner(ObjectReachability):
             before = self.probe.qpos[self.qids].copy()
             try:
                 goal = self.solve_pose(arm, pose)
+                if np.max(np.abs(goal - before)) > 0.20:
+                    raise RuntimeError("Arm-only Cartesian IK changes posture discontinuously")
             except RuntimeError:
-                # A transfer can reach the same TCP pose with a different
-                # redundant joint posture. Reassess each measured descent;
-                # small torso assistance keeps the remaining corridor reachable.
+                # A converged arm-only solution can jump to a different joint
+                # posture near a singularity. Try torso assistance for that
+                # case as well as nonconvergence, preserving the other hand.
                 goal = self.solve_pose(arm, pose, torso=True, preserve_other=True)
                 whole_body = True
             if np.max(np.abs(goal - before)) > 0.20:
@@ -472,9 +474,19 @@ class ClassicalGraspPlanner(ObjectReachability):
                             )
                         return sorted(results, key=lambda row: row["cost"])
                     try:
-                        results.append(
-                            self.evaluate_place(index, arm, target, pose, yaw_offset=yaw)
+                        candidate = self.evaluate_place(index, arm, target, pose, yaw_offset=yaw)
+                        # A reachable preplace pose can still require an
+                        # impossible upright transfer from the current grasp.
+                        # Check that transfer before selecting this body pose.
+                        self.initialize_probe(pose)
+                        staged = self.scene.snapshot()
+                        staged.data.qpos[:] = self.probe.qpos
+                        mujoco.mj_forward(self.model, staged.data)
+                        transfer = ClassicalGraspPlanner(staged).transfer_path(
+                            index, arm, np.asarray(candidate["preplace"])
                         )
+                        candidate["staging_waypoints"] = len(transfer)
+                        results.append(candidate)
                     except (ValueError, RuntimeError):
                         continue
                     if len(results) >= 3:

@@ -2,6 +2,8 @@
 
 A separate interactive demo on `feat/r1pro-classical-apartment`. The robot uses GraspGenX and DimOS planning; no ACT policy runs in this stack. Native MCP validation passed the complete pick → dining delivery → placement → re-pick → kitchen delivery → placement sequence. The reported cabinet collision was reproduced and fixed; seed 1646757217 now passes glue-stick delivery to dining, kitchen cup pickup, return navigation and worktable placement. The cross-hand regression on seed 1498950867 also passes left-cup pickup, a dining round trip, right-bottle pickup while holding the cup, a bimanual dining round trip, and both tray placements. Separate tests passed carton handling. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-classical-apartment.md) for evidence and scope.
 
+For wider approaches and five named platforms at different heights, use the separate [open-space demo](OPEN_SPACE.md).
+
 ## This workstation
 
 Close the previous demo with Ctrl-C before starting another stack on the default MCP port. The isolated runtime has already been installed; no environment exports are needed:

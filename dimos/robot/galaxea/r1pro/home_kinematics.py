@@ -140,6 +140,7 @@ class HomeKinematics:
         torso = self.groups["torso"]
         if torso_yaw_only:
             torso = replace(torso, joint_names=torso.joint_names[-1:])
+        measured_seed = self.seed(data)
         result = self.solver.solve_pose_targets(
             self.world,
             {
@@ -151,7 +152,7 @@ class HomeKinematics:
                 for side, xyz in targets.items()
             },
             auxiliary_groups=[torso] if allow_torso else [],
-            seed=self.seed(data) if seed is None else seed,
+            seed=measured_seed if seed is None else seed,
             position_tolerance=position_tolerance,
             orientation_tolerance=orientation_tolerance,
             check_collision=False,
@@ -162,7 +163,10 @@ class HomeKinematics:
                 f"SDK pose planning failed: {result.message}; "
                 f"position error={result.position_error:.6f} m, orientation error={result.orientation_error:.6f} rad"
             )
-        positions = dict(zip(result.joint_state.name, result.joint_state.position, strict=True))
+        # The SDK seed already accounts for small measured deviations beyond
+        # its conservative limits. Retain those bounded values for joints not
+        # solved by this request instead of reintroducing the raw measurements.
+        positions = dict(zip(measured_seed.name, measured_seed.position, strict=True))
         columns = [self.config.joint_names.index(name) for name in result.joint_state.name]
         bounded = bounded_joint_positions(
             np.asarray(result.joint_state.position, dtype=np.float64),
