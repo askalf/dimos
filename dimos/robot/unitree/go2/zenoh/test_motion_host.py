@@ -63,7 +63,9 @@ def test_the_deployment_overrides_land_in_both_halves(blob):
 
 
 def test_the_session_is_a_loopback_client_of_the_router(blob):
-    assert blob["session"] == {
+    # scout_addr is per-test-worker (dimos/conftest.py), not part of this claim.
+    session = {k: v for k, v in blob["session"].items() if k != "scout_addr"}
+    assert session == {
         "mode": "client",
         "connect": ["tcp/127.0.0.1:7447"],
         "listen": [],
