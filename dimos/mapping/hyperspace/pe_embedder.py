@@ -58,6 +58,19 @@ if TYPE_CHECKING:
 logger = setup_logger()
 
 PREFIX = "pe:"
+# How a patch token is put into the text's space.
+#
+# POOLED is the MaskCLIP route: the token goes through the attention-pooling head on
+# its own, because that head is what the image vector passes through and therefore
+# what the text was trained against. It is a trick -- the head was built to summarise
+# a whole sequence and it is being handed one token -- so it is worth knowing what the
+# obvious alternative does.
+#
+# DIRECT skips the pooling head and projects the token straight through the output
+# layer. Cheaper, and honest about what a token is, but the token never went through
+# the operation the text is aligned to.
+POOLED = "pooled"
+DIRECT = "direct"
 # What open_clip calls the weights. Every PE-Core checkpoint is published by Meta
 # under this one tag.
 PRETRAINED = "meta"
@@ -69,8 +82,22 @@ def is_pe(spec: str) -> bool:
 
 
 def pe_name(spec: str) -> str:
-    """``pe:PE-Core-B-16`` -> ``PE-Core-B-16``."""
-    return spec.strip()[len(PREFIX) :].strip()
+    """``pe:PE-Core-B-16`` -> ``PE-Core-B-16``, dropping any pooling suffix."""
+    return parse_pe(spec)[0]
+
+
+def parse_pe(spec: str) -> tuple[str, str]:
+    """``pe:PE-Core-B-16@direct`` -> ``("PE-Core-B-16", "direct")``.
+
+    The suffix names how a patch token is put into the text's space. Without one it
+    is `POOLED`, which is the MaskCLIP route and the default.
+    """
+    body = spec.strip()[len(PREFIX) :].strip()
+    name, _, how = body.partition("@")
+    how = how.strip().lower() or POOLED
+    if how not in (POOLED, DIRECT):
+        raise ValueError(f"{spec!r}: pooling must be {POOLED!r} or {DIRECT!r}, not {how!r}")
+    return name.strip(), how
 
 
 @dataclass
@@ -81,6 +108,8 @@ class PEPatchesConfig:
     # only the vision one; loading both doubles the memory for nothing.
     towers: Literal["both", "vision", "text"] = "both"
     pretrained: str = PRETRAINED
+    # POOLED (MaskCLIP) or DIRECT. See the note on the constants.
+    pooling: str = POOLED
 
 
 class PEPatches:
@@ -105,8 +134,9 @@ class PEPatches:
         self._model.eval().to(self.config.device)
         self._tokenizer = open_clip.get_tokenizer(self.config.model_name)
         logger.info(
-            f"hyperspace: {self.config.model_name} ({self.config.towers}) on "
-            f"{self.config.device}, {self.grid[0]}x{self.grid[1]} patches, {self.dim}-d"
+            f"hyperspace: {self.config.model_name} ({self.config.towers}, "
+            f"{self.config.pooling}) on {self.config.device}, "
+            f"{self.grid[0]}x{self.grid[1]} patches, {self.dim}-d"
         )
 
     def stop(self) -> None:
@@ -193,13 +223,16 @@ class PEPatches:
             # Each patch through the pooling head on its own: what the head does to the
             # whole sequence is what puts a vector in the text's space, so a patch that
             # skips it is not comparable to a word.
-            alone = patches.reshape(count * length, 1, width)
-            pooled = self.trunk.attn_pool(alone)
-            if pooled.ndim == 3:
-                pooled = pooled[:, 0, :]
-            pooled = self.trunk.head(self.trunk.fc_norm(pooled))
-            pooled = torch.nn.functional.normalize(pooled, dim=-1)
-            grids = pooled.reshape(count, length, -1).float().cpu().numpy()
+            if self.config.pooling == POOLED:
+                alone = patches.reshape(count * length, 1, width)
+                vectors = self.trunk.attn_pool(alone)
+                if vectors.ndim == 3:
+                    vectors = vectors[:, 0, :]
+            else:
+                vectors = patches.reshape(count * length, width)
+            vectors = self.trunk.head(self.trunk.fc_norm(vectors))
+            vectors = torch.nn.functional.normalize(vectors, dim=-1)
+            grids = vectors.reshape(count, length, -1).float().cpu().numpy()
         return [(grid.astype(np.float32), (rows, cols)) for grid in grids]
 
     def embed_text_array(self, *texts: str) -> NDArray[np.float32]:

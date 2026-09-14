@@ -170,8 +170,13 @@ def spec_of(tag: str) -> str:
     it -- you cannot encode the query text to compare against.
     """
     if tag.startswith("pe_"):
-        # Written by a Perception Encoder checkpoint; its name is the rest of the tag.
-        return f"pe:{tag[3:].replace('_', '-')}"
+        # Written by a Perception Encoder checkpoint; its name is the rest of the tag,
+        # with the pooling back on the end where it started.
+        body = tag[3:]
+        for how in ("direct",):
+            if body.endswith(f"_{how}"):
+                return f"pe:{body[: -len(how) - 1].replace('_', '-')}@{how}"
+        return f"pe:{body.replace('_', '-')}"
     budget = ""
     head, _, tail = tag.rpartition("_")
     if tail.isdigit() and head.endswith("naflex"):

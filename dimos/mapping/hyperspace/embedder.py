@@ -94,13 +94,11 @@ def member_tag(spec: str) -> str:
     ``base-patch16-naflex-576``, ``...-224#2x3`` -> ``base-patch16-224-2x3``.
     Stored with every keyframe so the query side knows which text towers to
     load."""
-    from dimos.mapping.hyperspace.pe_embedder import is_pe, pe_name
+    from dimos.mapping.hyperspace.pe_embedder import POOLED, is_pe, parse_pe
 
     if is_pe(spec):
-        # A Perception Encoder checkpoint keeps its own name, behind a marker the
-        # query side reads back: the stream has to say which family wrote it, not
-        # only which size, or the wrong text tower is loaded against it.
-        return f"pe-{pe_name(spec)}"
+        name, how = parse_pe(spec)
+        return f"pe-{name}" if how == POOLED else f"pe-{name}-{how}"
     name, budget, tiles = parse_member(spec)
     tag = name.rstrip("/").rsplit("/", 1)[-1].removeprefix("siglip2-")
     if budget:
@@ -350,10 +348,11 @@ def _member(spec: str, device: str, towers: Literal["both", "vision", "text"]) -
     Both answer `embed_grids` and `embed_text_array`, which is all the ensemble and
     everything downstream of it ever asks for.
     """
-    from dimos.mapping.hyperspace.pe_embedder import PEPatches, is_pe, pe_name
+    from dimos.mapping.hyperspace.pe_embedder import PEPatches, is_pe, parse_pe
 
     if is_pe(spec):
-        return PEPatches(model_name=pe_name(spec), device=device, towers=towers)
+        name, how = parse_pe(spec)
+        return PEPatches(model_name=name, device=device, towers=towers, pooling=how)
     name, budget, tiles = parse_member(spec)
     return SigLIP2Patches(
         model_name=name, max_patches=budget, tiles=tiles, device=device, towers=towers

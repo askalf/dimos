@@ -111,7 +111,13 @@ def main(
         help="also keep the colour frame behind each embedding frame, as a live run "
         "does. Unnecessary for a recording, which already holds its own colour.",
     ),
-    hz: float = typer.Option(0.0, "--hz", help="only look at this many frames a second (0 = all)"),
+    hz: float = typer.Option(
+        hs.MAX_KEYFRAME_HZ,
+        "--hz",
+        help="frames a second to EMBED, which is the ceiling on the keyframe rate. This "
+        "is the cost knob: every frame it looks at is a forward pass through every "
+        "checkpoint, whether or not the gate then keeps it.",
+    ),
     max_seconds: float = typer.Option(
         0.0, "--seconds", help="stop after this much of the recording (0 = all of it)"
     ),
@@ -182,7 +188,10 @@ def main(
         depth_info_stream=depth_info,
         tf_stream=tf_stream,
         hz=hz,
-        max_seconds=max_seconds,
+        # `ingest` stops once the recording is this far in, so "all of it" has to be a
+        # number rather than a zero -- which read as "stop immediately" and embedded
+        # exactly one frame before anyone noticed.
+        max_seconds=max_seconds if max_seconds > 0 else 1e9,
         config=IngestConfig(
             gate=hs.KeyframeGateConfig(
                 max_angular_velocity=None,
