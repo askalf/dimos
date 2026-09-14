@@ -57,24 +57,29 @@ memworld ~/datasets/lite_recorder/grocery.mcap   # or bike.mcap / park.mcap / an
   1. the recording (overview, roof cut away)
   2. the map: ray tracing (replay plays at 6× while orbiting the robot)
   3. embedding what it saw (eye level along the path)
-  4. asking in words (runs the query live)
-  5. from a picture to a point (hot patches raycast through depth)
-  6. places, not pixels (the answer's places, next/prev)
-  7. walking there (the route)
+  4. asking in words: a vector-database lookup (runs the query live)
+  5. where it was seen from (the answer's places, next/prev)
+  6. walking there (the route)
+  7. asking about part of it (runs a windowed question live)
   8. your turn
 
 ## Under the hood (for questions)
 
-- Index: every third colour frame through SigLIP 2, one frame vector plus a
-  patch grid, written back into the recording as its own stream.
+- Index: every few colour frames through SigLIP 2 by DimOS's own
+  `model.embed(image)` — **one vector per image** — appended to the index stream
+  with `embedding=`, which puts it in the store's vector index.
   `visual_search.py`, `embed.py`.
-- Search: the question through the same model's text tower, then cosine
-  similarity against every frame vector (one fp16 matrix product, milliseconds).
-  The best frames' hot patches are raycast through the depth image with the
-  camera intrinsics and tf, and the resulting points are clustered into places
-  ranked by distinct viewing directions, then by similarity. Without usable
-  depth or intrinsics the answer falls back to the matching frames' own camera
-  positions. `visual_search.py`, `visual_answers.py`.
+- Search: the question through the same model's text tower, then DimOS's own
+  **vector-database lookup**, `Stream.search(vector, k)` (`dimos/memory/stream.py`),
+  which ranks the recorded frames by cosine. A matching frame is placed at the
+  camera pose tf gives it — **where the thing was seen from**, not where the thing
+  is; nothing is projected into the map. Matches within `place_radius_m` of each
+  other collapse into one place, keeping the best-scoring frame.
+  `visual_search.py`, `visual_answers.py`.
+- Part of a recording: `find_in_memory` (and `POST /ask`) take `from_fraction` and
+  `to_fraction`, fractions of the recording's length — "the first half" is 0.0 to
+  0.5. A best match below `min_similarity` is reported as nothing found, which is
+  what lets the answer be "no".
 - Route: dimos MLS planner (3D terrain traversability over the ray-traced
   map); on maps too large for it, a 2D costmap along the driven path with
   dimos `min_cost_astar`. `route.py`.

@@ -35,52 +35,30 @@ from dimos.teleop.memory_world.embed import (
 )
 from dimos.teleop.memory_world.messages import MSG_QUERY_IMAGE, encode_binary
 from dimos.teleop.memory_world.query import ClusterSummary, HighlightPoint, MemoryQueryResult
-from dimos.teleop.memory_world.recording import depth_info_stream_for, recorded_payload
+from dimos.teleop.memory_world.recording import recorded_payload
 from dimos.teleop.memory_world.tf_tree import pose_matrix
 from dimos.teleop.memory_world.visual_search import (
-    PatchHit,
     Place,
     VisualMemoryIndex,
-    cluster_hits,
     cluster_places,
-    hot_patches,
-    patch_world_position,
-    sensor_intrinsics,
 )
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
 
-def _best_phrase(best: Place, located: bool) -> str:
-    """How to describe the place an answer flies to.
-
-    The two producers rank differently, and the sentence has to say which one it got.
-    `cluster_hits` (the depth path) ranks by VIEWING DIRECTIONS first, so its `places[0]`
-    is the most-seen place and a higher-scoring one is drawn in the same world at the same
-    moment with its own number printed on it -- "best match 0.150" beside a marker reading
-    "0.170" is a contradiction the reader has no way to resolve. Name both numbers there.
-    `cluster_places` (no depth) really does rank by similarity, so "best match" is true on
-    that branch and stays.
-    """
-    if not located:
-        return f"best match {best.similarity:+.3f}"
-    return f"best {best.similarity:+.3f} from {best.views} view{'s' if best.views != 1 else ''}"
-
-
-def _place_metadata(place: Place, located: bool) -> dict[str, Any]:
+def _place_metadata(place: Place, recording_start: float) -> dict[str, Any]:
     """One place, as the skill result reports it.
 
-    `views` is measured only on the depth path; on the other one it is the dataclass
-    default, and a reader cannot tell a measured 1 from an unmeasured one. So it is
-    omitted there rather than guessed. This is a function and not an inline dict because
-    the marker label makes the same decision, and making it twice is how the first version
-    of this fix dropped the count from the label and kept sending it in the payload.
+    ``seconds_into_recording`` is what makes "the FIRST basket" answerable: places come
+    back ranked by similarity, so without a time on each one the only order a reader has
+    is how well each matched, which is not what "first" means.
     """
-    reported: dict[str, Any] = {"position": place.position, "similarity": place.similarity}
-    if located:
-        reported["views"] = place.views
-    return reported
+    return {
+        "position": place.position,
+        "similarity": place.similarity,
+        "seconds_into_recording": round(place.ts - recording_start, 2),
+    }
 
 
 class VisualAnswers:
@@ -314,7 +292,7 @@ class VisualAnswers:
             except Exception:
                 logger.exception("could not fetch the frame behind place %d", index)
                 continue
-            camera = pose_matrix(place.camera_position or place.position, place.orientation)
+            camera = pose_matrix(place.position, place.orientation)
             forward, up = camera[:3, 2], -camera[:3, 1]  # optical: z forward, y down
             height, width = frame.data.shape[:2]
             header = {
@@ -336,10 +314,10 @@ class VisualAnswers:
                 "hfov_deg": hfov_deg,
                 "aspect": float(width) / float(height),
                 "distance_m": float(self.config.query_image_distance_m),
-                # Where in this photograph the match was, and the world point that
-                # pixel produced. The viewer rings the one and draws a line to the
-                # other, so a photo beside a highlight is visibly the REASON for it.
-                "uv": [float(v) for v in place.image_uv],
+                # No `uv`: one vector per image scores the WHOLE picture, so there is no
+                # in-frame hotspot to ring. The viewer draws the ring and its leader line
+                # only when both keys are present, which is the honest rendering here --
+                # the evidence is the photograph, not a pixel inside it.
                 "point": [float(v) for v in place.position],
             }
             sent.append((header, jpeg))
@@ -349,106 +327,6 @@ class VisualAnswers:
             self._active_query_images = sent
         for header, jpeg in sent:
             self._broadcast(encode_binary(MSG_QUERY_IMAGE, header, jpeg))
-
-    def _locate_objects(self, phrase: str) -> list[Place]:
-        """Raycast the hot patches of the best frames through depth and group the hits.
-
-        Empty when the recording has no depth stream or intrinsics, or when
-        no hot patch lands on valid depth.
-        """
-        if self.config.depth_stream_name is None or self.config.camera_info_stream_name is None:
-            return []
-        with self._store_lock:
-            store = self._ensure_store()
-            info = depth_info_stream_for(
-                store,
-                self.config.depth_stream_name,
-                self.config.camera_info_stream_name,
-            )
-            try:
-                dinfo = store.streams[info].first().data  # the depth camera's own
-                k = dinfo.K
-            except LookupError:  # declared, never published
-                return []
-            if not (k[0] and k[4]):  # uncalibrated: nothing to raycast through
-                return []
-            # The patch coordinates are the COLOUR camera's, so its intrinsics are what
-            # turns them into a ray; without them the depth is sampled at the wrong pixel.
-            colour = self.config.camera_info_stream_name
-            try:
-                cinfo = (
-                    store.streams[colour].first().data if colour in store.list_streams() else None
-                )
-            except LookupError:
-                cinfo = None
-        # Adjusted for whatever roi and binning the message declares, and returned with
-        # the raster those numbers then address -- so a remaining mismatch against the
-        # depth image is a resize and scales, while a crop does not. Without any of this a
-        # 1280x720 calibration indexed at an 848x480 depth pixel lifts the patch through
-        # cx=640 and lands it 43 cm off-axis.
-        intrinsics, intrinsics_size = sensor_intrinsics(dinfo)
-        if not intrinsics_size[0] or not intrinsics_size[1]:
-            intrinsics_size = None
-        # The colour side through the same adjustment. `color_size` is the raster its
-        # intrinsics address, which after a roi or binning is NOT cinfo.width: the uv is
-        # normalised in the published image, so meeting K means multiplying by the
-        # published size, not by the calibrated one.
-        colour_intrinsics: tuple[float, float, float, float] | None = None
-        colour_size: tuple[int, int] | None = None
-        if cinfo is not None and cinfo.K[0] and cinfo.K[4]:
-            colour_intrinsics, colour_size = sensor_intrinsics(cinfo)
-            if not colour_size[0] or not colour_size[1]:
-                colour_intrinsics, colour_size = None, None  # half a calibration
-        if info == colour:
-            # No depth calibration: `depth_info_stream_for` fell back to the COLOUR info,
-            # so `k` above is the colour camera's. Correcting colour-to-colour round-trips
-            # uv back through the colour WIDTH and indexes that into the depth raster --
-            # with a 1280x720 info and an 848x480 depth image, uv 0.875 lands at column
-            # 1120 and is dropped, and everything below it samples ~1.5x too far right.
-            # One calibration means the streams are taken as aligned: the uncorrected path.
-            colour_intrinsics, colour_size = None, None
-
-        hits: list[PatchHit] = []
-        with self._store_lock:
-            frames = list(
-                self._ensure_visual_index().frame_patches(phrase, k=self.config.locate_frames)
-            )
-        for frame in frames:
-            try:
-                with self._store_lock:  # resolved and read together: a reopen swaps the store
-                    depth_stream = self._ensure_store().streams[self.config.depth_stream_name]
-                    depth = depth_stream.at(
-                        frame.ts, tolerance=self.config.depth_tolerance_s
-                    ).first()
-                    depth_mm = np.asarray(depth.data.data)
-            except LookupError:
-                continue
-            camera_to_world = pose_matrix(frame.position, frame.orientation)
-            for image_uv, score in hot_patches(frame.similarity, frame.rows, frame.cols):
-                position = patch_world_position(
-                    image_uv,
-                    depth_mm,
-                    intrinsics,
-                    camera_to_world,
-                    color_intrinsics=colour_intrinsics,
-                    color_size=colour_size,
-                    intrinsics_size=intrinsics_size,
-                )
-                if position is not None:
-                    hits.append(
-                        PatchHit(
-                            position=position,
-                            similarity=score,
-                            source_id=frame.source_id,
-                            ts=frame.ts,
-                            camera_position=frame.position,
-                            camera_orientation=frame.orientation,
-                            image_uv=image_uv,
-                        )
-                    )
-        return cluster_hits(
-            hits, radius=self.config.object_radius_m, max_places=self.config.max_places
-        )
 
     def _markers_near(self, positions: list[tuple[float, float, float]]) -> list[int]:
         """Ids of the capture-pose markers closest to each place.
@@ -472,8 +350,17 @@ class VisualAnswers:
         }
         return sorted(nearest)
 
-    def _find_with_siglip(self, phrase: str, started: float) -> SkillResult:
-        """The fallback answer: SigLIP frame search, placed by depth when it can be."""
+    def _find_with_siglip(
+        self,
+        phrase: str,
+        started: float,
+        span: tuple[float, float] | None = None,
+    ) -> SkillResult:
+        """The answer: SigLIP image search, placed at the poses the frames were taken from.
+
+        *span* is the fraction of the recording to look in, ``(from, to)`` with 0 the
+        start and 1 the end; None means the whole thing.
+        """
         with self._store_lock:  # resolved and counted together: a reopen swaps the store
             indexed = self._ensure_visual_index().count()
         if indexed == 0:
@@ -484,17 +371,39 @@ class VisualAnswers:
                 f"`python -m dimos.teleop.memory_world.visual_search {self.config.store_path}`.",
             )
 
-        places = self._locate_objects(phrase)
-        located = bool(places)
-        if not located:
-            # No depth or extrinsics: answer with the poses the frames were taken from.
-            with self._store_lock:  # the index reads its stream; a reopen swaps the store
-                hits = self._ensure_visual_index().search(phrase, k=self.config.search_top_k)
-            places = cluster_places(
-                hits, radius=self.config.place_radius_m, max_places=self.config.max_places
+        # Where the camera STOOD when it saw the thing. One vector per image is all the
+        # index holds, so that is all an answer claims -- nothing is back-projected into
+        # the map to guess the object's own coordinates.
+        with self._store_lock:  # the index reads its stream; a reopen swaps the store
+            index = self._ensure_visual_index()
+            first, last = index.time_span()
+            window = None
+            if span is not None:
+                low, high = span
+                window = (first + (last - first) * low, first + (last - first) * high)
+            hits = index.search(phrase, k=self.config.search_top_k, window=window)
+        where = "" if span is None else " in that part of the recording"
+        if not hits:
+            return SkillResult.fail("NOT_FOUND", f"No frames{where} to compare against {phrase!r}")
+        # A cosine ranking always returns SOMETHING: the top of the list is the most
+        # like the question, not necessarily like it at all. Without a floor the answer
+        # to "were there any people" is yes on every recording ever made, so a best match
+        # this weak is reported as nothing found -- and the score is named either way, so
+        # the reader can see how near the line it fell.
+        best = max(hit.similarity for hit in hits)
+        if best < self.config.min_similarity:
+            return SkillResult.fail(
+                "NOT_FOUND",
+                f"Nothing{where} matches {phrase!r} "
+                f"(closest frame {best:+.3f}, below {self.config.min_similarity:+.3f})",
             )
+        places = cluster_places(
+            [hit for hit in hits if hit.similarity >= self.config.min_similarity],
+            radius=self.config.place_radius_m,
+            max_places=self.config.max_places,
+        )
         if not places:
-            return SkillResult.fail("NOT_FOUND", f"Nothing in the recording matches {phrase!r}")
+            return SkillResult.fail("NOT_FOUND", f"Nothing{where} matches {phrase!r}")
 
         # The client builds its results bar, its place stepping and its Navigate button
         # from the answer's `clusters`; an answer that carries only `points` leaves all three inert
@@ -502,7 +411,7 @@ class VisualAnswers:
         # reaches the route at all. It has to ride the RESULT, not the SkillResult's
         # metadata: `_publish_query_result` broadcasts `result.model_dump()`, and nothing
         # of the skill's metadata ever reaches the websocket.
-        radius = float(self.config.object_radius_m if located else self.config.place_radius_m)
+        radius = float(self.config.place_radius_m)
         clusters = [
             ClusterSummary(
                 index=index,
@@ -510,15 +419,12 @@ class VisualAnswers:
                 radius=radius,
                 score=float(place.similarity),
                 peak=float(place.similarity),
-                # Zero where the count was never measured, which is what the field's
-                # default means. `views` comes from the depth path's distinct bearings;
-                # without depth it is the dataclass's 1, and a dozen frames of one object
-                # merged by `cluster_places` still said "1 view" in the results bar. The
-                # sentence and the skill payload have refused to print that number on this
-                # branch since round 77 (`_best_phrase`, `_place_metadata`); the summary
-                # the CLIENT renders went on sending it.
-                n_views=int(place.views) if located else 0,
-                n_evidence=int(place.views) if located else 0,
+                # Zero means "never measured", which is the truth here: `cluster_places`
+                # keeps the best frame per location and throws the near-identical ones
+                # away, so there is no count of distinct sightings to report. The client
+                # prints nothing for a zero rather than a made-up "1 view".
+                n_views=0,
+                n_evidence=0,
                 label=f"{phrase[:80]} #{index + 1}",
             )
             for index, place in enumerate(places)
@@ -528,23 +434,16 @@ class VisualAnswers:
             engine="siglip",
             query_text=phrase,
             clusters=clusters,
-            answer=f"Found {phrase} in {len(places)} place(s), {_best_phrase(places[0], located)}",
+            answer=(
+                f"Found {phrase} in {len(places)} place(s) it was seen from, "
+                f"best match {places[0].similarity:+.3f}"
+            ),
             focus_point=places[0].position,
             points=[
                 HighlightPoint(
                     position=place.position,
-                    label=f"{phrase[:80]} ({place.similarity:+.3f}"
-                    # Only the depth path measures viewing directions. On the other one
-                    # `views` is the dataclass default, so printing "1 view" beside a
-                    # score would report a constant in the place of a measurement -- and
-                    # `cluster_places` has just thrown away the near-identical frames
-                    # that would have made it interesting.
-                    + (
-                        f", {place.views} view{'s' if place.views != 1 else ''})"
-                        if located
-                        else ")"
-                    ),
-                    radius=self.config.object_radius_m if located else None,
+                    label=f"{phrase[:80]} ({place.similarity:+.3f})",
+                    radius=None,
                 )
                 for place in places
             ],
@@ -570,7 +469,7 @@ class VisualAnswers:
                         clusters=clusters,
                         text=result.answer,
                         frame=self.config.world_frame,
-                        stats={"places": len(places), "located": located},
+                        stats={"places": len(places)},
                         seconds=time.monotonic() - started,
                     ),
                     query_id,
@@ -586,7 +485,6 @@ class VisualAnswers:
                 "query": phrase,
                 "engine": "siglip",
                 "clusters": [cluster.model_dump(mode="json") for cluster in clusters],
-                "places": [_place_metadata(place, located) for place in places],
-                "located": located,
+                "places": [_place_metadata(place, first) for place in places],
             },
         )

@@ -27,7 +27,7 @@ import asyncio
 import math
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -63,6 +63,12 @@ def _as_json_can_hold_it(value: float) -> float | str:
 
 class AskRequest(BaseModel):
     text: str = Field(min_length=1, max_length=400)
+    # Which stretch of the recording to look in, as fractions of its length: 0 is the
+    # beginning and 1 the end, so "the first half" is 0.0 to 0.5. The same restriction
+    # the agent's `find_in_memory` tool takes, so the viewer demonstrates the lookup the
+    # LLM actually performs rather than a second one that only looks similar.
+    from_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+    to_fraction: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class NavigateRequest(BaseModel):
@@ -70,6 +76,11 @@ class NavigateRequest(BaseModel):
     cluster: int = Field(default=0, ge=0)
     # Start from here (world xyz) instead of under the viewer.
     start: tuple[float, float, float] | None = None
+    # Or start from a place the RECORDING defines rather than one the viewer sends.
+    # "recording_start" is where the robot was when the recording began -- what someone
+    # means by "from the starting point", which is not where they happen to be standing.
+    # It wins over `start`: a caller that names both has said the more specific thing.
+    start_at: Literal["viewer", "recording_start"] = "viewer"
     # Walk to the PHOTO the viewer has stepped to, not to the middle of the blob. The
     # index is the one the query-image header carries, so the viewer names a picture it
     # was actually sent rather than posting a position of its own.
@@ -119,7 +130,9 @@ class WorldAnswers:
         def _frame_pose_at(self, frame: str, ts: float) -> Any: ...
         def _replay_index_json(self) -> dict[str, Any]: ...
         def _index_status(self) -> dict[str, Any]: ...
-        def find_in_memory(self, query: str) -> SkillResult: ...
+        def find_in_memory(
+            self, query: str, from_fraction: float = 0.0, to_fraction: float = 1.0
+        ) -> SkillResult: ...
 
     def _init_answers(self) -> None:
         # The places on screen and the query id they were published under. `/navigate`
@@ -192,6 +205,18 @@ class WorldAnswers:
         positions = self._orbit_positions_for(self._effective_orbit_frame()).get("positions") or []
         if positions:
             return tuple(float(v) for v in positions[-1])  # type: ignore[return-value]
+        raise HTTPException(status_code=503, detail="the robot's path is not known yet")
+
+    def _robot_start_pose(self) -> tuple[float, float, float]:
+        """Where the robot was when the recording began -- "the starting point".
+
+        The same list `_robot_end_pose` reads, from the other end. It is in time order
+        (`replay.py` notes the version-1 fix that made it so), so `positions[0]` really is
+        the beginning and not merely the first row that happened to be written.
+        """
+        positions = self._orbit_positions_for(self._effective_orbit_frame()).get("positions") or []
+        if positions:
+            return tuple(float(v) for v in positions[0])  # type: ignore[return-value]
         raise HTTPException(status_code=503, detail="the robot's path is not known yet")
 
     def _ground_under_viewer(
@@ -290,11 +315,19 @@ class WorldAnswers:
         # height the shared field holds -- `results.js` sends exactly
         # `getViewerRobotPosition()` -- so taking it raw started the route a metre above
         # every cell the planner can stand on, which is what this snap exists to prevent.
-        under = (
-            self._ground_under_viewer(tuple(request.start))
-            if request.start
-            else self._ground_under_viewer()
-        )
+        if request.start_at == "recording_start":
+            # Not through `_ground_under_viewer`: that snap exists to turn a CAMERA
+            # height into a floor the planner can stand on, and this pose is already one
+            # the robot drove through. Sending it through the snap would look up the
+            # nearest sample of the robot's path to a point that IS a sample of the
+            # robot's path.
+            under: tuple[float, float, float] | None = self._robot_start_pose()
+        else:
+            under = (
+                self._ground_under_viewer(tuple(request.start))
+                if request.start
+                else self._ground_under_viewer()
+            )
         # And no fallback to the caller's raw position when the snap DECLINES. It
         # declines when the robot's path is not known, which is the one state in which
         # nothing can say what height the caller is standing at -- taking their camera
@@ -407,6 +440,10 @@ class WorldAnswers:
             "query_id": query_id,
             "cluster": cluster.index,
             "start": [float(v) for v in start],
+            # So the viewer can MARK a start the person did not choose by standing there.
+            # A route drawn from the recording's beginning with no marker on it reads as a
+            # route from wherever the viewer happens to be.
+            "start_at": request.start_at,
             "goal": [float(v) for v in goal],
             "view": goal_view,  # which picture, when the route is to one
             "length_m": round(taken.length_m, 2),
@@ -532,7 +569,9 @@ class WorldAnswers:
         async def memory_world_ask(request: AskRequest) -> dict[str, Any]:
             """A typed question: same path as a spoken one."""
             self._broadcast(encode_text("voice_transcript", text=request.text))
-            outcome = await asyncio.to_thread(self.find_in_memory, request.text)
+            outcome = await asyncio.to_thread(
+                self.find_in_memory, request.text, request.from_fraction, request.to_fraction
+            )
             return {
                 "success": outcome.success,
                 "answer": outcome.message,

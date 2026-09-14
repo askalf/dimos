@@ -78,44 +78,6 @@ export function addQueryImage(scene, header, jpegArrayBuffer) {
         );
         if (header.cluster !== undefined) frustum.userData.cluster = header.cluster;
 
-        // Say WHY this photo is here. The server sends the pixel the search matched
-        // (uv) and the world point that pixel produced (point), and both were being thrown
-        // away, so a photo beside a highlight looked like a coincidence. A ring on the
-        // matched pixel and a line from it to the place make the link the answer is
-        // actually claiming visible instead of inferred.
-        const colour = header.cluster === 0 || header.index === 0 ? 0xff5c3a : 0xffb347;
-        if (Array.isArray(header.uv) && Array.isArray(header.point)) {
-            const hit = centre.clone()
-                .addScaledVector(right, (header.uv[0] - 0.5) * width)
-                .addScaledVector(up, (0.5 - header.uv[1]) * height);
-            const ring = new THREE.Mesh(
-                new THREE.RingGeometry(width * 0.02, width * 0.03, 24),
-                new THREE.MeshBasicMaterial({ color: colour, side: THREE.DoubleSide }),
-            );
-            // Just in FRONT of its own photo, and depth-tested like everything else.
-            // `depthTest: false` also kept it in front of every OTHER photo, the voxels
-            // and the walls -- a ring floating over the whole scene with nothing to say
-            // which picture it belonged to, which is what it looked like on screen. The
-            // quad faces back towards the camera that took it, so -forward is the side
-            // the viewer reads it from; a hair off the plane is enough to stop the two
-            // z-fighting without lifting the ring off the picture.
-            ring.position.copy(hit).addScaledVector(forward, -width * 0.005);
-            ring.quaternion.copy(quad.quaternion);
-            ring.renderOrder = 2;  // drawn after its photo, so it wins the tie on the plane
-            if (header.cluster !== undefined) ring.userData.cluster = header.cluster;
-            scene._highlightGroup.add(ring);
-            // A ring marks a pixel on a photograph, so it belongs to that photograph:
-            // left behind when Photos is off it is a circle hanging in mid-air.
-            (scene._queryMatchMarks[header.index] ||= []).push(ring);
-
-            const toPlace = new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints([hit, new THREE.Vector3(...header.point)]),
-                new THREE.LineBasicMaterial({ color: colour }),
-            );
-            if (header.cluster !== undefined) toPlace.userData.cluster = header.cluster;
-            scene._highlightGroup.add(toPlace);
-            (scene._queryMatchMarks[header.index] ||= []).push(toPlace);
-        }
         scene._highlightGroup.add(frustum);
         scene._queryImages[header.index] = header;
         scene._queryImageMeshes[header.index] = quad;

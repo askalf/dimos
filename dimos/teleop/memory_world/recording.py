@@ -33,7 +33,6 @@ from collections.abc import Callable, Iterator
 import contextlib
 from dataclasses import dataclass
 import json
-import math
 from pathlib import Path
 import sqlite3
 from typing import TYPE_CHECKING, Any
@@ -340,7 +339,7 @@ class _Float32MultiArrayWire:
 class MultiArray:
     """``std_msgs/msg/Float32MultiArray``: the shape siglipify stores embeddings in.
 
-    One row per frame, laid out ``[patch, dim]`` for per-patch vectors and
+    One row per frame, laid out ``[1, dim]`` for a pooled image vector and
     ``[dim]`` for a pooled one. A plain ROS message so anything that reads
     ROS data can read the vectors, not only this module.
     """
@@ -349,7 +348,7 @@ class MultiArray:
     data: np.ndarray  # float32, flat, row-major over ``sizes``
 
     def vectors(self) -> np.ndarray:
-        """The row as ``(count, dims)``: one vector per patch, or a single pooled one."""
+        """The row as ``(count, dims)``: one pooled vector per image."""
         dims = self.sizes[-1] if self.sizes else self.data.size
         return self.data.reshape(-1, dims) if dims else self.data.reshape(0, 0)
 
@@ -491,7 +490,10 @@ def name_streams(store: Any, config: Any, tf_tree: Callable[[], Any]) -> None:
     for role, setting in (
         ("tf", "tf_stream_name"),
         ("image", "image_stream_name"),
-        ("depth", "depth_stream_name"),
+        # No "depth" row: nothing reads a depth stream any more. An answer is placed at
+        # the camera pose tf gives it, never back-projected, so the module has no
+        # `depth_stream_name` for this to fill -- and `setattr` on a pydantic model it
+        # does not declare is an error, not a no-op.
         ("camera_info", "camera_info_stream_name"),
         ("lidar", "lidar_stream_name"),
     ):
@@ -523,34 +525,6 @@ def name_streams(store: Any, config: Any, tf_tree: Callable[[], Any]) -> None:
             config.world_frame = root
 
 
-def depth_info_stream_for(store: Any, depth_stream: str, camera_info: str) -> str:
-    """The depth camera's own ``camera_info`` when the recording has a USABLE one.
-
-    Takes the store, not a set of names, because a name is not intrinsics. This is the
-    third place in this package to learn that: `detect_streams` skips empty streams
-    because a killed ingest leaves the name behind, and `precomputed_stream_name` because
-    an empty embeddings stream is adopted as an index that can never be built. Here an
-    empty `<depth>_camera_info` outranks a populated `<depth>` one on name alone, and the
-    ingest then dies at "stream ... is empty" -- AFTER it has deleted the index it was
-    about to replace.
-    """
-    present = set(store.list_streams())
-    # Split on `_image` rather than stripping a trailing one: a ROS depth topic is
-    # `camera_depth_image_rect_raw`, which does not END with `_image`, so removesuffix
-    # was a no-op there and the real `camera_depth_camera_info` was never tried. The
-    # fallback was then the COLOUR info, used as the depth camera's K -- so the patch
-    # correction mapped colour to colour and indexed a 1280-wide raster into an 848-wide
-    # one: everything past uv 0.66 dropped, the rest sampled half a frame to the right.
-    base = depth_stream.split("_image")[0] or depth_stream
-    for candidate in (
-        f"{depth_stream}_camera_info",
-        f"{base}_camera_info",
-    ):
-        if candidate in present and next(iter(store.streams[candidate].order_by("ts")), None):
-            return candidate
-    return camera_info
-
-
 # Streams this module writes itself; never candidates for the recording's own.
 # The SigLIP index needs no entry — its payload type matches no sensor role.
 DERIVED_STREAMS = frozenset({"voxel_diff", "voxel_keyframe"})
@@ -565,7 +539,6 @@ _STREAM_HINTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # `camera_aligned_depth_to_color_image_raw`, which contains "color", so a rig with
     # aligned depth was detected as having no depth at all and the ingest refused a
     # recording that plainly has one.
-    "depth": (("depth",), ("infra",)),
     "camera_info": (("color", "rgb"), ("depth", "infra")),
     # An icp-stitched recording carries `<lidar>_corrected` beside the raw scans. The raw
     # scans win: the stitch's loop closure moves the clouds out from under the poses the
@@ -588,10 +561,6 @@ def _holds_anything(store: Store, name: str) -> bool:
         return any(True for _ in store.streams[name])
     except Exception:
         return False
-
-
-# How many samples of a stream are tried before giving up on reading its shape.
-CHANNEL_TRIES = 8
 
 
 def read_only_uri(path: str | Path) -> str:
@@ -631,35 +600,6 @@ def recorded_payload(store_path: str, stream: str) -> str | None:
     with contextlib.suppress(Exception):
         return str(json.loads(row[0])["payload_module"]).rsplit(".", 1)[-1]
     return None
-
-
-def _channels(store: Store, name: str) -> int | None:
-    """How many channels *name*'s images have: the count they AGREE on, else None.
-
-    The first sample is not the stream, twice over. A writer killed mid-frame leaves one
-    blob that will not decode and the rest intact, so one failure must not condemn the
-    stream: judging on that alone put a colourised image ahead of real DEPTH16, throwing
-    away nineteen good frames of depth for one bad one.
-
-    And a stream whose shape CHANGES is not depth at all, so reading on until something
-    decodes is not enough either: eight mono frames in front of ninety-two RGB ones read
-    as one channel, beat a real DEPTH16 stream, and `patch_world_position` raised "too
-    many values to unpack" on the frame it was handed. The last sample is asked as well,
-    and a disagreement is "cannot tell", which sorts last.
-    """
-    counts: set[int] = set()
-    try:
-        stream = store.streams[name]
-        for index, obs in enumerate(stream):
-            if index >= CHANNEL_TRIES:
-                break
-            with contextlib.suppress(Exception):
-                counts.add(int(obs.data.channels))
-        with contextlib.suppress(Exception):
-            counts.add(int(stream.last().data.channels))
-    except Exception:
-        return None
-    return counts.pop() if len(counts) == 1 else None
 
 
 def refuse_if_a_rebuild_is_half_done(store: Store, name: str) -> None:
@@ -1150,41 +1090,24 @@ def detect_streams(store: Store, image: str | None = None) -> dict[str, Any]:
 
         return sorted(candidates, key=order)
 
-    def pick(role: str, type_name: str, depth_like: bool | None = None) -> str | None:
-        candidates = rank(role, type_name)
-        if depth_like is not None:
-            candidates = [name for name in candidates if ("depth" in name.lower()) == depth_like]
-        if depth_like:
-            # Named like depth is not the same as BEING depth. A colourised depth image --
-            # what a `colorizer` node publishes for a person to look at -- is called
-            # `depth_color` and is three channels of RGB, and being the shorter name it
-            # outranked the real `camera_aligned_depth_to_color_image_raw` beside it;
-            # `patch_world_position` then raised "too many values to unpack" on it, since
-            # a metre is stored in one channel.
-            #
-            # It BREAKS THE TIE rather than disqualifying, because a stream says how many
-            # channels it has only as clearly as its codec lets it: a db whose images were
-            # written with the default jpeg codec hands back three channels of RGB
-            # whatever went in, and a recording whose only depth is stored that way should
-            # still be found. Real recordings decode depth as it was written -- the
-            # grocery recording's `depth_image` reads (720, 1280) uint16 DEPTH16.
-            #
-            # A candidate whose sample will not decode at all goes LAST, below even the
-            # colour one. Treating "cannot tell" as "no objection" let a stream with a
-            # truncated blob win on its shorter name, and there is no route by which the
-            # module could read a metre out of it -- measured, a corrupt `depth` beat a
-            # `camera_depth_image` that reads as real DEPTH16.
-            def depth_first(name: str) -> int:
-                channels = _channels(store, name)
-                return 0 if channels == 1 else (2 if channels is None else 1)
+    def pick(role: str, type_name: str, exclude_depth: bool = False) -> str | None:
+        """The best-ranked usable stream for *role*, or None.
 
-            candidates = sorted(candidates, key=depth_first)
+        *exclude_depth* drops depth-named candidates. There is no "depth only" mode any
+        more: no answer is back-projected, so nothing in this package reads a depth
+        stream, and the tie-breaks that used to tell a real DEPTH16 stream from a
+        colourised one went with it.
+        """
+        candidates = rank(role, type_name)
+        if exclude_depth:
+            candidates = [name for name in candidates if "depth" not in name.lower()]
         return candidates[0] if candidates else None
 
-    image = image if image in by_type.get("Image", []) else pick("image", "Image", depth_like=False)
+    image = (
+        image if image in by_type.get("Image", []) else pick("image", "Image", exclude_depth=True)
+    )
     detected = {
         "image": image,
-        "depth": pick("depth", "Image", depth_like=True),
         "camera_info": pick("camera_info", "CameraInfo"),
         "lidar": pick("lidar", "PointCloud2"),
         # Every PointCloud2 stream, best-named first. A recording often holds
@@ -1239,7 +1162,7 @@ class StoredEmbedding:
     """One frame's vectors as another tool stored them, before any alignment."""
 
     ts: float
-    vectors: np.ndarray  # (count, dims) float32: one row per patch, or one pooled row
+    vectors: np.ndarray  # (count, dims) float32: one pooled row per image
     # A mem2 row names the frame it embeds; an mcap message only shares its stamp.
     source_id: int | None = None
     model: str | None = None
@@ -1310,14 +1233,6 @@ class StoredEmbeddings:
                 )
         finally:
             conn.close()
-
-
-def grid_side(patch_count: int) -> int:
-    """Rows (= columns) of a square patch grid; a pooled row is a 1x1 grid."""
-    side = math.isqrt(patch_count)
-    if side * side != patch_count:
-        raise ValueError(f"{patch_count} patches do not form a square grid")
-    return side
 
 
 # ---- which lidar agrees with the tf tree ------------------------------------

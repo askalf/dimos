@@ -34,7 +34,7 @@ import pytest
 from dimos.teleop.memory_world.query import ClusterSummary, MemoryQueryResult
 from dimos.teleop.memory_world.route import LETHAL, RoutePlanner
 from dimos.teleop.memory_world.tf_tree import TfTree, pose_matrix, quaternion_from_matrix
-from dimos.teleop.memory_world.visual_search import PatchHit, Place, cluster_hits, search_phrase
+from dimos.teleop.memory_world.visual_search import Place, cluster_places, search_phrase
 
 VOXEL = 0.1
 BODY_Z = 0.4  # the robot's base height above the floor at z = 0
@@ -244,37 +244,32 @@ def test_a_spoken_question_is_reduced_to_the_thing_asked_about() -> None:
 # ---- places -----------------------------------------------------------------------
 
 
-def _hit(x: float, y: float, similarity: float, camera: tuple[float, float, float]) -> PatchHit:
-    return PatchHit(
-        position=(x, y, 0.0),
-        similarity=similarity,
-        source_id=0,
-        ts=0.0,
-        camera_position=camera,
-        camera_orientation=(0.0, 0.0, 0.0, 1.0),
-        image_uv=(0.25, 0.75),
-    )
+def _place(x: float, similarity: float, ts: float = 0.0) -> Place:
+    return Place(position=(x, 0.0, 0.0), similarity=similarity, source_id=0, ts=ts)
 
 
-def test_a_thing_seen_from_several_sides_outranks_a_single_lucky_frame() -> None:
-    """The primary rank key is distinct viewing directions, not similarity.
+def test_near_identical_frames_of_one_thing_become_one_place() -> None:
+    """The robot lingers, so one object produces dozens of near-identical frames.
 
-    A high score in one frame is as often a look-alike patch as a real object; a thing
-    four cameras agree on from four sides is the answer worth flying the viewer to.
+    Clustering keeps the best-scoring frame per location and drops the rest, which is
+    what turns a ranked list of frames into the handful of places a person asked for.
     """
-    seen_all_round = [
-        _hit(0.0, 0.0, 0.30, camera=(3.0, 0.0, 0.0)),
-        _hit(0.0, 0.0, 0.30, camera=(-3.0, 0.0, 0.0)),
-        _hit(0.0, 0.0, 0.30, camera=(0.0, 3.0, 0.0)),
-    ]
-    one_lucky_frame = [_hit(20.0, 0.0, 0.90, camera=(23.0, 0.0, 0.0))]
+    one_spot = [_place(0.0, 0.30), _place(0.4, 0.55), _place(-0.3, 0.21)]
+    somewhere_else = [_place(20.0, 0.40)]
 
-    places = cluster_hits(seen_all_round + one_lucky_frame, radius=1.0, max_places=5)
+    places = cluster_places(one_spot + somewhere_else, radius=2.0, max_places=5)
 
-    assert len(places) == 2
-    assert places[0].position[0] == pytest.approx(0.0, abs=0.2), "the single frame outranked it"
-    assert places[0].views == 3
-    assert places[0].image_uv == (0.25, 0.75), "the matched pixel was lost on the way out"
+    assert len(places) == 2, "the frames of one object were not collapsed"
+    assert places[0].similarity == pytest.approx(0.55), "the best frame of the place was lost"
+    assert places[0].position[0] == pytest.approx(0.4)
+
+
+def test_a_place_is_ranked_by_similarity_alone() -> None:
+    """There is no view count to rank by any more: one vector per image cannot say how
+    many distinct directions saw a thing, so the score is the whole order."""
+    places = cluster_places([_place(0.0, 0.10), _place(9.0, 0.80)], radius=1.0, max_places=5)
+
+    assert [round(p.similarity, 2) for p in places] == [0.80, 0.10]
 
 
 # ---- building the index -----------------------------------------------------------
@@ -383,9 +378,10 @@ def test_a_question_becomes_places_with_photographs() -> None:
     from dimos.teleop.memory_world.visual_answers import VisualAnswers
 
     found = [
-        Place(position=(1.0, 2.0, 0.0), similarity=0.42, source_id=3, ts=1.0, views=3),
-        Place(position=(8.0, 2.0, 0.0), similarity=0.21, source_id=9, ts=2.0, views=1),
+        Place(position=(1.0, 2.0, 0.0), similarity=0.42, source_id=3, ts=101.0),
+        Place(position=(8.0, 2.0, 0.0), similarity=0.21, source_id=9, ts=102.0),
     ]
+    asked: dict[str, object] = {}
     published: dict[str, object] = {}
 
     class Host(VisualAnswers):
@@ -399,7 +395,7 @@ def test_a_question_becomes_places_with_photographs() -> None:
                 search_top_k=5,
                 place_radius_m=1.0,
                 max_places=3,
-                object_radius_m=0.25,
+                min_similarity=0.05,
                 world_frame="odom",
                 image_stream_name="color_image",
                 query_image_max_size=240,
@@ -408,10 +404,15 @@ def test_a_question_becomes_places_with_photographs() -> None:
             )
 
         def _ensure_visual_index(self):  # type: ignore[no-untyped-def]
-            return SimpleNamespace(count=lambda: 7, search=lambda *a, **k: [])
+            def search(text, k=200, window=None):  # type: ignore[no-untyped-def]
+                asked["window"] = window
+                return found
 
-        def _locate_objects(self, phrase):  # type: ignore[no-untyped-def]
-            return found
+            return SimpleNamespace(
+                count=lambda: 7,
+                time_span=lambda: (100.0, 200.0),
+                search=search,
+            )
 
         def _markers_near(self, positions):  # type: ignore[no-untyped-def]
             return [11]
@@ -448,6 +449,10 @@ def test_a_question_becomes_places_with_photographs() -> None:
     assert outcome.metadata["engine"] == "siglip"
     assert len(outcome.metadata["places"]) == 2
     assert outcome.duration_ms > 0
+    assert asked["window"] is None, "a question about the whole recording narrowed it"
+    # Where in the recording each place sits, which is what answers "the FIRST one":
+    # the list is ranked by score, so without this there is no time order to read.
+    assert outcome.metadata["places"][0]["seconds_into_recording"] == pytest.approx(1.0)
 
     result = published["result"]
     assert result.engine == "siglip"
@@ -464,5 +469,7 @@ def test_a_question_becomes_places_with_photographs() -> None:
         assert header["cluster"] == index, "an image not in a place is refused by /navigate"
         assert header["query_id"] == "qid"
         assert len(header["position"]) == 3
-        assert len(header["uv"]) == 2
+        # No `uv`: one vector per image scores the whole picture, so there is no in-frame
+        # hotspot, and the viewer only rings one when the server sends both keys.
+        assert "uv" not in header, "an in-frame hotspot was published for a whole-image match"
         assert header["point"] == [float(v) for v in found[index].position]

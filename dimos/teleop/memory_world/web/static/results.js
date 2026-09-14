@@ -6,6 +6,7 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
 import { sightLineFor } from '/static_mw/evidence.js';
 import { desktopLookAngles } from '/static_mw/world_frame.js';
 
+const ROUTE_START_COLOR = 0xffd166;
 const ROUTE_COLOR = 0x64ff8f;
 const ROUTE_RADIUS_M = 0.06;
 const MIN_VIEW_DISTANCE_M = 2.5;
@@ -263,7 +264,27 @@ export class ResultsNav {
         flag.position.set(end[0], end[1], end[2] + 0.3);
         flag.rotation.x = Math.PI / 2;
         this._routeGroup.add(flag);
-        this._status(`Route to #${(msg.cluster ?? 0) + 1}: ${msg.length_m} m`);
+        // Mark a start the viewer did NOT choose by standing there. Without this, a route
+        // planned from the recording's beginning is a green tube that starts somewhere
+        // off-screen and reads as a route from wherever the person happens to be.
+        const startedElsewhere = msg.start_at && msg.start_at !== 'viewer';
+        if (startedElsewhere && Array.isArray(msg.start) && msg.start.length === 3) {
+            const post = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.06, 0.06, 1.1, 10),
+                new THREE.MeshBasicMaterial({ color: ROUTE_START_COLOR }),
+            );
+            post.position.set(msg.start[0], msg.start[1], msg.start[2] + 0.55);
+            post.rotation.x = Math.PI / 2;
+            this._routeGroup.add(post);
+            const ring = new THREE.Mesh(
+                new THREE.RingGeometry(0.3, 0.42, 24),
+                new THREE.MeshBasicMaterial({ color: ROUTE_START_COLOR, side: THREE.DoubleSide }),
+            );
+            ring.position.set(msg.start[0], msg.start[1], msg.start[2] + 0.02);
+            this._routeGroup.add(ring);
+        }
+        const from = startedElsewhere ? ' from the start of the recording' : '';
+        this._status(`Route to #${(msg.cluster ?? 0) + 1}${from}: ${msg.length_m} m`);
         this._render();
         this.diag('route_drawn', { cluster: msg.cluster, length_m: msg.length_m, points: points.length });
     }

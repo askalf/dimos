@@ -4,10 +4,13 @@ First-person VR exploration of a recorded robot memory. The viewer builds a
 height-coloured voxel map from the recording's lidar stream and overlays image
 captures, odometry, and the places an answer names.
 
-Questions are answered from the recording's own CLIP/SigLIP frame embeddings:
-the question goes through the model's text tower, the closest frames' hot
-patches are raycast through depth, and the resulting points are clustered into
-places. `DEMO.md` is the walkthrough.
+Questions are answered from the recording's own CLIP/SigLIP image embeddings —
+one vector per frame, produced by DimOS's `model.embed()` and recorded into the
+store. A question goes through the model's text tower and is answered by a
+vector-database lookup (`Stream.search`); each result is placed at the camera
+pose of the frame that matched, so a place is somewhere the thing was **seen
+from**, not the thing's own position. Nothing is projected into the map.
+`DEMO.md` is the walkthrough.
 
 ## Running
 

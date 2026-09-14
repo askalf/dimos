@@ -12,41 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Text-to-place lookup over a recording's images, using SigLIP 2 patch embeddings.
+"""Text-to-place lookup over a recording's images, using SigLIP 2 image embeddings.
 
 "Where did I see a traffic cone" has to answer in under a couple of seconds, so
 the expensive half is precomputed: every sampled camera frame is embedded once
 into an index stream. At query time only the *text* is embedded.
 
-The index keeps one embedding **per patch** (a 24x24 grid for a 384 px
-checkpoint), not one pooled vector per frame. A pooled whole-frame vector is a
-mean over everything in view, and a small object contributes almost nothing to
-it: on an office recording the pooled score for "a traffic cone" (0.077) sat
-below "a bicycle" (0.087) even though the cone was plainly in view, while the
-best single patch scored 0.159 and landed on the cone. Each patch token is run
-through the vision tower's attention-pooling head on its own (the MaskCLIP
-trick), which is what puts it into the text-aligned space; raw patch tokens are
-not comparable to text.
+**One vector per image, and nothing finer.** The vector is whatever
+``EmbeddingModel.embed`` returns -- DimOS's own image-embedding call, the same
+one ``dimos.memory.embed.EmbedImages`` runs over a recording -- so the index
+holds exactly what the platform already produces for any image. There is no
+patch grid and no attempt to work out *where in the picture* the match sits:
+a frame either looks like the sentence or it does not.
 
-A frame's score is the maximum over its patches after subtracting the best
-match to a fixed set of background prompts ("an office", "a wall", ...), which
-removes the floor that every indoor frame shares. A background prompt that is
-nearly a synonym of the query (text-text cosine above ``BACKGROUND_SYNONYM_CUTOFF``)
-is dropped for that query, otherwise "furniture" would erase "a desk".
+That is also what an answer can honestly say. A matching frame fixes **when**
+the thing was seen, and tf turns that into **where the camera stood** -- so a
+place is a spot the robot saw the thing FROM, not the thing's own coordinates.
+Nothing here back-projects a match into the map.
 
-A recording that siglipify has already embedded (a
-``<image stream>_<model>`` stream of ``std_msgs/msg/Float32MultiArray`` rows) is
-searched from those vectors instead of building anything. siglipify applies
-the same per-patch head trick and marks the stream ``text_aligned``; a stream
-without the mark holds raw tower tokens and is refused rather than searched.
+**The lookup is DimOS's own vector database.** Each frame's embedding is appended to
+the index stream with ``embedding=``, which puts it in the store's vector index
+(``SqliteVectorStore``), and a question is answered by ``Stream.search(query_vec, k)``
+from ``dimos/memory/stream.py`` -- plain cosine, ranked by the store. Nothing in this
+module scores vectors itself, and there is no in-memory copy of the index.
+
+Two things fill that index and both end up in the same place, so there is ONE query
+path. ``build()`` embeds the frames here. ``_import_precomputed()`` copies the rows
+siglipify wrote into the recording (a ``<image stream>_<model>`` stream of
+``std_msgs/msg/Float32MultiArray``); siglipify must have been run with
+``embedding = "pooled"``, and a stream of per-patch rows is refused rather than pooled
+after the fact -- averaging patch tokens is not the vector the model's own head
+produces, and quietly substituting one for the other is how a score stops meaning
+anything.
 
 The index stream stores the source observation id as part of its payload
 rather than a copy of the image, and the model name, image stream and world
-frame in its tags: the grid
-shape and vector width are fixed by the checkpoint, so an index built with one
-model cannot be searched with another. Each row's pose is the camera's
-*optical* frame in the world (z forward, x right, y down), supplied by the
-caller's ``pose_of`` (the recording's tf tree); rows are tagged with that
+frame in its tags: the vector width is fixed by the checkpoint, so an index
+built with one model cannot be searched with another. Each row's pose is the
+camera's *optical* frame in the world (z forward, x right, y down), supplied by
+the caller's ``pose_of`` (the recording's tf tree); rows are tagged with that
 convention and an index built any other way is refused.
 """
 
@@ -61,11 +65,7 @@ import numpy as np
 import torch
 
 from dimos.models.embedding.siglip import SigLIPModel
-from dimos.teleop.memory_world.recording import (
-    StoredEmbeddings,
-    embedding_stream_name,
-    grid_side,
-)
+from dimos.teleop.memory_world.recording import StoredEmbeddings, embedding_stream_name
 from dimos.teleop.memory_world.tf_tree import quaternion_from_matrix
 from dimos.utils.logging_config import setup_logger
 
@@ -76,6 +76,12 @@ if TYPE_CHECKING:
 
 # How index rows say which frame their pose describes.
 POSE_FRAME_TAG = "camera_optical"
+# What KIND of index a row belongs to. An older index of this package stored a per-patch
+# grid as the row's payload and scored it in memory; those rows carry the same model,
+# camera and world tags as these, decode to a different payload, and have no entry in the
+# store's vector index -- so without this tag a stale one is adopted and every question
+# fails on it. A row without the tag is an old row.
+INDEX_KIND_TAG = "image-embedding-v1"
 
 logger = setup_logger()
 
@@ -107,70 +113,38 @@ def index_stream_name_of(model_name: str, image_stream_name: str) -> str:
     return f"{image_stream_name}_index_{model_slug(model_name)}"
 
 
-BACKGROUND_PROMPTS = (
-    "a photo",
-    "an office",
-    "a room",
-    "an indoor scene",
-    "a wall",
-    "a floor",
-    "a ceiling",
-    "furniture",
-)
-BACKGROUND_SYNONYM_CUTOFF = 0.85
-# A patch is "hot" when it scores at least this much and at least this fraction
-# of its frame's best patch. The scores are background-contrasted (patch cosine
-# minus its best background cosine; raw aligned cosines peak around 0.10-0.17),
-# so the floor is loose and the ratio does most of the work.
-HOT_PATCH_FLOOR = 0.10
-HOT_PATCH_RATIO = 0.75
-# Frames scored per matmul. The index stays fp16 in memory (5 fps of 848x480
-# for four minutes is ~2 GB); each chunk is widened to fp32 for the product.
-SCORE_CHUNK_FRAMES = 64
 # An mcap embedding names its frame only by stamp; this is how close it must be.
 STAMP_MATCH_TOLERANCE_S = 1e-3
 
 
 @dataclass(frozen=True)
-class PatchGrid:
-    """Per-patch, text-aligned embeddings of one camera frame (the index payload)."""
+class FrameEmbedding:
+    """One indexed camera frame: which frame it was.
+
+    The vector itself is NOT here. It goes to the store's vector index via
+    ``append(..., embedding=...)``, which is what makes ``Stream.search`` able to rank
+    these rows at all; keeping a second copy in the payload would be a copy nothing reads.
+    The row's pose and timestamp are the observation's own.
+    """
 
     source_id: int
-    rows: int
-    cols: int
-    patches: np.ndarray  # (rows * cols, dims) float16, L2-normalised
 
 
 @dataclass(frozen=True)
 class Place:
-    """One distinct location where the query was seen."""
+    """One spot the query was seen FROM: a matching frame's camera pose.
+
+    ``position`` is where the camera stood, not where the thing is. With one
+    vector per image that is the whole of what the match knows, and the wording
+    everywhere downstream says so.
+    """
 
     position: tuple[float, float, float]
     similarity: float
     source_id: int
     ts: float
-    # Where in the matching frame the best patch sits, as fractions of width
-    # and height, so a later step can raycast it into the map.
-    image_uv: tuple[float, float] = (0.5, 0.5)
-    # Pose the frame was captured from: (qx, qy, qz, qw), and the position when
-    # it differs from ``position`` (a located object keeps its camera here).
+    # Pose the frame was captured from: (qx, qy, qz, qw).
     orientation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
-    camera_position: tuple[float, float, float] | None = None
-    # Distinct viewing directions that saw this place (1 for a single frame).
-    views: int = 1
-
-
-@dataclass(frozen=True)
-class FramePatches:
-    """One indexed frame's patch scores for a query, with where it was taken from."""
-
-    source_id: int
-    ts: float
-    position: tuple[float, float, float]
-    orientation: tuple[float, float, float, float]
-    similarity: torch.Tensor  # (patches,)
-    rows: int
-    cols: int
 
 
 _QUESTION_PREFIXES = (
@@ -235,136 +209,16 @@ def cluster_places(
     return places
 
 
-def patch_similarity(
-    patches: torch.Tensor,
-    query: torch.Tensor,
-    background: torch.Tensor,
-) -> torch.Tensor:
-    """Background-contrasted patch-text cosine for every patch of every frame.
+def _unit(vector: np.ndarray) -> np.ndarray:
+    """L2-normalise, so the cosine the vector store reports is comparable between runs.
 
-    ``patches`` is (frames, patches, dims), ``query`` (dims,), ``background``
-    (prompts, dims); all L2-normalised. Returns (frames, patches). With no
-    background prompts this is the plain cosine.
+    A locally built index and one imported from siglipify do not otherwise agree on
+    scale, and the same question would score differently on the same recording depending
+    on which way its embeddings got there.
     """
-    chunks: list[torch.Tensor] = []
-    for start in range(0, patches.shape[0], SCORE_CHUNK_FRAMES):
-        chunk = patches[start : start + SCORE_CHUNK_FRAMES].to(torch.float32)
-        similarity = chunk @ query  # frames, patches
-        if background.shape[0] > 0:
-            similarity = similarity - (chunk @ background.T).amax(dim=-1)
-        chunks.append(similarity)
-    return torch.cat(chunks)
-
-
-def score_frames(
-    patches: torch.Tensor,
-    query: torch.Tensor,
-    background: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Score every frame by its best patch. Returns (score, winning patch), each (frames,)."""
-    return patch_similarity(patches, query, background).max(dim=-1)
-
-
-def hot_patches(
-    similarity: torch.Tensor,
-    rows: int,
-    cols: int,
-    floor: float = HOT_PATCH_FLOOR,
-    ratio: float = HOT_PATCH_RATIO,
-) -> list[tuple[tuple[float, float], float]]:
-    """The patches of one frame worth raycasting: (image_uv, score) pairs.
-
-    A frame's single best patch is often a stray (a picture frame scoring a
-    hair above the cone next to it), so every patch within *ratio* of the
-    frame's maximum and above the absolute *floor* is kept. The object itself
-    spans several patches; the stray does not.
-    """
-    best = float(similarity.max())
-    threshold = max(floor, best * ratio)
-    return [
-        ((((index % cols) + 0.5) / cols, ((index // cols) + 0.5) / rows), float(score))
-        for index, score in enumerate(similarity.tolist())
-        if score >= threshold
-    ]
-
-
-@dataclass(frozen=True)
-class PatchHit:
-    """One hot patch of one frame, raycast into the world."""
-
-    position: tuple[float, float, float]
-    similarity: float
-    source_id: int
-    ts: float
-    camera_position: tuple[float, float, float]
-    # No default: a hit that forgets its camera's orientation would hang the
-    # answer frame facing straight up.
-    camera_orientation: tuple[float, float, float, float]
-    # Where in the frame this patch sat, as fractions of width and height. The
-    # viewer rings it on the photograph and draws a line to `position`, which is
-    # what makes the evidence readable as evidence.
-    image_uv: tuple[float, float] = (0.5, 0.5)
-
-
-def cluster_hits(hits: Iterable[PatchHit], radius: float, max_places: int) -> list[Place]:
-    """Group raycast patch hits into objects, ranked by how many directions saw them.
-
-    Hits within *radius* of a cluster's running centroid join it. A cluster's
-    rank is the number of distinct viewing bearings (45 degree bins) it was
-    seen from, then its best similarity: a real object is hot from several
-    directions, a look-alike patch in one frame is not. Consecutive frames
-    from the same spot share a bearing and count once.
-    """
-    if radius <= 0:
-        raise ValueError(f"radius must be positive, got {radius}")
-    if max_places <= 0:
-        raise ValueError(f"max_places must be positive, got {max_places}")
-
-    clusters: list[dict[str, Any]] = []
-    for hit in sorted(hits, key=lambda h: h.similarity, reverse=True):
-        point = np.asarray(hit.position)
-        nearest = min(
-            (c for c in clusters if np.linalg.norm(c["centroid"] - point) <= radius),
-            key=lambda c: float(np.linalg.norm(c["centroid"] - point)),
-            default=None,
-        )
-        if nearest is None:
-            nearest = {"centroid": point.copy(), "weight": 0.0, "bearings": set(), "best": hit}
-            clusters.append(nearest)
-        weight = max(hit.similarity, 1e-6)
-        nearest["centroid"] = (nearest["centroid"] * nearest["weight"] + point * weight) / (
-            nearest["weight"] + weight
-        )
-        nearest["weight"] += weight
-        # The bearing is from the camera to THE PLACE, so it must be measured to one
-        # fixed point per cluster -- the best hit, which is the first one in and never
-        # replaced. Measuring to each hit's own point instead let a single frame's blob
-        # straddle a 45 degree boundary and count as two directions, which is the exact
-        # thing the docstring above says cannot happen and the primary rank key.
-        anchor = nearest["best"].position
-        dx, dy = anchor[0] - hit.camera_position[0], anchor[1] - hit.camera_position[1]
-        # `% 8`, because arctan2 spans (-180, 180] and `// 45` therefore has NINE values
-        # for eight sectors: -4 and 4 are both the sector pointing straight back along
-        # -x, so one place seen only from behind could count as two directions -- and
-        # directions are the primary rank key.
-        nearest["bearings"].add(int(np.degrees(np.arctan2(dy, dx)) // 45) % 8)
-
-    ranked = sorted(
-        clusters, key=lambda c: (len(c["bearings"]), c["best"].similarity), reverse=True
-    )
-    return [
-        Place(
-            position=tuple(float(v) for v in c["centroid"]),  # type: ignore[arg-type]
-            similarity=c["best"].similarity,
-            source_id=c["best"].source_id,
-            ts=c["best"].ts,
-            image_uv=c["best"].image_uv,
-            orientation=c["best"].camera_orientation,
-            camera_position=c["best"].camera_position,
-            views=len(c["bearings"]),
-        )
-        for c in ranked[:max_places]
-    ]
+    flat = np.asarray(vector, dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(flat))
+    return flat if norm == 0.0 else flat / norm
 
 
 def body_style_quaternion(optical: np.ndarray) -> tuple[float, float, float, float]:
@@ -404,108 +258,8 @@ def sensor_intrinsics(info: Any) -> tuple[tuple[float, float, float, float], tup
     return (fx / bx, fy / by, (cx - rx) / bx, (cy - ry) / by), (rw // bx, rh // by)
 
 
-def patch_world_position(
-    image_uv: tuple[float, float],
-    depth_mm: np.ndarray,
-    intrinsics: tuple[float, float, float, float],
-    camera_to_world: np.ndarray,
-    window_px: int = 16,
-    color_intrinsics: tuple[float, float, float, float] | None = None,
-    color_size: tuple[int, int] | None = None,
-    intrinsics_size: tuple[int, int] | None = None,
-) -> tuple[float, float, float] | None:
-    """Back-project the centre of the winning patch through the depth image.
-
-    Takes the median valid depth in a *window_px* square around the patch
-    centre (zeros are holes), lifts it with the pinhole model in the optical
-    frame (x right, y down, z forward), and moves it into the world with
-    *camera_to_world*. None when the window holds no valid depth.
-
-    *image_uv* is normalised in the COLOUR image and the depth camera is a different
-    camera: on a d455 its fx differs by about 1% and its principal point by several
-    pixels, which sampling at the same normalised position turns into centimetres of
-    error at a few metres. Given *color_intrinsics* and *color_size* the patch is turned
-    into a ray and the ray into the depth camera's own pixel, which is exact apart from
-    the ~1.5 cm baseline between the two -- under the voxel size, and not correctable
-    without already knowing the depth.
-
-    *intrinsics_size* is (width, height) of the raster *intrinsics* was CALIBRATED on,
-    and it is scaled to the depth image when the two differ. A camera_info is a
-    calibration, not a promise about the raster it arrives beside: fx and cx are in the
-    pixels of the image it was solved for. Sampling at a depth pixel and then
-    back-projecting with unscaled colour numbers put a centre patch (u=424 against
-    cx=640) 43 cm off-axis at 2 m -- the sample was right and the lift was wrong, which
-    no amount of care at the sampling end can fix.
-
-    *color_size* is (width, height) of the colour raster, and it is not optional with
-    *color_intrinsics*: those intrinsics are in colour PIXELS, so the normalised uv has
-    to be multiplied by the colour raster to meet them. Using the depth raster costs
-    nothing while the two cameras publish the same size -- the demo rig publishes 1280x720
-    for both -- and puts the sample 213 px away on a bag whose depth is 848x480.
-    """
-    if depth_mm.dtype.kind == "f":  # 32FC1 depth is metres
-        depth_mm = depth_mm * 1000.0
-    height, width = depth_mm.shape
-    fx, fy, cx, cy = intrinsics
-    if intrinsics_size is not None and tuple(intrinsics_size) != (width, height):
-        # A REMAINING mismatch, after `sensor_intrinsics` has already applied whatever roi
-        # and binning the camera_info declared, is a resize -- and a resize is the one
-        # case where fx scales. Deriving the crop from a size ratio instead would move
-        # the principal point of a cropped readout and sample a different surface.
-        iwidth, iheight = intrinsics_size
-        if iwidth > 0 and iheight > 0:
-            sx, sy = width / float(iwidth), height / float(iheight)
-            fx, cx = fx * sx, cx * sx
-            fy, cy = fy * sy, cy * sy
-    if color_intrinsics is not None:
-        if color_size is None:  # loudly, rather than silently sampling the wrong pixel
-            raise ValueError("color_intrinsics needs color_size: the uv is normalised in it")
-        cwidth, cheight = color_size
-        cfx, cfy, ccx, ccy = color_intrinsics
-        ray_x = (image_uv[0] * cwidth - ccx) / cfx
-        ray_y = (image_uv[1] * cheight - ccy) / cfy
-        u = round(ray_x * fx + cx)
-        v = round(ray_y * fy + cy)
-    else:  # no colour calibration: the same normalised position, in the depth raster
-        u = round(image_uv[0] * width)
-        v = round(image_uv[1] * height)
-    if not (0 <= u < width and 0 <= v < height):
-        return None  # the patch does not fall inside the depth camera's view
-    half = window_px // 2
-    window = depth_mm[max(v - half, 0) : v + half, max(u - half, 0) : u + half]
-    valid = window[np.isfinite(window) & (window > 0)]
-    if valid.size == 0:
-        return None
-    depth_m = float(np.median(valid)) / 1000.0
-    optical = np.array([(u - cx) * depth_m / fx, (v - cy) * depth_m / fy, depth_m, 1.0])
-    world = camera_to_world @ optical
-    return (float(world[0]), float(world[1]), float(world[2]))
-
-
-def align_patch_tokens(model: SigLIPModel, tokens: torch.Tensor) -> torch.Tensor:
-    """Run each patch token through the attention-pooling head on its own.
-
-    *tokens* is (batch, patches, dims) straight out of the vision tower (after
-    its final layernorm); returns the same shape, L2-normalised. Pooling a
-    length-1 sequence is the MaskCLIP trick: the head's cross-attention
-    collapses to a projection of that single token, which lands it in the
-    text-aligned space the pooled vector lives in.
-    """
-    head = model._model.vision_model.head
-    batch, n_patches, dims = tokens.shape
-    weight = next(head.parameters())
-    pooled = head(tokens.to(weight.device, weight.dtype).reshape(batch * n_patches, 1, dims))
-    return torch.nn.functional.normalize(pooled.reshape(batch, n_patches, dims), dim=-1)
-
-
-def per_patch_embeddings(model: SigLIPModel, pixel_values: torch.Tensor) -> torch.Tensor:
-    """Embed images to (batch, patches, dims) text-aligned, L2-normalised patch vectors."""
-    hidden = model._model.vision_model(pixel_values=pixel_values).last_hidden_state
-    return align_patch_tokens(model, hidden)
-
-
 class VisualMemoryIndex:
-    """A SigLIP 2 per-patch embedding index over one image stream of a recording."""
+    """A SigLIP 2 image-embedding index over one image stream of a recording."""
 
     def __init__(
         self,
@@ -534,8 +288,7 @@ class VisualMemoryIndex:
         self._model: SigLIPModel | None = None
         self._index_stream: Any = None
         self._precomputed: str | None | _Unresolved = _UNRESOLVED
-        self._loaded: _LoadedIndex | None = None
-        self._background: torch.Tensor | None = None
+        self._span: tuple[float, float] | None = None
 
     @property
     def model(self) -> SigLIPModel:
@@ -551,7 +304,7 @@ class VisualMemoryIndex:
     @property
     def index_stream(self) -> Any:
         if self._index_stream is None:
-            stream = self.store.stream(self.index_stream_name, PatchGrid)
+            stream = self.store.stream(self.index_stream_name, FrameEmbedding)
             if stream.count() > 0:
                 tags = stream.first().tags
                 built_with = tags.get("model")
@@ -575,6 +328,12 @@ class VisualMemoryIndex:
                     raise ValueError(
                         f"index stream {self.index_stream_name!r} stores "
                         f"{tags.get('pose_frame')!r} poses, not {POSE_FRAME_TAG!r}; rebuild it"
+                    )
+                if tags.get("index_kind") != INDEX_KIND_TAG:
+                    raise ValueError(
+                        f"index stream {self.index_stream_name!r} is a "
+                        f"{tags.get('index_kind') or 'pre-vector-store'} index, not "
+                        f"{INDEX_KIND_TAG!r}; rebuild it"
                     )
             self._index_stream = stream
         return self._index_stream
@@ -674,10 +433,36 @@ class VisualMemoryIndex:
         return found[0]
 
     def count(self) -> int:
-        """How many frames are already indexed."""
-        if self.precomputed_stream_name is not None:
-            return StoredEmbeddings(self.store, self.precomputed_stream_name).count()
-        return int(self.index_stream.count())
+        """How many frames are searchable.
+
+        Before siglipify's rows have been imported they are still the count: the answer
+        to "is this recording searchable" must not change just because nothing has asked
+        it a question yet.
+        """
+        try:
+            indexed = int(self.index_stream.count())
+        except ValueError as mismatch:
+            # An index this build cannot search is not one. Reporting its size would tell
+            # the viewer search is ready and hide the "Add embeddings" button, and every
+            # question would then fail against it; `build()` drops and replaces it.
+            logger.warning("ignoring %r: %s", self.index_stream_name, mismatch)
+            indexed = 0
+        if indexed:
+            return indexed
+        precomputed = self.precomputed_stream_name
+        if precomputed is not None:
+            return StoredEmbeddings(self.store, precomputed).count()
+        return 0
+
+    def _index_tags(self) -> dict[str, Any]:
+        """What every index row is stamped with, so a mismatched one is refused not reused."""
+        return {
+            "model": self.model_name,
+            "image_stream": self.image_stream_name,
+            "world_frame": self.world_frame,
+            "pose_frame": POSE_FRAME_TAG,
+            "index_kind": INDEX_KIND_TAG,
+        }
 
     def _posed_frames(self) -> Iterator[tuple[Any, np.ndarray]]:
         """(image observation, world_T_optical) in time order, skipping frames tf cannot place."""
@@ -702,8 +487,7 @@ class VisualMemoryIndex:
             )
             return 0
 
-        from PIL import Image as PILImage
-
+        from dimos.models.embedding.base import Embedding
         from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
         from dimos.msgs.geometry_msgs.Quaternion import Quaternion
         from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -721,39 +505,33 @@ class VisualMemoryIndex:
         )
 
         added = 0
-        vision_config = self.model._model.config.vision_config
-        side = vision_config.image_size // vision_config.patch_size
         for batch in _batched(wanted, batch_size):
-            pil_images = [PILImage.fromarray(obs.data.to_rgb().data) for obs, _ in batch]
-            with torch.inference_mode():
-                inputs = self.model._move_inputs_to_device(
-                    dict(self.model._processor(images=pil_images, return_tensors="pt"))
-                )
-                embeddings = per_patch_embeddings(self.model, inputs["pixel_values"])
+            # The platform's own image-embedding call -- the same one
+            # `dimos.memory.embed.EmbedImages` runs over a recording -- handed the
+            # recording's own `Image` messages, which is what it takes. (It does the
+            # `to_rgb()` itself; converting to PIL first got "'Image' object has no
+            # attribute 'to_rgb'" from inside the model.) Whatever DimOS gives any other
+            # consumer of this model for a picture is exactly what the index holds.
+            embedded = self.model.embed(*[obs.data for obs, _ in batch])
+            if not isinstance(embedded, list):
+                embedded = [embedded]
             if target is None:  # the replacement is in hand now, so the stale rows can go
                 logger.warning("dropping %r and rebuilding: %s", self.index_stream_name, stale)
                 self.store.delete_stream(self.index_stream_name)
                 self._index_stream = None
                 target = self.index_stream
-            for (obs, matrix), patches in zip(batch, embeddings, strict=True):
+            for (obs, matrix), vector in zip(batch, embedded, strict=True):
                 target.append(
-                    PatchGrid(
-                        source_id=int(obs.id),
-                        rows=side,
-                        cols=side,
-                        patches=patches.to(torch.float16).cpu().numpy(),
-                    ),
+                    FrameEmbedding(source_id=int(obs.id)),
                     ts=obs.ts,
                     pose=PoseStamped(
                         position=Vector3(*matrix[:3, 3]),
                         orientation=Quaternion(*quaternion_from_matrix(matrix[:3, :3])),
                     ),
-                    tags={
-                        "model": self.model_name,
-                        "image_stream": self.image_stream_name,
-                        "world_frame": self.world_frame,
-                        "pose_frame": POSE_FRAME_TAG,
-                    },
+                    tags=self._index_tags(),
+                    # Into the store's VECTOR index, not into the payload: this is what
+                    # makes `Stream.search` able to answer over these frames at all.
+                    embedding=Embedding(_unit(vector.to_numpy())),
                 )
                 added += 1
             logger.info("indexed %d frames of %s", added, self.image_stream_name)
@@ -766,47 +544,42 @@ class VisualMemoryIndex:
             )
             self.store.delete_stream(self.index_stream_name)
             self._index_stream = None
-        self._loaded = None
+        self._span = None
         return added
 
     def load(self) -> None:
-        """Bring the index into memory now, so the first query does not pay for it."""
-        self._load()
+        """Make the index searchable now, so the first question does not pay for it.
 
-    def _load(self) -> _LoadedIndex:
-        """Pull the whole index into memory once, as stored (fp16)."""
-        if self._loaded is None and self.precomputed_stream_name is not None:
-            self._loaded = self._load_precomputed(self.precomputed_stream_name)
-        if self._loaded is None:
-            observations = [obs for obs in self.index_stream if obs.pose_tuple is not None]
-            if not observations:
-                raise LookupError(f"index stream {self.index_stream_name!r} is empty")
-            grid = observations[0].data
-            self._loaded = _LoadedIndex(
-                patches=torch.from_numpy(np.stack([obs.data.patches for obs in observations])),
-                rows=grid.rows,
-                cols=grid.cols,
-                source_ids=[obs.data.source_id for obs in observations],
-                timestamps=[float(obs.ts) for obs in observations],
-                positions=[
-                    (float(obs.pose_tuple[0]), float(obs.pose_tuple[1]), float(obs.pose_tuple[2]))
-                    for obs in observations
-                ],
-                orientations=[
-                    tuple(float(value) for value in obs.pose_tuple[3:7])  # type: ignore[misc]
-                    if len(obs.pose_tuple) >= 7
-                    else (0.0, 0.0, 0.0, 1.0)
-                    for obs in observations
-                ],
-            )
-        return self._loaded
-
-    def _load_precomputed(self, name: str) -> _LoadedIndex:
-        """Read siglipify's rows and place each frame with ``pose_of``.
-
-        A mem2 row names its source frame; an mcap row only shares its stamp.
-        Rows whose frame cannot be found or placed are dropped.
+        With a vector store that means importing whatever siglipify left in the
+        recording; there is no in-memory copy of the vectors to warm.
         """
+        self._ensure_searchable()
+
+    def _ensure_searchable(self) -> Any:
+        """The index stream, with siglipify's vectors imported into it if that is where
+        this recording's embeddings live. Returns the stream to search."""
+        precomputed = self.precomputed_stream_name
+        if precomputed is not None and int(self.index_stream.count()) == 0:
+            self._import_precomputed(precomputed)
+        return self.index_stream
+
+    def _import_precomputed(self, name: str) -> int:
+        """Copy siglipify's rows into the index stream, as embeddings the store can search.
+
+        siglipify writes plain ``Float32MultiArray`` rows into the recording; they carry a
+        stamp and sometimes a source id, but the recording is read-only and its rows are
+        not in any vector index. Copying them once into the derived database's index
+        stream is what makes them searchable by the same path as a locally built index --
+        so there is ONE query path, not two.
+
+        A mem2 row names its source frame; an mcap row only shares its stamp. Rows whose
+        frame cannot be found or placed are dropped.
+        """
+        from dimos.models.embedding.base import Embedding
+        from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+        from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+        from dimos.msgs.geometry_msgs.Vector3 import Vector3
+
         rows = StoredEmbeddings(self.store, name)
         total = rows.count()
         if total == 0:
@@ -814,7 +587,7 @@ class VisualMemoryIndex:
         if rows.text_aligned() is False:
             raise ValueError(
                 f"embedding stream {name!r} holds raw vision-tower tokens, which text cannot "
-                "score; re-run siglipify (it now applies the pooling head per patch)"
+                'score; re-run siglipify with embedding = "pooled"'
             )
         # Ids and stamps only: an mcap observation holds its image bytes, and a
         # recording has tens of thousands of them.
@@ -838,12 +611,8 @@ class VisualMemoryIndex:
                 return None
             return frames[nearest]
 
-        patches: torch.Tensor | None = None
-        side = 1
-        source_ids: list[int] = []
-        timestamps: list[float] = []
-        positions: list[tuple[float, float, float]] = []
-        orientations: list[tuple[float, float, float, float]] = []
+        target = self.index_stream
+        imported = 0
         dropped = 0
         for row in rows:
             if row.model is not None and row.model != self.model_name:
@@ -851,98 +620,119 @@ class VisualMemoryIndex:
                     f"embedding stream {name!r} was built with {row.model}, not "
                     f"{self.model_name}; pass model_name={row.model!r}"
                 )
+            # One row per frame, and one VECTOR per row. A per-patch stream is a
+            # different kind of index, not a wider one: mean-pooling its tokens here
+            # would search on a vector the model never produced, so it is refused.
+            if row.vectors.shape[0] != 1:
+                raise ValueError(
+                    f"embedding stream {name!r} holds {row.vectors.shape[0]} vectors per frame; "
+                    'this index is one-per-image -- re-run siglipify with embedding = "pooled"'
+                )
             obs = frame_of(row)
             matrix = None if obs is None else self.pose_of(obs)
             if obs is None or matrix is None:
                 dropped += 1
                 continue
-            if patches is None:
-                side = grid_side(row.vectors.shape[0])
-                patches = torch.empty((total, *row.vectors.shape), dtype=torch.float16)
-            if row.vectors.shape != patches.shape[1:]:
-                raise ValueError(
-                    f"embedding stream {name!r} mixes shapes: {row.vectors.shape} after "
-                    f"{tuple(patches.shape[1:])}"
-                )
-            slot = len(source_ids)
-            source_ids.append(int(obs.id))
-            timestamps.append(float(obs.ts))
-            positions.append((float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3])))
-            orientations.append(quaternion_from_matrix(matrix[:3, :3]))
-            patches[slot] = torch.nn.functional.normalize(torch.from_numpy(row.vectors), dim=-1).to(
-                torch.float16
+            target.append(
+                FrameEmbedding(source_id=int(obs.id)),
+                ts=float(obs.ts),
+                pose=PoseStamped(
+                    position=Vector3(*matrix[:3, 3]),
+                    orientation=Quaternion(*quaternion_from_matrix(matrix[:3, :3])),
+                ),
+                tags=self._index_tags(),
+                embedding=Embedding(_unit(row.vectors.reshape(-1))),
             )
-            if slot % 256 == 255:
-                logger.info("loaded %d/%d precomputed frames of %r", slot + 1, total, name)
-        if patches is None:
+            imported += 1
+            if imported % 256 == 0:
+                logger.info("imported %d/%d embedded frames of %r", imported, total, name)
+        if imported == 0:
             raise LookupError(f"none of the {total} frames in {name!r} could be placed")
         if dropped:
             logger.warning("%d of %d rows of %r have no placeable frame", dropped, total, name)
-        return _LoadedIndex(
-            patches=patches[: len(source_ids)],
-            rows=side,
-            cols=side,
-            source_ids=source_ids,
-            timestamps=timestamps,
-            positions=positions,
-            orientations=orientations,
-        )
+        logger.info("imported %d embedded frames of %r into the index", imported, name)
+        self._span = None
+        return imported
 
-    def _embed(self, text: str) -> torch.Tensor:
-        return self.model.embed_text(text).to_torch("cpu").to(torch.float32)
+    def time_span(self) -> tuple[float, float]:
+        """(first, last) timestamp among the indexed frames.
 
-    def _background_for(self, query: torch.Tensor) -> torch.Tensor:
-        if self._background is None:
-            self._background = torch.stack([self._embed(prompt) for prompt in BACKGROUND_PROMPTS])
-        keep = (self._background @ query) < BACKGROUND_SYNONYM_CUTOFF
-        return self._background[keep]
+        What "the first half of the recording" is measured against. It is the span of
+        what was INDEXED, not of the whole recording: with a stride, or with frames tf
+        could not place, those are not the same, and a fraction of a span that holds no
+        searchable frames would be a window the answer could never look in.
+        """
+        if self._span is None:
+            # The two ENDS, not every row. Every question asks for this to turn "the
+            # first half" into stamps, and reading the whole index to do it is a table
+            # scan per question over thousands of rows.
+            stream = self._ensure_searchable()
+            try:
+                # `last()` orders by ts descending itself; `first()` RAISES LookupError on
+                # an empty stream rather than returning None, so the empty case is caught,
+                # not tested for -- "No matching observation" names nothing the reader can
+                # act on.
+                first, last = stream.order_by("ts").first(), stream.last()
+            except LookupError:
+                raise LookupError(f"index stream {self.index_stream_name!r} is empty") from None
+            self._span = (float(first.ts), float(last.ts))
+        return self._span
 
-    def frame_patches(self, text: str, k: int = 12) -> list[FramePatches]:
-        """The *k* best frames for *text* with their full patch score grids."""
-        loaded = self._load()
-        query = self._embed(text)
-        similarity = patch_similarity(loaded.patches, query, self._background_for(query))
-        top = torch.topk(similarity.amax(dim=-1), k=min(k, similarity.shape[0]))
-        return [
-            FramePatches(
-                source_id=loaded.source_ids[frame],
-                ts=loaded.timestamps[frame],
-                position=loaded.positions[frame],
-                orientation=loaded.orientations[frame],
-                similarity=similarity[frame],
-                rows=loaded.rows,
-                cols=loaded.cols,
+    def search(
+        self,
+        text: str,
+        k: int = 200,
+        window: tuple[float, float] | None = None,
+    ) -> list[Place]:
+        """The *k* frames most like *text*, most similar first.
+
+        This is DimOS's own vector-database lookup: ``Stream.search`` over the embeddings
+        recorded into the store, scored by cosine and ranked by the vector store. Each
+        result is placed at the camera pose the frame was taken from -- with one vector
+        per image that is the only location the match supports.
+
+        *window* restricts the answer to frames stamped within ``(since, until)``, which
+        is how a question about part of a recording is asked.
+        """
+        stream = self._ensure_searchable()
+        query = self.model.embed_text(text)
+        if window is None:
+            hits = stream.search(query, k=k)
+        else:
+            # Search FIRST, then narrow. `time_range(...).search(...)` reads as the
+            # natural order and silently returns NOTHING -- the range never reaches the
+            # vector store, which ranks the whole stream. And because the narrowing
+            # happens after the ranking, the search has to be asked for every frame:
+            # a top-200 that all falls outside the window would answer "nothing there"
+            # about a window it never looked in.
+            hits = stream.search(query, k=int(stream.count())).time_range(*window)
+        places: list[Place] = []
+        for obs in hits:
+            pose = obs.pose_tuple
+            if pose is None:  # not placeable: an answer cannot point at it
+                continue
+            places.append(
+                Place(
+                    position=(float(pose[0]), float(pose[1]), float(pose[2])),
+                    similarity=float(obs.similarity),
+                    source_id=int(obs.data.source_id),
+                    ts=float(obs.ts),
+                    orientation=(
+                        tuple(float(value) for value in pose[3:7])  # type: ignore[misc]
+                        if len(pose) >= 7
+                        else (0.0, 0.0, 0.0, 1.0)
+                    ),
+                )
             )
-            for frame in top.indices.tolist()
-        ]
-
-    def search(self, text: str, k: int = 200) -> list[Place]:
-        """Rank indexed frames by similarity to *text*, most similar first."""
-        loaded = self._load()
-        query = self._embed(text)
-        scores, best_patch = score_frames(loaded.patches, query, self._background_for(query))
-        top = torch.topk(scores, k=min(k, scores.shape[0]))
-        return [
-            Place(
-                position=loaded.positions[frame],
-                similarity=float(score),
-                source_id=loaded.source_ids[frame],
-                ts=loaded.timestamps[frame],
-                image_uv=(
-                    (int(best_patch[frame]) % loaded.cols + 0.5) / loaded.cols,
-                    (int(best_patch[frame]) // loaded.cols + 0.5) / loaded.rows,
-                ),
-                orientation=loaded.orientations[frame],
-            )
-            for score, frame in zip(top.values.tolist(), top.indices.tolist(), strict=True)
-        ]
+            if len(places) >= k:
+                break
+        return places
 
     def stop(self) -> None:
         if self._model is not None:
             self._model.stop()
             self._model = None
-        self._loaded = None
-        self._background = None
+        self._span = None
 
 
 class _Unresolved:
@@ -950,17 +740,6 @@ class _Unresolved:
 
 
 _UNRESOLVED = _Unresolved()
-
-
-@dataclass(frozen=True)
-class _LoadedIndex:
-    patches: torch.Tensor  # frames, patches, dims (float16, as stored)
-    rows: int
-    cols: int
-    source_ids: list[int]
-    timestamps: list[float]
-    positions: list[tuple[float, float, float]]
-    orientations: list[tuple[float, float, float, float]]
 
 
 def _batched(iterator: Iterable[Any], size: int) -> Iterator[list[Any]]:
@@ -1054,10 +833,11 @@ def main() -> None:
         added = index.build(stride=args.stride, batch_size=args.batch_size)
         print(f"added {added} frames; index now holds {index.count()}")
         if args.search:
+            first, _ = index.time_span()
             for place in cluster_places(index.search(args.search), radius=2.5, max_places=6):
                 print(
                     f"  {place.similarity:+.4f}  {place.position}  id={place.source_id}"
-                    f"  uv={place.image_uv[0]:.2f},{place.image_uv[1]:.2f}"
+                    f"  {place.ts - first:.1f}s in"
                 )
     finally:
         index.stop()
@@ -1067,7 +847,7 @@ def main() -> None:
 if __name__ == "__main__":
     # Under ``python -m`` this file runs as ``__main__``, and the store records
     # payload classes by module path, so an index built here would be typed
-    # ``__main__.PatchGrid`` and unreadable everywhere else. Run the properly
+    # ``__main__.FrameEmbedding`` and unreadable everywhere else. Run the properly
     # imported module instead.
     from dimos.teleop.memory_world.visual_search import main as installed_main
 

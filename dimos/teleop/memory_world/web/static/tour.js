@@ -8,6 +8,10 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
 import { desktopLookAngles } from '/static_mw/world_frame.js';
 
 const DEFAULT_QUESTION = 'a chair';
+// The windowed question the "Asking about part of it" station runs, and the slice it
+// runs over: the first half of the recording, as fractions of its length.
+const WINDOW_QUESTION = 'a person';
+const WINDOW_SPAN = [0.0, 0.5];
 const REPLAY_SPEED = 6;
 const ROOF_HEIGHT_M = 2.3;   // above the floor, the overview's roof cut
 const OUTDOOR_HEIGHT_SPAN_M = 12;  // more height than this = no ceiling to cut
@@ -32,6 +36,8 @@ export class Tour {
         scene._frameRotate.add(this._placards);
         this._saved = null;
         this._replayWatch = null;
+        this._windowAsked = false;
+        this._windowAnswer = null;
         this.stations = this._stations();
         this._bindUi();
     }
@@ -94,12 +100,15 @@ export class Tour {
             },
             {
                 title: 'Embedding what it saw',
-                body: () => `Every third colour frame is run through <b>SigLIP 2</b>, a CLIP-style vision-language model.
+                body: () => `Every few colour frames are run through <b>SigLIP 2</b>, a CLIP-style vision-language
+                    model, by the same <b>DimOS</b> call anything else in the platform uses for a picture &mdash;
+                    <code>model.embed(image)</code>, the one <code>EmbedImages</code> runs over a recording.
                     It turns a picture into a <b>vector</b> &mdash; a list of about a thousand numbers &mdash; and the
                     trick is that it puts <i>pictures and sentences in the same space</i>. A photo of a chair and the
                     words "a chair" land near each other; a photo of a fire door lands somewhere else.
-                    <ul><li>One vector for the whole frame, plus a grid of <b>patch</b> vectors, one per tile of the image.</li>
-                    <li>The vectors are written back into the recording, so this is done once and the question is cheap.</li>
+                    <ul><li><b>One vector per image</b>, and nothing finer. The picture is the unit.</li>
+                    <li>Each vector is recorded into the memory store alongside the frame, so this is done once
+                    and the question is cheap.</li>
                     <li><b>No pose is stored with them</b>: a frame is a picture and a timestamp. Where the camera
                     was is looked up in tf afterwards, so a better tf moves every old answer for free.</li></ul>`,
                 enter: () => {
@@ -121,12 +130,14 @@ export class Tour {
                 },
             },
             {
-                title: 'Asking in words',
-                body: () => `"${this.question}" goes through the <b>same model's text tower</b> and comes out as a vector
-                    in that same space. Answering is then just <b>cosine similarity</b>: compare the question's vector
-                    against every stored frame vector and keep the closest ones.
+                title: 'Asking in words: a vector-database lookup',
+                body: () => `"${this.question}" goes through the <b>same model's text tower</b> and comes out as a
+                    vector in that same space. Answering is then a <b>vector-database lookup</b>: DimOS's own
+                    <code>Stream.search(vector, k)</code> hands the query to the store's vector index, which ranks
+                    every recorded frame by <b>cosine similarity</b> and returns the closest.
                     <ul><li>${this._answerLine()}</li>
-                    <li>It is one matrix product over the whole recording &mdash; milliseconds, not a search.</li>
+                    <li>The same call any DimOS memory uses. Nothing here scores vectors by hand, and no copy of
+                    the index is held in memory &mdash; the database does the search.</li>
                     <li>Nothing was labelled and no detector was trained. The model already knew what a chair looks
                     like, so the recording did not have to be annotated to be searchable.</li></ul>`,
                 enter: async () => {
@@ -151,7 +162,6 @@ export class Tour {
                         // restart is not an answer to the question the new run asked.
                         if (this._onRun(run)) {
                             this._askRefused = refusal;
-                            this._askMeta = answer && answer.success !== false ? answer.metadata : null;
                             this._asked = true;
                         }
                     }
@@ -160,33 +170,19 @@ export class Tour {
                 },
             },
             {
-                title: 'From a picture to a point',
-                body: () => `A matching frame says <i>when</i> the thing was seen, not <i>where</i> it is. So the best
-                    frames are opened up: within each one the <b>patch</b> vectors nearest the question are the hot
-                    tiles, and each hot tile is a direction out of the camera.
-                    <ul><li>That direction is sampled against the frame's <b>depth image</b> for a distance, and tf
-                    says where the camera stood &mdash; three numbers, and the tile becomes a point in the world.</li>
-                    <li>${this._locatedLine()}</li>
-                    <li>Without usable depth the answer falls back to the camera position itself: roughly right,
-                    and honest about being roughly right.</li></ul>`,
+                title: 'Where it was seen from',
+                body: () => `A matching frame says <i>when</i> the thing was seen. <b>tf</b> turns that into
+                    <i>where the camera stood</i> &mdash; and that is deliberately all this claims. One vector per
+                    image knows the picture matched, not which pixel did, so nothing is projected into the map to
+                    guess the object's own coordinates.
+                    <ul><li>${this._clusterLine()}</li>
+                    <li>The robot lingers, so dozens of frames catch the same thing: matches closer together than a
+                    couple of metres are collapsed into one <b>place</b>, keeping the best-scoring frame.</li>
+                    <li><b>&larr; &rarr;</b> steps from place to place; the camera flies to each and only its
+                    evidence stays lit. The pictures hang where the camera stood when it took them, so you can
+                    check the answer yourself rather than taking the score on trust.</li></ul>`,
                 enter: () => {
                     this._layers({ voxels: true, photos: true });
-                    this._atCluster(0, 5.5);
-                },
-            },
-            {
-                title: 'Places, not pixels',
-                body: () => `Those points arrive in a cloud, many per object, so points closer together than a
-                    couple of metres are collapsed into one <b>place</b>. Places are ranked by <b>how many distinct
-                    directions saw them</b> first, and by similarity second &mdash; a thing seen from four sides is a
-                    better answer than one lucky frame.
-                    <ul><li>${this._clusterLine()}</li>
-                    <li><b>&larr; &rarr;</b> steps from place to place; the camera flies to each and only its
-                    evidence stays lit.</li>
-                    <li>The pictures hang where the camera stood when it took them, so you can check the answer
-                    yourself rather than taking the score on trust.</li></ul>`,
-                enter: () => {
-                    this._layers({ voxels: true, photos: false });
                     if (this.results && this.results.count) this.results.go(0);
                     else this._overview(0.75);
                 },
@@ -231,6 +227,33 @@ export class Tour {
                         // for, in the one place that was missed.
                         this._routed = true;
                     }
+                    this._overview(0.75);
+                },
+            },
+            {
+                title: 'Asking about part of it',
+                body: () => `The lookup takes a <b>slice of the recording</b> as well as a sentence, so a question
+                    can be about <i>when</i> as much as <i>what</i>: "in the first half, were there any people".
+                    The frames outside the slice are simply not candidates.
+                    <ul><li>${this._windowLine()}</li>
+                    <li>This is the same tool an <b>agent</b> drives. The LLM turns "the first half" into the
+                    fractions <code>0.0</code> and <code>0.5</code>, calls <code>find_in_memory</code>, and answers
+                    from what comes back &mdash; the lookup you just watched, not a second one that resembles it.</li>
+                    <li>A ranking always returns its top row, so a best match below the floor is reported as
+                    <b>nothing found</b>. That is what lets the answer be "no".</li></ul>`,
+                enter: async () => {
+                    const mine = this.index;
+                    const run = this._run;
+                    this._layers({ voxels: true, photos: true });
+                    if (!this._windowAsked) {
+                        const answer = await this.ask(WINDOW_QUESTION, WINDOW_SPAN);
+                        if (this._onRun(run)) {
+                            this._windowAnswer = answer;
+                            this._windowAsked = true;
+                        }
+                    }
+                    if (!this._onStation(mine, run)) return;   // stepped away while the server answered
+                    this._refresh();
                     this._overview(0.75);
                 },
             },
@@ -285,14 +308,6 @@ export class Tour {
         return answer && answer.queryText === this.question ? answer : null;
     }
 
-    /** The metadata of the answer to THIS station's question, or null. */
-    _ourMeta() {
-        const r = this._ourAnswer();
-        const meta = this._askMeta;
-        if (!r || !meta) return null;
-        return !meta.query_id || !r.queryId || meta.query_id === r.queryId ? meta : null;
-    }
-
     _answerLine() {
         const r = this._ourAnswer();
         if (!r || !r.count) {
@@ -304,19 +319,6 @@ export class Tour {
             + ` the closest at cosine ${best.peak.toFixed(3)}.`;
     }
 
-    /** Whether the answer on screen was placed through depth, or fell back to camera poses. */
-    _locatedLine() {
-        const meta = this._ourMeta();
-        if (!meta) {
-            if (this._askRefused) return this._askRefused;
-            return this._asked ? 'Nothing was placed for this question.' : 'Placing the matches now…';
-        }
-        const n = (meta.places || []).length;
-        return meta.located
-            ? `This answer was placed through depth: ${n} place${n === 1 ? '' : 's'} from the hot tiles of the best frames.`
-            : `This recording has no usable depth, so these ${n} place${n === 1 ? '' : 's'} are the camera positions of the matching frames.`;
-    }
-
     _clusterLine() {
         const r = this._ourAnswer();
         if (!r || !r.count) {
@@ -324,10 +326,25 @@ export class Tour {
             return this._asked ? 'That question matched no place in this recording.' : 'No answer yet.';
         }
         const best = r.clusters[0];
-        // A zero count is "not measured", not "no views": say nothing about views there.
-        const views = best.n_views ?? best.n_evidence;
-        const seen = views > 0 ? ` with ${views} view${views === 1 ? '' : 's'}` : '';
-        return `${r.count} place${r.count === 1 ? '' : 's'} for "${r.queryText}"; the best scores ${best.peak.toFixed(2)}${seen}.`;
+        return `${r.count} place${r.count === 1 ? '' : 's'} for "${r.queryText}"; the best scores ${best.peak.toFixed(2)}.`;
+    }
+
+    /** What the windowed question came back with, in the station's own words. */
+    _windowLine() {
+        if (!this._windowAsked) return `Asking "${WINDOW_QUESTION}" over the first half…`;
+        const answer = this._windowAnswer;
+        if (!answer) return 'The question could not be asked.';
+        if (answer.success === false) {
+            // The server's own sentence. A refusal names WHY -- below the floor, no index
+            // -- and rewriting it here as "nothing found" would report a search that never
+            // ran as a search that found nothing.
+            return answer.answer;
+        }
+        const places = (answer.metadata && answer.metadata.places) || [];
+        const first = places.length ? places[0].seconds_into_recording : null;
+        const when = first === null ? '' : `, the first ${first}s in`;
+        return `In the first half: ${places.length} place${places.length === 1 ? '' : 's'}`
+            + ` for "${WINDOW_QUESTION}"${when}.`;
     }
 
     _routeLine() {
@@ -521,7 +538,10 @@ export class Tour {
         this._asked = false;
         this._routed = false;
         this._askRefused = null;
-        this._askMeta = null;
+        // Same rule as the flags above: a restarted tour must re-ask its windowed
+        // question rather than report the last run's answer as this run's.
+        this._windowAsked = false;
+        this._windowAnswer = null;
         this._run = (this._run || 0) + 1;
         // The question the tour explains is whatever is on screen NOW, restart or not:
         // asking something new and then pressing T left the cards explaining the old

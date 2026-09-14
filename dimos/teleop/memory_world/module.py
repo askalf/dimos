@@ -48,7 +48,7 @@ from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.memory.store.base import Store
 from dimos.memory.transform import throttle
-from dimos.teleop.memory_world.answers import WorldAnswers
+from dimos.teleop.memory_world.answers import NavigateRequest, WorldAnswers
 from dimos.teleop.memory_world.clients import ClientConn, RevalidatedStaticFiles
 from dimos.teleop.memory_world.embed import EmbeddingJob
 from dimos.teleop.memory_world.messages import (
@@ -226,25 +226,26 @@ class MemoryWorldConfig(ModuleConfig):
     # The viewer's "Add embeddings" button runs siglipify from this flake over
     # the recording, which writes the vectors back into it (see embed.py).
     siglipify_flake: str = "github:jeff-hykin/siglipify"
-    # Two hits closer together than this are one place, not two answers.
-    place_radius_m: float = PydanticField(default=2.5, gt=0.0)
+    # Two hits closer together than this are one place, not two answers. Bounded like
+    # `MAX_HIGHLIGHT_RADIUS_M` because it is now what fills `ClusterSummary.radius`: an
+    # unbounded value the config accepted would raise a ValidationError at QUERY time and
+    # be shown to the user as "The SigLIP index cannot answer", which is the same bug
+    # `object_radius_m` was pinned for before it was deleted.
+    place_radius_m: float = PydanticField(default=2.5, gt=0.0, le=MAX_HIGHLIGHT_RADIUS_M)
     max_places: int = PydanticField(default=6, ge=1, le=MAX_ANSWER_PLACES)
     # How many best-scoring frames are kept before clustering into places.
     search_top_k: int = PydanticField(default=200, ge=1)
+    # Below this cosine, the best-matching frame is reported as no match at all. A
+    # ranking always returns its top row, so without a floor "were there any people"
+    # is answered yes on every recording ever made. Measured on grocery.mcap, see
+    # `min_similarity` in README.md.
+    min_similarity: float = PydanticField(default=0.04, ge=-1.0, le=1.0)
     # faster-whisper model size for the spoken query.
     whisper_model: str = "base.en"
-    # ---- putting the answer on the object, not on the robot -----------------
-    # With a depth stream and intrinsics, each place is moved from the capture
-    # pose to the point the winning patch actually looked at.
-    depth_stream_name: str | None = None
-    # A missing, empty or uncalibrated (zero focal length) camera_info leaves the
-    # default field of view and skips the depth raycast.
+    # The colour camera's calibration, used for the field of view the query
+    # photographs are framed with. A missing, empty or uncalibrated (zero focal
+    # length) camera_info leaves the default field of view.
     camera_info_stream_name: str | None = None
-    depth_tolerance_s: float = PydanticField(default=0.02, gt=0.0)
-    # Best frames whose hot patches are raycast, and how close two raycast
-    # hits must land to be the same object.
-    locate_frames: int = PydanticField(default=12, ge=1)
-    object_radius_m: float = PydanticField(default=0.75, gt=0.0, le=MAX_HIGHLIGHT_RADIUS_M)
     # ---- timeline replay ------------------------------------------------------
     # Keyframe and per-scan diff streams written once (replay.py); the viewer scrubs
     # a segment at a time. A longer interval means fewer, larger segments.
@@ -816,23 +817,82 @@ class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, 
         logger.info("reopened %s", self.config.store_path)
 
     @skill
-    def find_in_memory(self, query: str) -> SkillResult:
-        """Find the distinct places something was seen and highlight them in VR:
-        "where did I see a car", answered by the CLIP/SigLIP index over the frames.
+    def find_in_memory(
+        self,
+        query: str,
+        from_fraction: float = 0.0,
+        to_fraction: float = 1.0,
+    ) -> SkillResult:
+        """Find where something was seen in the recording and highlight it in the world:
+        "where did I see a car", answered by a vector-database lookup over the recording's
+        CLIP/SigLIP image embeddings. Each result is a place the thing was seen FROM,
+        with the photograph that matched.
 
         Args:
-            query: What to look for, e.g. "a car" or "a whiteboard".
+            query: What to look for, e.g. "a car" or "a whiteboard". Pass the thing, not
+                the whole sentence.
+            from_fraction: Where in the recording to start looking. 0.0 is the very
+                beginning, 1.0 the very end. Use 0.0 and 0.5 for "the first half".
+            to_fraction: Where to stop looking, on the same 0.0-1.0 scale.
         """
         started = time.monotonic()
         phrase = search_phrase(query)
         if not phrase:
             return SkillResult.fail("INVALID_QUERY", "The query text is empty")
+        # Clamped and ordered rather than refused: an LLM that says (0.5, 0.0) means the
+        # second half, and failing the whole question over the argument order teaches it
+        # nothing it can act on.
+        low, high = sorted((float(from_fraction), float(to_fraction)))
+        low, high = max(0.0, min(1.0, low)), max(0.0, min(1.0, high))
+        if high <= low:
+            return SkillResult.fail(
+                "INVALID_QUERY",
+                f"{from_fraction} to {to_fraction} is not a stretch of the recording",
+            )
+        span = None if (low, high) == (0.0, 1.0) else (low, high)
 
         try:
-            return self._find_with_siglip(phrase, started)
+            return self._find_with_siglip(phrase, started, span=span)
         except Exception as error:  # an index built for another model, camera or frame
             logger.exception("visual index query failed")
             return SkillResult.fail("QUERY_FAILED", f"The SigLIP index cannot answer: {error}")
+
+    @skill
+    def navigate_to_place(self, place: int = 1, start: str = "recording start") -> SkillResult:
+        """Draw a walking route to one of the places the last `find_in_memory` answer
+        found, and show it in the world.
+
+        Args:
+            place: Which place to walk to. 1 is the first one the answer listed.
+            start: Where to walk FROM. "recording start" is where the robot was when the
+                recording began -- what someone means by "the starting point". "viewer"
+                is where the person asking is standing right now.
+        """
+        wanted = (
+            "recording_start" if "record" in start.lower() or "start" in start.lower() else "viewer"
+        )
+        try:
+            payload = self._navigate_to(
+                NavigateRequest(cluster=max(0, int(place) - 1), start_at=wanted)
+            )
+        except HTTPException as refused:
+            return SkillResult.fail("NO_ROUTE", str(refused.detail))
+        except Exception as error:
+            logger.exception("navigation failed")
+            return SkillResult.fail("NO_ROUTE", f"Could not plan a route: {error}")
+        return SkillResult(
+            success=True,
+            message=(
+                f"Drew a {payload['length_m']} m route to place #{payload['cluster'] + 1}, "
+                f"starting from "
+                + (
+                    "where the robot was at the start of the recording"
+                    if wanted == "recording_start"
+                    else "where you are standing"
+                )
+            ),
+            metadata=payload,
+        )
 
     # ---- poses: the tf tree ------------------------------------------------
     def _tf_tree(self) -> TfTree | None:

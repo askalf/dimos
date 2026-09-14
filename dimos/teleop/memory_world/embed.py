@@ -42,10 +42,10 @@ logger = setup_logger()
 
 
 def siglipify_config(model_name: str, image_stream_name: str, stride: int) -> str:
-    """The TOML siglipify reads: per-patch vectors of one image stream, every *stride*-th frame."""
+    """The TOML siglipify reads: one pooled vector per image, every *stride*-th frame."""
     return (
         f"model = {json.dumps(model_name)}\n"
-        'embedding = "patches"\n'
+        'embedding = "pooled"\n'
         "batch = 8\n"
         f"stride = {int(stride)}\n"
         f"streams = [{json.dumps(image_stream_name)}]\n"

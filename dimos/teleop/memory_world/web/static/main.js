@@ -328,7 +328,7 @@ function buildScene() {
         tour = Tour ? new Tour({
             scene, flight, results, baseUrl, diag,
             replay: () => replay,
-            ask: (text) => ask(text),
+            ask: (text, span) => ask(text, span),
             ui: {
                 panel: document.getElementById('tour'),
                 title: document.getElementById('tourTitle'),
@@ -688,7 +688,7 @@ document.getElementById('answerBtn').addEventListener('click', () => jumpToAnswe
 
 // ---- typed questions ---------------------------------------------------------
 
-async function ask(text) {
+async function ask(text, span) {
     text = (text || '').trim();
     if (!text) return null;
     const session = ws;  // the answer belongs to this connection only, and there must be one
@@ -705,7 +705,9 @@ async function ask(text) {
         const response = await fetch(`${baseUrl}/ask`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
+            // `span` is [from, to] as fractions of the recording, for a question about
+            // part of it. Omitted entirely when absent so the server keeps its defaults.
+            body: JSON.stringify(span ? { text, from_fraction: span[0], to_fraction: span[1] } : { text }),
         });
         const body = await response.json();
         if (ws !== session) return null;  // answered after a disconnect: not our status line

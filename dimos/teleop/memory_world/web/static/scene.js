@@ -145,7 +145,6 @@ export class WorldScene {
         this._activeQueryId = null;                   // query images for any other id are stale
         this._queryImages = [];                       // headers of the frames behind the last answer
         this._queryImageMeshes = [];                  // their quads, so one can be shown alone
-        this._queryMatchMarks = [];                   // the ring and link belonging to each
         this._photosPinnedOff = false;                // set when the user turns Photos off
         this._hudOff = false;                         // likewise for the minimap and answer panel
         this._queryImageCursor = -1;
@@ -1152,9 +1151,6 @@ export class WorldScene {
                 && (cursor < 0 || i === cursor)
                 && !(filter >= 0 && cluster !== undefined && cluster !== filter);
             mesh.visible = shown;
-            // The ring on the matched pixel and the line to the voxel it produced belong
-            // to this photograph and go with it.
-            (this._queryMatchMarks[i] || []).forEach((mark) => { mark.visible = shown; });
         });
     }
 
@@ -1239,7 +1235,6 @@ export class WorldScene {
         this._activeQueryId = result.query_id || null;
         this._queryImages = [];
         this._queryImageMeshes = [];
-        this._queryMatchMarks = [];
         this._queryImageCursor = -1;
         this._setAnswer(result.answer || 'Memory result');
         this.diag('query_result_loaded', {
@@ -1340,7 +1335,6 @@ export class WorldScene {
         this._clearHighlightGroup();
         this._queryImages = [];
         this._queryImageMeshes = [];
-        this._queryMatchMarks = [];
         this._queryImageCursor = -1;
         this._activeQueryId = null;
         this.setSightLine(null);
