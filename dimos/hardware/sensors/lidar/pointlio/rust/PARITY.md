@@ -83,33 +83,25 @@ The unperturbed Rust trajectory is literally one the C++ produces (the FMA
 build's branch until frame 322). L3 passes; the 60 s "5.2 mm / 15 mm" is the
 FMA build's own number.
 
-## Reproduce
+## Tooling
 
-```
-# tools
-cd dimos/hardware/sensors/lidar/pointlio/cpp
-nice -n 19 nix build -L .#pointlio_native -o result       # -ffp-contract=off, the golden
-nice -n 19 nix build -L .#harness_fma -o result-fma       # -mfma -ffp-contract=fast
-nice -n 19 nix build -L .#harness_o2 -o result-o2         # -O2 (HARNESS_EXTRA_FLAGS, ;-separated)
-cargo build --release -p dimos-pointlio                   # target/release/pointlio_replay
+The study used a deterministic C++ harness (`cpp/harness.cpp`, plus `harness_fma`
+/ `harness_o2` flake variants), an intermediate `.plio` replay format and a
+`pointlio_replay` with `dump` / `perturb` / `compare` subcommands. All of it
+chased bit equality, which this file concludes is unattainable, so it was
+removed once the band was measured; it is at commit 3ac24e801 if a future
+question needs it.
 
-# perturbed inputs (F = lidar frame index; imu edits hit the first IMU record after frame F)
-R=target/release/pointlio_replay; D=data/pointlio_replay; G=data/pointlio_golden
-$R perturb $D/mid360_athens_stairs_60s.plio $D/60s_pt5.plio --point-ulp 5
-$R perturb $D/mid360_athens_stairs_60s.plio $D/60s_imudrop100.plio --imu-drop 100
-$R perturb $D/mid360_athens_stairs_60s.plio $D/60s_imuulp100.plio --imu-ulp 100
+What remains is `pointlio_replay --pcap`, which feeds the estimator frame by
+frame and writes a TUM trajectory, and `test_replay_golden.py`, which holds the
+port inside the band above against the C++ module's own recorded trajectory
+(`mid360_athens_stairs.db`): 0.51 m APE RMSE over the full recording, 34 mm
+median over the first 150 s, 17 s to run.
 
-# one sample of the band
-C=$G/mid360_athens_stairs_60s/config.json
-cpp/result-fma/bin/pointlio_harness --replay $D/mid360_athens_stairs_60s.plio --config $C --out $G/60s_fma_cpp
-$R run --replay $D/60s_pt5.plio --config $C --out $G/60s_pt5_rust
-$R compare $G/mid360_athens_stairs_60s $G/60s_fma_cpp | tail -1   # APE, max, final, first Δ>1e-6, path
-
-# full recording (C++ ~35 s idle, ~130 s loaded; Rust ~100 s)
-cpp/result/bin/pointlio_harness --replay $D/mid360_athens_stairs.plio --config $C --out $G/mid360_athens_stairs --stats
-$R run --replay $D/mid360_athens_stairs.plio --config $C --out $G/mid360_athens_stairs_rust --stats
-$R compare $G/mid360_athens_stairs $G/mid360_athens_stairs_rust | tail -1
-```
+Note the footprint numbers below predate dropping the verbatim libstdc++/boost
+sorts: `std::nth_element`'s order was what made neighbour lists bit-exact, and
+with that requirement gone `select_nth_unstable_by` replaces it. The full
+recording now replays in 17 s rather than ~100 s.
 
 ## Footprint
 
