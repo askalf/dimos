@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import subprocess
 import sys
 import threading
@@ -19,6 +20,22 @@ import threading
 from dimos.core.global_config import GlobalConfig
 from dimos.simulation.dimsim import dimsim_process
 from dimos.simulation.dimsim.dimsim_process import DimSimProcess
+
+
+def test_wire_url_only_overrides_child_environment(mocker, monkeypatch):
+    monkeypatch.setenv("LCM_DEFAULT_URL", "udpm://239.255.76.67:7667?ttl=0")
+    mocker.patch.object(dimsim_process, "_check_lfs_stubs")
+    mocker.patch.object(dimsim_process, "ensure_deno", return_value="deno")
+    launch = mocker.patch.object(dimsim_process.subprocess, "Popen")
+    mocker.patch.object(DimSimProcess, "_start_log_reader")
+    wire_url = "udpm://239.200.1.2:18097?ttl=0"
+    simulator = DimSimProcess(GlobalConfig(dimsim_headless=False), lcm_url=wire_url)
+    try:
+        simulator.start()
+        assert launch.call_args.kwargs["env"]["LCM_DEFAULT_URL"] == wire_url
+        assert os.environ["LCM_DEFAULT_URL"] == "udpm://239.255.76.67:7667?ttl=0"
+    finally:
+        simulator.stop()
 
 
 def test_stop_terminates_writer_before_closing_log_pipe(mocker):

@@ -32,8 +32,9 @@ _DIMSIM_DIR = DIMOS_PROJECT_ROOT / "misc" / "DimSim"
 
 
 class DimSimProcess:
-    def __init__(self, global_config: GlobalConfig) -> None:
+    def __init__(self, global_config: GlobalConfig, *, lcm_url: str | None = None) -> None:
         self.global_config = global_config
+        self.lcm_url = lcm_url
         self.process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
@@ -75,7 +76,12 @@ class DimSimProcess:
                 f"Open http://localhost:{port} in your browser; sensors won't publish until that tab is loaded."
             )
 
-        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        env = os.environ.copy()
+        if self.lcm_url is not None:
+            env["LCM_DEFAULT_URL"] = self.lcm_url
+        self.process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+        )
 
         self._start_log_reader()
 

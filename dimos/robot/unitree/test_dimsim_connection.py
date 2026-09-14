@@ -13,10 +13,9 @@
 # limitations under the License.
 
 from contextlib import ExitStack
-from functools import partial
 import threading
 import time
-from unittest.mock import MagicMock
+import uuid
 
 import numpy as np
 import pytest
@@ -32,6 +31,7 @@ from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.robot.unitree import dimsim_connection
 from dimos.robot.unitree.dimsim_connection import DimSimConnection
+from dimos.robot.unitree.go2.connection import GO2Connection
 
 
 @pytest.fixture
@@ -40,153 +40,196 @@ def simulator(mocker):
 
 
 @pytest.mark.parametrize("backend", ["lcm", "zenoh"])
-def test_wire_sensors_commands_and_restart(backend, simulator, monkeypatch, unused_udp_port):
-    """Exercise actual LCM/Zenoh serialization; only browser startup is stubbed."""
-    config = GlobalConfig(transport=backend, robot_ip=None, robot_ips=None, zenoh_connect="")
-    for field in ("transport", "robot_ip", "robot_ips", "zenoh_connect"):
-        monkeypatch.setattr(global_config, field, getattr(config, field))
-    wire = partial(LCMTransport, url=f"udpm://239.255.77.55:{unused_udp_port}?ttl=0")
-    monkeypatch.setattr(dimsim_connection, "LCMTransport", wire)
+@pytest.mark.parametrize("sensors", [True, False])
+def test_module_outputs_and_commands(backend, sensors, simulator, monkeypatch):
+    """Use actual GO2Connection outputs, remappings and transport serialization."""
+    monkeypatch.setattr(global_config, "transport", backend)
+    monkeypatch.setattr(global_config, "robot_ip", None)
+    monkeypatch.setattr(global_config, "robot_ips", None)
+    monkeypatch.setattr(global_config, "zenoh_connect", "")
+    cfg = GlobalConfig(transport=backend, simulation="dimsim", robot_ip="")
+    module = GO2Connection(
+        g=cfg, camera=sensors, lidar=sensors, frame_id_prefix="test_robot", publish_tf=sensors
+    )
+    connection = module.connection
+    prefix = f"/dt_{uuid.uuid4().hex[:8]}"
+    got, wire_commands = {}, []
+    changed = threading.Condition()
 
-    def output(topic, msg_type, *, g):
-        return (
-            wire(topic, msg_type) if g.transport == "lcm" else make_transport(topic, msg_type, g=g)
-        )
+    def collect(name, msg):
+        with changed:
+            got[name] = msg
+            changed.notify_all()
 
-    monkeypatch.setattr(dimsim_connection, "make_transport", output)
-    connection = DimSimConnection(config)
+    def collect_command(msg):
+        with changed:
+            wire_commands.append(msg)
+            changed.notify_all()
+
     with ExitStack() as stack:
-        stack.callback(connection.stop)
-        topics = {
-            "/color_image": Image,
-            "/lidar": PointCloud2,
-            "/camera_info": CameraInfo,
-            "/odom": PoseStamped,
-            "/tf": TFMessage,
+        # Public streams are deliberately remapped away from simulator wire names.
+        for name, kind in [
+            ("color_image", Image),
+            ("lidar", PointCloud2),
+            ("odom", PoseStamped),
+            ("tf", TFMessage),
+            ("camera_info", CameraInfo),
+            ("cmd_vel", Twist),
+        ]:
+            public = make_transport(f"{prefix}/{name}", kind, g=cfg)
+            public.start()
+            stack.callback(public.stop)
+            module.set_transport(name, public)
+            if name != "cmd_vel":
+                stack.callback(public.subscribe(lambda msg, name=name: collect(name, msg)))
+        messages = {
+            "/color_image": Image.from_numpy(
+                np.full((8, 8, 3), 30, dtype=np.uint8), ts=42, frame_id="camera_optical"
+            ),
+            "/lidar": PointCloud2.from_numpy(
+                np.array([[1, 2, 3]], dtype=np.float32), timestamp=42, frame_id="world"
+            ),
+            "/odom": PoseStamped(ts=42, frame_id="world", position=[1, 2, 0.5]),
         }
-        received = {topic: [] for topic in topics}
-        events = {topic: threading.Event() for topic in topics}
         sources = {}
-        for topic, msg_type in topics.items():
-            source = wire(topic, msg_type)
-            target = output(topic, msg_type, g=config)
-            sources[topic] = source
-            for transport in (source, target):
-                transport.start()
-                stack.callback(transport.stop)
-
-            def collect(msg, topic=topic):
-                received[topic].append(msg)
-                events[topic].set()
-
-            stack.callback(target.subscribe(collect))
-
-        # Same wiring GO2Connection uses: active cmd_vel -> connection.move.
-        commands = output("/cmd_vel", Twist, g=config)
-        commands.start()
-        stack.callback(commands.stop)
-        stack.callback(commands.subscribe(connection.move))
-        wire_commands = wire("/cmd_vel", Twist)
-        wire_commands.start()
-        stack.callback(wire_commands.stop)
-        command_event = threading.Event()
-        command_values = []
-
-        def simulate_motion(msg):
-            command_values.append(msg.linear.x)
-            sources["/odom"].publish(
-                PoseStamped(ts=42.0, frame_id="world", position=[msg.linear.x, 2, 0.5])
-            )
-            command_event.set()
-
-        stack.callback(wire_commands.subscribe(simulate_motion))
-        for cycle in range(2):
-            connection.start()
-            connection.start()  # idempotent: don't install a second relay
-            assert simulator.start.call_count == cycle + 1
-            for event in events.values():
-                event.clear()
-            command_event.clear()
-            messages = {
-                "/color_image": Image.from_numpy(
-                    np.full((8, 8, 3), 30 + cycle, dtype=np.uint8),
-                    ts=42.0,
-                    frame_id="camera_optical",
-                ),
-                "/lidar": PointCloud2.from_numpy(
-                    np.array([[1, 2, 3]], dtype=np.float32), timestamp=42.0, frame_id="world"
-                ),
-                "/camera_info": connection.camera_info_static,
-            }
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not all(e.is_set() for e in events.values()):
+        for topic, msg in messages.items():
+            transport = LCMTransport(topic, type(msg), url=connection.wire_url)
+            transport.start()
+            stack.callback(transport.stop)
+            sources[topic] = transport
+        wire = LCMTransport("/cmd_vel", Twist, url=connection.wire_url)
+        wire.start()
+        stack.callback(wire.stop)
+        stack.callback(wire.subscribe(collect_command))
+        # Subscriptions must be installed before simulator startup emits frames.
+        simulator.start.side_effect = lambda: connection.video_stream().on_next(
+            messages["/color_image"]
+        )
+        stack.callback(module.stop)
+        module.start()
+        expected = {"odom", "color_image", "lidar", "tf", "camera_info"} if sensors else {"odom"}
+        deadline = time.monotonic() + 5
+        with changed:
+            while time.monotonic() < deadline and not expected <= got.keys():
                 for topic, msg in messages.items():
                     sources[topic].publish(msg)
-                commands.publish(Twist(linear=[0.3 + cycle, 0, 0]))
-                command_event.wait(0.05)
-                events["/tf"].wait(0.05)
-            assert all(e.is_set() for e in events.values()), {
-                k: len(v) for k, v in received.items()
-            }
-            assert received["/odom"][-1].position.x == pytest.approx(0.3 + cycle)
-            assert received["/odom"][-1].frame_id == "world"
-            assert received["/odom"][-1].ts == 42.0
-            np.testing.assert_array_equal(received["/lidar"][-1].points_f32(), [[1, 2, 3]])
-            assert received["/lidar"][-1].frame_id == "world"
-            assert received["/color_image"][-1].frame_id == "camera_optical"
-            np.testing.assert_array_equal(
-                received["/color_image"][-1].as_numpy(), messages["/color_image"].as_numpy()
-            )
-            assert received["/camera_info"][-1].width == connection.camera_info_static.width
-            assert {t.child_frame_id for t in received["/tf"][-1].transforms} == {
-                "base_link",
-                "camera_link",
-                "camera_optical",
-                "lidar_link",
-            }
-            connection.stop()
-            connection.stop()
-            assert simulator.stop.call_count == cycle + 1
-            if backend == "zenoh":
-                assert connection.move(Twist(linear=[1, 0, 0])) is False
-                events["/lidar"].clear()
-                sources["/lidar"].publish(messages["/lidar"])
-                assert not events["/lidar"].wait(0.1)
+                changed.wait_for(lambda: expected <= got.keys(), timeout=0.05)
+            assert expected <= got.keys()
+            assert tuple(got["odom"].position) == pytest.approx((1, 2, 0.5))
+            assert got["odom"].frame_id == "world"
+            if sensors:
+                assert got["color_image"].frame_id == "test_robot/camera_optical"
+                assert messages["/color_image"].frame_id == "camera_optical"
+                assert got["lidar"].frame_id == "world"
+                np.testing.assert_array_equal(got["lidar"].points_f32(), [[1, 2, 3]])
+                assert got["camera_info"].frame_id == "test_robot/camera_optical"
+                assert {t.child_frame_id for t in got["tf"].transforms} == {
+                    f"test_robot/{n}"
+                    for n in ("base_link", "camera_link", "camera_optical", "lidar_link")
+                }
+            else:
+                assert not changed.wait_for(lambda: len(got) > 1, timeout=0.1)
+        module.cmd_vel.transport.publish(Twist(linear=[0.3, 0, 0]))
+        with changed:
+            assert changed.wait_for(lambda: bool(wire_commands), timeout=3)
+            assert wire_commands[0].linear.x == pytest.approx(0.3)
+            assert not changed.wait_for(lambda: len(wire_commands) > 1, timeout=0.1)
+        module.stop_movement()
+        with changed:
+            assert changed.wait_for(lambda: len(wire_commands) == 2, timeout=3)
+            assert tuple(wire_commands[-1].linear) == (0, 0, 0)
+        module.stop()
+        assert not connection.move(Twist())
+        with changed:
+            got.clear()
+            sources["/odom"].publish(messages["/odom"])
+            assert not changed.wait_for(lambda: "odom" in got, timeout=0.1)
+        if sensors:
+            assert not module._camera_info_thread.is_alive()
 
 
-def test_lcm_does_not_republish_commands(simulator, mocker):
-    wire = mocker.patch.object(dimsim_connection, "LCMTransport")
-    mocker.patch.object(dimsim_connection, "make_transport")
-    connection = DimSimConnection(GlobalConfig(transport="lcm"))
-    connection.start()
+def test_private_connections_are_isolated(simulator):
+    first, second = [DimSimConnection(GlobalConfig()) for _ in range(2)]
+    assert first.wire_url != second.wire_url
+    seen, other = threading.Event(), threading.Event()
+    with ExitStack() as stack:
+        stack.callback(first.stop)
+        stack.callback(second.stop)
+        stack.callback(first.odom_stream().subscribe(lambda _: seen.set()).dispose)
+        stack.callback(second.odom_stream().subscribe(lambda _: other.set()).dispose)
+        first.start()
+        second.start()
+        source = LCMTransport("/odom", PoseStamped, url=first.wire_url)
+        stack.callback(source.stop)
+        source.publish(PoseStamped(frame_id="world"))
+        assert seen.wait(3)
+        assert not other.wait(0.1)
+
+
+def test_stop_waits_for_startup_then_closes_everything(simulator, mocker):
+    mocker.patch.object(dimsim_connection, "LCMTransport")
+    entered, release = threading.Event(), threading.Event()
+
+    def starting():
+        entered.set()
+        assert release.wait(5)
+
+    simulator.start.side_effect = starting
+    conn = DimSimConnection(GlobalConfig())
+    start = threading.Thread(target=conn.start)
+    stop = threading.Thread(target=conn.stop)
     try:
-        connection.move(Twist(linear=[0.5, 0, 0]))
-        connection.stop_movement()
-        assert connection._relays == []
-        wire.return_value.publish.assert_not_called()
+        start.start()
+        assert entered.wait(3)
+        stop.start()
+        release.set()
+        start.join(5)
+        stop.join(5)
+        assert not start.is_alive() and not stop.is_alive()
+        simulator.stop.assert_called_once()
+        assert not conn.move(Twist())
     finally:
-        connection.stop()
+        release.set()
+        start.join(5)
+        if stop.ident is not None:
+            stop.join(5)
+        conn.stop()
 
 
-def test_failed_start_releases_transports_and_subscriptions(simulator, mocker):
+def test_concurrent_start_stop_and_retry(simulator, mocker):
     transports = []
 
-    def transport(*args, **kwargs):
-        instance = MagicMock()
-        transports.append(instance)
-        return instance
+    def make(*args, **kwargs):
+        transport = mocker.Mock()
+        transports.append(transport)
+        return transport
 
-    mocker.patch.object(dimsim_connection, "LCMTransport", side_effect=transport)
-    mocker.patch.object(dimsim_connection, "make_transport", side_effect=transport)
-    simulator.start.side_effect = RuntimeError("browser startup failed")
-    connection = DimSimConnection(GlobalConfig(transport="zenoh"))
-    with pytest.raises(RuntimeError, match="browser startup failed"):
-        connection.start()
-    for instance in transports:
-        instance.stop.assert_called_once()
-        if instance.subscribe.called:
-            instance.subscribe.return_value.assert_called_once_with()
-    assert not connection.move(Twist())
-    simulator.stop.assert_called_once()
-    connection.stop()
-    simulator.stop.assert_called_once()
+    mocker.patch.object(dimsim_connection, "LCMTransport", side_effect=make)
+    conn = DimSimConnection(GlobalConfig())
+    simulator.start.side_effect = RuntimeError("failed")
+    with pytest.raises(RuntimeError, match="failed"):
+        conn.start()
+    assert not conn.move(Twist())
+    simulator.start.side_effect = None
+    for method in (conn.start, conn.stop):
+        threads = [threading.Thread(target=method) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+            assert not thread.is_alive()
+    assert simulator.start.call_count == simulator.stop.call_count == 2
+    for transport in transports:
+        assert transport.start.call_count == transport.stop.call_count == 2
+        if transport.subscribe.called:
+            assert transport.subscribe.return_value.call_count == 2
+
+
+def test_non_world_odometry_rejected(simulator):
+    module = GO2Connection(g=GlobalConfig(simulation="dimsim", robot_ip=""), odom_frame_id="other")
+    try:
+        with pytest.raises(ValueError, match="world-registered"):
+            module.start()
+        simulator.start.assert_not_called()
+    finally:
+        module.stop()
