@@ -168,7 +168,7 @@ def fit_fopdt(
     K0, tau0, L0 = _initial_guess(t, y, u_step, noise_std, bounds)
     sigma = np.full_like(y, float(noise_std)) if noise_std and noise_std > 0 else None
 
-    def _model(t_, K, tau, L):
+    def _model(t_: np.ndarray, K: float, tau: float, L: float) -> np.ndarray:
         return fopdt_step_response(t_, K, tau, L, u_step)
 
     try:

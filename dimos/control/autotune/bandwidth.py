@@ -40,6 +40,7 @@ read as physical plant roots.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -165,7 +166,7 @@ def plot_pole_zero(K: float, tau: float, L: float, out_path: str, title: str = "
 
     pzs = pole_zero_map(K, tau, L)
     fig, ax = plt.subplots(figsize=(6, 6))
-    styles = {
+    styles: dict[str, dict[str, Any]] = {
         "physical": dict(marker="x", color="C0", s=90, label="physical pole (-1/tau)"),
         "pade_pole": dict(marker="x", color="0.6", s=70, label="Pade pole (artifact)"),
         "pade_zero_rhp": dict(
@@ -174,8 +175,8 @@ def plot_pole_zero(K: float, tau: float, L: float, out_path: str, title: str = "
     }
     seen: set[str] = set()
     for pz in pzs:
-        st = dict(styles[pz.origin])
-        label = st.pop("label")
+        st: dict[str, Any] = dict(styles[pz.origin])
+        label = str(st.pop("label"))
         ax.scatter(pz.s.real, pz.s.imag, label=label if label not in seen else None, **st)
         seen.add(label)
     ax.axhline(0, color="k", lw=0.5)
