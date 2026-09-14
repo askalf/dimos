@@ -415,7 +415,7 @@ def load(store: Any, tag: str, stream: str) -> ResidentPatches:
     logger.info(
         f"hyperspace: {tag} resident -- {len(vectors)} x {width} "
         f"({vectors.nbytes / 1e6:.0f} MB) in {read:.1f}s, payloads in {meta:.1f}s"
-        + (f", {freed / 1e9:.1f} GB of file cache released" if freed else "")
+        + (f", cache dropped for {freed} file(s)" if freed else "")
     )
     return ResidentPatches(tag=tag, stream=stream, vectors=vectors, last_id=ids[-1], **placements)
 
@@ -430,9 +430,13 @@ def _drop_the_cache_of(conn: Any) -> int:
     this. The arrays then got evicted between being loaded and being used, so the first
     query paid 10 to 25 seconds faulting them back in.
 
-    Returns the bytes the file had, for the log; 0 when this platform cannot say. It is
-    an advisory call and a failure costs nothing but the memory it would have freed, so
-    a platform without it (macOS has no `posix_fadvise`) simply skips.
+    Returns how many files were told to forget, NOT how many bytes came back: the
+    kernel does not report that, and the file's SIZE is not it -- bike.db is 122 GB on
+    disk while the cache holding it was nine. Reporting the size would have been a
+    flattering number for a thing that did something smaller.
+
+    It is advisory, and a failure costs nothing but the memory it would have freed, so a
+    platform without it (macOS has no `posix_fadvise`) simply skips.
     """
     if not hasattr(os, "posix_fadvise"):
         return 0
@@ -443,9 +447,8 @@ def _drop_the_cache_of(conn: Any) -> int:
                 continue
             handle = os.open(path, os.O_RDONLY)
             try:
-                size = os.fstat(handle).st_size
                 os.posix_fadvise(handle, 0, 0, os.POSIX_FADV_DONTNEED)
-                freed += size
+                freed += 1
             finally:
                 os.close(handle)
     except OSError as error:

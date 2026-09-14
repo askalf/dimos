@@ -1278,7 +1278,9 @@ def test_the_index_read_releases_the_file_cache_behind_it(store: SqliteStore) ->
     from dimos.mapping.hyperspace.resident import _drop_the_cache_of
 
     freed = _drop_the_cache_of(store._registry_conn)
+    # A COUNT OF FILES, not bytes: the kernel does not report what it dropped, and the
+    # file size is not it -- bike.db is 122 GB on disk and the cache holding it was 9.
     if hasattr(os, "posix_fadvise"):
-        assert freed > 0, "a real file on disk, so its size is what was released"
+        assert freed == 1, "one database file was told to forget its pages"
     else:
         assert freed == 0, "a platform without posix_fadvise skips rather than raising"
