@@ -21,23 +21,23 @@ Nothing here is a simulation of the live system: it builds the same `LiveQuery` 
 difference is where the store came from. That is the point -- a page drawn by a
 reimplementation would be a picture of something the robot does not do.
 
-Each query gets a self-contained HTML page that replays the answering: the clock runs
-from the moment the question was asked, and each answer appears at the second it
-actually arrived, with the frame the detector looked at and the box it drew on it. The
-pages, an index and a `queries.zip` of all of them land in the output directory.
+Each query gets a self-contained 3D page -- the same one `dimos map find` writes, and
+for the same reason: an answer is a box somewhere, and a list of coordinates is not
+something anyone can judge. The recording's geometry is there in grey, the answers in
+orange, and the frames the detector was shown hang on their own view frustums so the
+evidence sits beside the claim. The clock still replays the answering: each box appears
+at the second it actually arrived. The pages, an index and a `queries.zip` of all of
+them land in the output directory.
 """
 
 from __future__ import annotations
 
-import base64
-import io
 import json
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import zipfile
 
-import numpy as np
 import typer
 
 from dimos.mapping.hyperspace.cli import open_store, pick_device, pick_stream
@@ -45,9 +45,6 @@ from dimos.mapping.hyperspace.detect import DetectConfig
 from dimos.mapping.hyperspace.frames import member_streams, spec_of
 from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
 from dimos.utils.logging_config import setup_logger
-
-if TYPE_CHECKING:
-    from dimos.mapping.hyperspace.detect import Detection
 
 logger = setup_logger()
 
@@ -58,73 +55,58 @@ def slug_of(text: str) -> str:
     return "_".join(part for part in "".join(kept).split("_") if part) or "query"
 
 
-def _picture(answer: Detection, width: int = 720) -> str:
-    """The frame the detector looked at, with its box drawn on, as a data URI."""
-    from PIL import Image as PILImage
+def scene_of(store: Any, frames: Any, world_frame: str) -> tuple[Any, Any]:
+    """The recording's geometry and route, read once: every query stands in the same room."""
+    from dimos.mapping.hyperspace import render
 
-    from dimos.mapping.hyperspace.render import draw_box
-
-    if answer.image is None:
-        return ""
-    # `to_rgb()` already returns RGB. Reversing the channels here on the assumption it
-    # returns BGR is how the pages came out with blue traffic cones -- the same
-    # confusion that put the swap into the stored frames in the first place.
-    picture = PILImage.fromarray(np.asarray(answer.image.to_rgb().data)).convert("RGB")
-    if answer.box2d is not None:
-        draw_box(picture, answer.box2d, (255, 138, 46), width=max(2, picture.width // 180))
-    if picture.width > width:
-        picture = picture.resize((width, round(picture.height * width / picture.width)))
-    buffer = io.BytesIO()
-    picture.save(buffer, format="JPEG", quality=72, optimize=True)
-    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+    started = time.monotonic()
+    frames.load_tf()
+    points = render.scene_points(store, frames.tf, world_frame)
+    route = render.trajectory(store, frames.tf, world_frame)
+    typer.echo(
+        f"scene: {len(points)} points, {len(route)} poses ({time.monotonic() - started:.1f}s)"
+    )
+    return points, route
 
 
-def page(query: str, result: Any, answers: list[Any], recording: str, loaded: dict) -> str:
-    """One query's page: the answers, in the order and at the times they arrived."""
-    rows = []
-    for answer in answers:
-        if answer.box3d is None:
-            rows.append(
-                {
-                    "arrived": round(float(answer.arrived), 3),
-                    "found": False,
-                    "note": answer.note or "nothing found",
-                    "frames": answer.episode_frames,
-                }
-            )
-            continue
-        box = answer.refined or answer.box3d
-        rows.append(
-            {
-                "arrived": round(float(answer.arrived), 3),
-                "found": True,
-                "score": round(float(answer.score), 3),
-                "centre": [round(float(v), 2) for v in box.centre],
-                "extent": [round(float(v), 2) for v in box.extent],
-                "depth": round(float(box.depth_m), 2),
-                "frame": box.frame,
-                "camera_frame": answer.camera_frame,
-                "stamp": round(float(answer.ts), 3),
-                "place": answer.place_id,
-                "duplicate_of": answer.duplicate_of,
-                "frames": answer.episode_frames,
-                "models": answer.models,
-                "image": _picture(answer),
-            }
-        )
-    timings = {name: value for name, value in result.timings.items() if name != "frames_matched"}
-    payload = {
-        "query": query,
-        "recording": recording,
-        "answers": rows,
-        "ms": result.ms,
-        "timings": timings,
-        "frames_matched": int(result.timings.get("frames_matched", 0)),
+def write_page(
+    path: Path,
+    query: str,
+    result: Any,
+    answers: list[Any],
+    live: Any,
+    scene: tuple[Any, Any],
+    recording: str,
+) -> Path:
+    """One query's page: the answers where they are, in the room they are in.
+
+    The same page `dimos map find` writes, because there is one thing worth looking at
+    and it is the boxes in the scene. A list of coordinates is not a result you can
+    judge; a box floating in an aisle is. The frames the detector was shown hang on
+    their own view frustums, so the evidence sits beside the claim in the same space,
+    and the clock still replays the answers at the seconds they actually arrived.
+    """
+    from dimos.mapping.hyperspace import render
+
+    timings = result.timings
+    stats = {
+        "took": f"{result.ms:.0f} ms",
+        "search": f"{timings.get('search', 0):.2f}s",
+        "detect": f"{timings.get('detect', 0):.2f}s",
+        "frames matched": int(timings.get("frames_matched", 0)),
         "refused": result.refused,
-        "places": len(result),
-        "loaded": {name: round(value, 2) for name, value in loaded.items()},
+        "models": ", ".join(live.config.models),
     }
-    return _PAGE.replace("__DATA__", json.dumps(payload, separators=(",", ":")))
+    return render.boxes_html(
+        path,
+        query,
+        answers,
+        scene[0],
+        scene[1],
+        recording=recording,
+        views=render.camera_views(answers, live.frames, live.config.detect.world_frame),
+        stats=stats,
+    )
 
 
 def main(
@@ -140,6 +122,12 @@ def main(
     max_episodes: int = typer.Option(12, "--max-episodes"),
     merge_m: float = typer.Option(0.75, "--merge", help="answers this close are one place (m)"),
     world_frame: str = typer.Option("odom", "--world-frame"),
+    depth2depth: str = typer.Option(
+        "auto",
+        "--depth2depth",
+        help="fill stereo's holes as boxes are placed: 'auto' only when the recording "
+        "has no filled-depth stream, '' off, or a checkpoint by name",
+    ),
     device: str = typer.Option("auto", "--device"),
 ) -> None:
     """Answer each query the way the live module would, and write a page per query."""
@@ -166,6 +154,7 @@ def main(
                 device=pick_device(device),
                 max_episodes=max_episodes,
                 world_frame=world_frame,
+                depth2depth=depth2depth,
             ),
             models=wanted,
             merge_m=merge_m,
@@ -186,6 +175,8 @@ def main(
         f"{loaded['index_s']:.1f}s"
     )
 
+    scene = scene_of(store, live.frames, world_frame)
+
     written = []
     summary: dict[str, Any] = {"recording": str(recording_path), "queries": {}}
     for text in query:
@@ -202,8 +193,15 @@ def main(
             f"  {len(result)} place(s), {result.refused} refused, "
             f"{time.monotonic() - started:.1f}s  {result.timings}"
         )
-        path = out / f"{slug_of(text)}.html"
-        path.write_text(page(text, result, live.answers, recording_path.name, loaded))
+        path = write_page(
+            out / f"{slug_of(text)}.html",
+            text,
+            result,
+            live.answers,
+            live,
+            scene,
+            recording_path.name,
+        )
         written.append(path)
         typer.echo(f"  {path}")
         summary["queries"][text] = result.as_dict()
@@ -235,132 +233,6 @@ def _index_page(recording: str, queries: list[str], written: list[Path], summary
         "a{color:#ff8a2e}li{margin:6px 0}</style>"
         f"<h1>{recording}</h1><ul>{''.join(items)}</ul>"
     )
-
-
-_PAGE = """<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>hyperspace, live</title>
-<style>
-:root { --ink:#e8e8ef; --dim:#9a9aa8; --edge:#2a2b36; --panel:#14151c; --hot:#ff8a2e;
-        color-scheme: dark }
-* { box-sizing:border-box }
-body { margin:0; background:#0a0b10; color:var(--ink); padding:28px 20px 80px;
-       font:14px/1.6 ui-sans-serif,-apple-system,"Segoe UI",sans-serif }
-main { max-width:1100px; margin:0 auto }
-h1 { font-size:24px; margin:0 0 2px }
-h1 em { color:var(--hot); font-style:normal }
-.sub { color:var(--dim); margin:0 0 20px }
-#bar { position:sticky; top:0; background:#0a0b10ee; backdrop-filter:blur(6px);
-       padding:12px 0 14px; z-index:5; border-bottom:1px solid var(--edge); margin-bottom:18px }
-#clock { color:var(--hot); font-variant-numeric:tabular-nums; font-size:22px; font-weight:600 }
-#track { height:4px; background:var(--edge); border-radius:2px; margin-top:8px; overflow:hidden }
-#track i { display:block; height:100%; width:0; background:var(--hot) }
-button { background:var(--panel); color:var(--ink); border:1px solid var(--edge);
-         border-radius:6px; padding:6px 14px; cursor:pointer; font:inherit }
-.split { display:flex; gap:14px; align-items:baseline; flex-wrap:wrap }
-.answer { border:1px solid var(--edge); border-radius:10px; background:var(--panel);
-          margin-bottom:14px; overflow:hidden; opacity:0; transform:translateY(8px);
-          transition:opacity .35s, transform .35s }
-.answer.here { opacity:1; transform:none }
-.answer .head { display:flex; gap:14px; align-items:baseline; padding:12px 16px;
-                border-bottom:1px solid var(--edge); flex-wrap:wrap }
-.at { color:var(--hot); font-variant-numeric:tabular-nums; font-weight:600; min-width:70px }
-.score { font-weight:600 }
-.where { color:var(--dim) }
-.answer img { display:block; width:100%; }
-.refused .head { color:var(--dim) }
-.meta { color:var(--dim); font-size:13px; padding:10px 16px }
-</style>
-<main>
-<h1>&ldquo;<em id="query"></em>&rdquo;</h1>
-<p class="sub" id="sub"></p>
-<div id="bar">
-  <div class="split"><button id="replay">replay</button><span id="clock">0.00s</span>
-  <span class="where" id="live"></span></div>
-  <div id="track"><i></i></div>
-</div>
-<div id="answers"></div>
-<p class="meta" id="loaded"></p>
-</main>
-<script>
-const data = __DATA__
-
-document.getElementById("query").textContent = data.query
-const split = Object.entries(data.timings).map(([k, v]) => `${k} ${v.toFixed(2)}s`).join(" + ")
-document.getElementById("sub").textContent =
-    `${data.recording} \\u00b7 ${data.places} place(s), ${data.refused} refused \\u00b7 `
-    + `${(data.ms / 1000).toFixed(2)}s total \\u00b7 ${split}`
-    + ` \\u00b7 ${data.frames_matched} frames matched`
-document.getElementById("loaded").textContent =
-    "loaded before the question: " + Object.entries(data.loaded)
-        .map(([k, v]) => `${k} ${v}`).join(", ")
-
-// Every answer carries the second it arrived, measured from the question, so the page
-// can play the query back rather than presenting the result as if it were instant.
-const holder = document.getElementById("answers")
-const cards = data.answers.map(answer => {
-    const card = document.createElement("div")
-    card.className = "answer" + (answer.found ? "" : " refused")
-    const head = document.createElement("div")
-    head.className = "head"
-    const at = document.createElement("span")
-    at.className = "at"
-    at.textContent = answer.arrived.toFixed(2) + "s"
-    head.appendChild(at)
-    if (answer.found) {
-        const score = document.createElement("span")
-        score.className = "score"
-        score.textContent = "owl " + answer.score.toFixed(2)
-        const where = document.createElement("span")
-        where.className = "where"
-        where.textContent = `(${answer.centre.join(", ")}) ${answer.frame}`
-            + ` \\u00b7 ${answer.extent.join(" x ")} m \\u00b7 ${answer.depth} m away`
-            + ` \\u00b7 ${answer.camera_frame} @ ${answer.stamp}`
-            + (answer.duplicate_of ? ` \\u00b7 another look at #${answer.duplicate_of}` : "")
-        head.append(score, where)
-    } else {
-        const note = document.createElement("span")
-        note.className = "where"
-        note.textContent = answer.note + ` \\u00b7 ${answer.frames} frame(s)`
-        head.appendChild(note)
-    }
-    card.appendChild(head)
-    if (answer.image) {
-        const img = document.createElement("img")
-        img.src = answer.image
-        img.loading = "lazy"
-        card.appendChild(img)
-    }
-    holder.appendChild(card)
-    return card
-})
-
-const last = Math.max(0.001, ...data.answers.map(a => a.arrived))
-const clock = document.getElementById("clock")
-const progress = document.querySelector("#track i")
-const live = document.getElementById("live")
-let from = performance.now()
-
-function showUpTo(seconds) {
-    cards.forEach((card, i) => card.classList.toggle("here", seconds >= data.answers[i].arrived))
-    const shown = data.answers.filter(a => seconds >= a.arrived).length
-    clock.textContent = Math.min(seconds, last).toFixed(2) + "s"
-    progress.style.width = Math.min(100, (seconds / last) * 100) + "%"
-    live.textContent = shown ? `${shown} of ${data.answers.length} in` : "searching\\u2026"
-}
-
-// A timer, not requestAnimationFrame: a tab that is not visible gets no frames, and a
-// page whose answers never appear is worse than one that animates coarsely. Thirty a
-// second is finer than anyone reads a clock.
-function tick() {
-    showUpTo((performance.now() - from) / 1000)
-}
-document.getElementById("replay").onclick = () => { from = performance.now(); tick() }
-setInterval(tick, 33)
-tick()
-</script>
-"""
 
 
 if __name__ == "__main__":

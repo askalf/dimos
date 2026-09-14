@@ -260,8 +260,14 @@ def boxes_html(
     *,
     recording: str = "",
     views: Sequence[dict[str, Any]] = (),
+    stats: dict[str, Any] | None = None,
 ) -> Path:
-    """An interactive page: the scene in grey, the answers in orange, ranked in a list."""
+    """An interactive page: the scene in grey, the answers in orange, ranked in a list.
+
+    *stats* is whatever the caller wants said above the list -- how long the query took,
+    what it was searched with. It is shown verbatim, in order, so a caller can put its
+    own vocabulary on the page rather than one agreed here.
+    """
     boxes = [
         {
             "rank": detection.rank,
@@ -285,11 +291,26 @@ def boxes_html(
         if detection.box3d is not None
     ]
     refused = [d.rank for d in detections if not d.found]
+    # An answer the detector found and nobody could place is not a non-event: it is the
+    # one case where the page should say what went wrong, because "sixteen answers" and
+    # "sixteen answers and four the depth could not carry" are different results.
+    unplaced = [
+        {
+            "rank": detection.rank,
+            "score": detection.score,
+            "arrived": detection.arrived,
+            "note": detection.note or "not placed",
+        }
+        for detection in detections
+        if detection.found and detection.box3d is None
+    ]
     payload = {
         "query": query,
         "recording": recording,
         "boxes": boxes,
         "refused": refused,
+        "unplaced": unplaced,
+        "stats": stats or {},
         "points": _packed(points),
         "route": _packed(route),
         "views": list(views),
@@ -328,6 +349,11 @@ h1 span { color:var(--hot) }
        cursor:pointer; transition:border-color .15s, background .15s }
 .box:hover, .box.on { border-color:var(--hot); background:#1b1c25 }
 .box.waiting { opacity:.22 }
+/* Found, and nowhere to put it. Cool rather than warm: nothing of it is in the scene. */
+.box.flat { cursor:default; border-style:dashed; color:var(--dim) }
+.box.flat:hover { border-color:var(--edge); background:none }
+.box.flat b { color:var(--dim) }
+.stats b { color:var(--ink); font-weight:600 }
 .box b { color:var(--hot) }
 .box .n { color:var(--dim); font-size:11.5px; display:block; margin-top:3px }
 .hint { position:fixed; left:14px; bottom:calc(38px + env(safe-area-inset-bottom));
@@ -373,7 +399,10 @@ h1 span { color:var(--hot) }
 <script>
 const data = JSON.parse(document.getElementById("data").textContent)
 const host = document.getElementById("scene")
-const renderer = new THREE.WebGLRenderer({ antialias: true })
+// A logarithmic depth buffer because the scenes differ by three orders of magnitude: a
+// 20 m room and a 4 km bike ride go through the same page, and a near/far pair wide
+// enough for the ride would z-fight its way through the room.
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
 renderer.setSize(host.clientWidth, host.clientHeight)
 host.appendChild(renderer.domElement)
@@ -381,6 +410,8 @@ host.appendChild(renderer.domElement)
 const scene = new THREE.Scene()
 scene.background = new THREE.Color(0x0a0b10)
 const camera = new THREE.PerspectiveCamera(55, host.clientWidth / host.clientHeight, 0.05, 800)
+// `far` is set from the scene once it is known -- see below. 800 m was fine for every
+// indoor recording and clipped a bike ride to a black screen.
 
 // The clouds travel as base64 float32 rather than as decimal text: a quarter of a
 // million points is 1.5 MB that way and 15 MB written out as JSON numbers.
@@ -395,7 +426,11 @@ function unpack(encoded) {
 const cloud = unpack(data.points)
 const geometry = new THREE.BufferGeometry()
 geometry.setAttribute("position", new THREE.BufferAttribute(cloud, 3))
-scene.add(new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.022, color: 0x5b6070 })))
+// Points sized in pixels rather than in metres. A 22 mm point is a sensible dot in a
+// room and invisible along a four-kilometre ride, and there is no one length that
+// suits both; two pixels suits both by not being a length at all.
+scene.add(new THREE.Points(geometry, new THREE.PointsMaterial({
+    size: 2 * Math.min(devicePixelRatio, 2), sizeAttenuation: false, color: 0x5b6070 })))
 
 const route = unpack(data.route)
 if (route.length > 5) {
@@ -415,6 +450,8 @@ if (cloud.length) {
 }
 bounds.getCenter(centre)
 const span = Math.max(bounds.getSize(new THREE.Vector3()).length(), 4)
+camera.far = Math.max(800, span * 8)
+camera.updateProjectionMatrix()
 
 // Lit rather than flat, so a solid face still reads as a face and the boxes look
 // like objects sitting in the room instead of six lines.
@@ -485,7 +522,19 @@ const shapes = data.boxes.map(box => {
         new THREE.LineBasicMaterial({ color: tone, transparent: true, opacity: 0.35 + 0.6 * sure }))
     edges.position.copy(mesh.position)
     scene.add(mesh); scene.add(edges)
-    return { mesh, edges, solid: 0.10 + 0.55 * sure, line: 0.35 + 0.6 * sure,
+    // A pixel-sized dot at the same place. A metre-wide box is a couple of pixels
+    // across a four-kilometre bike ride, so without this the overview of a long
+    // recording shows the route and none of the answers on it; the dot does not
+    // shrink, so where the answers are is legible before you have flown to one.
+    const dot = new THREE.Points(
+        new THREE.BufferGeometry().setAttribute("position",
+            new THREE.Float32BufferAttribute([...centre], 3)),
+        new THREE.PointsMaterial({ size: 7 * Math.min(devicePixelRatio, 2),
+                                   sizeAttenuation: false, color: tone,
+                                   depthTest: false, transparent: true }))
+    dot.renderOrder = 3
+    scene.add(dot)
+    return { mesh, edges, dot, solid: 0.10 + 0.55 * sure, line: 0.35 + 0.6 * sure,
              place: box.place_id == null ? `rank${box.rank}` : `place${box.place_id}` }
 })
 const drawn = shapes.map(shape => shape.mesh)
@@ -513,7 +562,7 @@ function showUpTo(seconds) {
     shapes.forEach((shape, index) => {
         const since = seconds - arrivals[index]
         const shown = since >= 0 && owner.get(shape.place) === index
-        shape.mesh.visible = shape.edges.visible = shown
+        shape.mesh.visible = shape.edges.visible = shape.dot.visible = shown
         if (!shown) return
         // A box flares as it arrives and settles into its confidence, so a new answer
         // is visible even when the camera is somewhere else.
@@ -521,7 +570,7 @@ function showUpTo(seconds) {
         shape.mesh.material.opacity = Math.min(1, shape.solid + 0.35 * flare)
         shape.edges.material.opacity = Math.min(1, shape.line + 0.4 * flare)
     })
-    const cards = document.querySelectorAll(".box")
+    const cards = document.querySelectorAll(".box.placed")
     cards.forEach((card, index) => {
         card.classList.toggle("waiting", seconds < arrivals[index])
     })
@@ -632,6 +681,13 @@ sub.textContent = `${data.boxes.length} placed in ${places} distinct place(s)` +
     (data.refused.length ? `, ${data.refused.length} episode(s) the detector refused` : "") +
     (data.recording ? ` · ${data.recording}` : "")
 side.appendChild(sub)
+const stats = Object.entries(data.stats || {})
+if (stats.length) {
+    const line = document.createElement("p")
+    line.className = "sub stats"
+    line.innerHTML = stats.map(([name, value]) => `${name} <b>${value}</b>`).join(" &middot; ")
+    side.appendChild(line)
+}
 const legend = document.createElement("p")
 legend.className = "sub"
 legend.textContent = "A box is as solid as the detector was sure; a faint one is a guess."
@@ -657,14 +713,14 @@ setFolded(narrow())
 
 data.boxes.forEach((box, index) => {
     const card = document.createElement("div")
-    card.className = "box"
+    card.className = "box placed"
     card.innerHTML = `<b>#${box.rank}</b> owl ${box.score.toFixed(2)} &middot; ${box.depth.toFixed(1)} m away` +
         (box.duplicate_of ? `<span class="n">another look at #${box.duplicate_of}</span>` : "") +
         `<span class="n">${box.centre.map(v => v.toFixed(1)).join(", ")} m &middot; ` +
         `${box.extent.map(v => v.toFixed(2)).join(" x ")} m</span>` +
         `<span class="n">${box.frames} frames over ${box.span.toFixed(1)}s &middot; ${box.models.join(", ")}</span>`
     card.onclick = () => {
-        document.querySelectorAll(".box").forEach(el => el.classList.remove("on"))
+        document.querySelectorAll(".box.placed").forEach(el => el.classList.remove("on"))
         card.classList.add("on")
         target = drawn[index].position.clone()
         range = Math.max(1.5, Math.max(...box.extent) * 6)
@@ -675,6 +731,24 @@ data.boxes.forEach((box, index) => {
     }
     side.appendChild(card)
 })
+
+// Found by the detector, and nowhere to put it. Worth a line each: "the depth image
+// has no reading inside the box" and "every reading is past the 10 m cut-off" are
+// different faults, and a page that only counted them would hide which one this was.
+if ((data.unplaced || []).length) {
+    const heading = document.createElement("p")
+    heading.className = "sub"
+    heading.style.marginTop = "14px"
+    heading.textContent = `${data.unplaced.length} found but not placed`
+    side.appendChild(heading)
+    data.unplaced.forEach(answer => {
+        const card = document.createElement("div")
+        card.className = "box flat"
+        card.innerHTML = `<b>#${answer.rank}</b> owl ${answer.score.toFixed(2)}` +
+            `<span class="n">${answer.note}</span>`
+        side.appendChild(card)
+    })
+}
 
 // Show the query happening once, on arrival, rather than presenting the finished
 // answer as though it were free.
