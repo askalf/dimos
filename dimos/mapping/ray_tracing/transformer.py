@@ -16,17 +16,31 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from dimos.mapping.ray_tracing.module import TF_MATCH_TOLERANCE_S
 from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper
-from dimos.memory.transform import Transformer
+from dimos.memory.transform import FnTransformer, Transformer
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from dimos.memory.tf import StreamTF
     from dimos.memory.type.observation import Observation
 
 logger = setup_logger()
+
+
+def pose_from_tf(tf: StreamTF, world_frame: str) -> FnTransformer[PointCloud2, PointCloud2]:
+    """Attach the tf pose at each cloud's stamp. A failed lookup clears the pose."""
+
+    def attach(obs: Observation[PointCloud2]) -> Observation[PointCloud2]:
+        t = tf.get(
+            world_frame, obs.data.frame_id, time_point=obs.ts, time_tolerance=TF_MATCH_TOLERANCE_S
+        )
+        return obs.with_pose(t)
+
+    return FnTransformer(attach)
 
 
 class RayTraceMap(Transformer[PointCloud2, PointCloud2]):

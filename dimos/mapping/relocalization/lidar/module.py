@@ -82,6 +82,31 @@ def fixes_agree(a: Transform, b: Transform, translation_m: float, yaw_deg: float
     return dt <= translation_m and abs(dyaw) <= yaw_deg
 
 
+class FixConfirmer:
+    """Believes a fix once enough consecutive fixes agree with it."""
+
+    def __init__(self, confirm_fixes: int, translation_m: float, yaw_deg: float) -> None:
+        self.confirm_fixes = confirm_fixes
+        self.translation_m = translation_m
+        self.yaw_deg = yaw_deg
+        self._candidate: Transform | None = None
+        self.agreeing = 0
+
+    def confirmed(self, tf: Transform) -> bool:
+        if self._candidate is not None and fixes_agree(
+            tf, self._candidate, self.translation_m, self.yaw_deg
+        ):
+            self.agreeing += 1
+        else:
+            self.agreeing = 1
+        self._candidate = tf
+        if self.agreeing >= self.confirm_fixes:
+            self._candidate = None
+            self.agreeing = 0
+            return True
+        return False
+
+
 class CloudRelocalization(RelocalizationModule):
     """Coarse FPFH+RANSAC then ICP of a windowed live cloud against a pointcloud premap.
 
@@ -94,8 +119,11 @@ class CloudRelocalization(RelocalizationModule):
         super().__init__(**kwargs)
         self._relocalizer: LidarRelocalizer | None = None
         self._last_skip_log = 0.0
-        self._candidate: Transform | None = None
-        self._agreeing = 0
+        self._confirmer = FixConfirmer(
+            self.config.confirm_fixes,
+            self.config.confirm_translation_m,
+            self.config.confirm_yaw_deg,
+        )
 
     def clouds(self) -> Observable[PointCloud2]:
         """The windowed live cloud to match, at most one every ``reloc_interval``."""
@@ -151,28 +179,13 @@ class CloudRelocalization(RelocalizationModule):
             )
             return
         logger.info(f"relocalize lidar: time_cost={dt:.1f}s n_pts={len(msg)}")
-        if self._confirmed(tf):
+        if self._confirmer.confirmed(tf):
             self.submit(tf, "lidar")
-
-    def _confirmed(self, tf: Transform) -> bool:
-        """Count consecutive agreeing fixes and say when enough have landed."""
-        cfg = self.config
-        if self._candidate is not None and fixes_agree(
-            tf, self._candidate, cfg.confirm_translation_m, cfg.confirm_yaw_deg
-        ):
-            self._agreeing += 1
-        else:
-            self._agreeing = 1
-        self._candidate = tf
-        if self._agreeing >= cfg.confirm_fixes:
-            self._candidate = None
-            self._agreeing = 0
-            return True
+            return
         logger.info(
-            f"relocalize lidar: candidate {self._agreeing}/{cfg.confirm_fixes}, "
-            f"waiting for an agreeing fix"
+            f"relocalize lidar: candidate {self._confirmer.agreeing}/"
+            f"{self.config.confirm_fixes}, waiting for an agreeing fix"
         )
-        return False
 
 
 class LidarWindowRelocalization(CloudRelocalization):

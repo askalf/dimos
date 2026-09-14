@@ -29,7 +29,10 @@ def first_loaded_map(store: SqliteStore, stream: str) -> Observation[PointCloud2
     """The earliest loaded map in the recording, or None without the stream."""
     if stream not in store.list_streams():
         return None
-    return store.stream(stream, PointCloud2).order_by("ts").first()
+    try:
+        return store.stream(stream, PointCloud2).order_by("ts").first()
+    except LookupError:
+        return None
 
 
 def place_loaded_map(

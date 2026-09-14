@@ -29,7 +29,7 @@ from dimos.hardware.sensors.lidar.pointlio.recorder import PointlioRecorder
 from dimos.hardware.sensors.lidar.virtual_mid360.recorder import Mid360PcapRecorder
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
 from dimos.mapping.relocalization.lidar.module import LocalMapRelocalization
-from dimos.mapping.relocalization.lidar.relocalize import MID360
+from dimos.mapping.relocalization.lidar.relocalize import GO2_NAV
 from dimos.memory.module import pose_setter_for
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
@@ -39,7 +39,7 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import (
     MLSPlannerNative,
     MLSPlannerNativeConfig,
 )
-from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
+from dimos.navigation.nav_3d.mls_planner.viz import nav_static, nav_visual_override
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.robot.unitree.go2.constants import (
@@ -86,29 +86,6 @@ def _recording_dir() -> Path:
 _RECORDING_DIR = _recording_dir()
 
 
-def _render_global_map(msg: Any) -> Any:
-    return msg.to_rerun()
-
-
-def _render_path(msg: Any) -> Any:
-    # The planner emits an empty path when it finds no route to the goal.
-    # Logging those would blank the line, so drop them and keep the last path.
-    if len(msg.poses) == 0:
-        return None
-    return msg
-
-
-def _static_robot_body(rr: Any) -> list[Any]:
-    """Go2-shaped box on the body frame."""
-    return [
-        rr.Boxes3D(
-            half_sizes=[ROBOT_LENGTH / 2, ROBOT_WIDTH / 2, ROBOT_HEIGHT / 2],
-            colors=[(0, 255, 127)],
-        ),
-        rr.Transform3D(parent_frame="tf#/base_link"),
-    ]
-
-
 def nav_rerun_config(planner_viz_hz: float) -> dict[str, Any]:
     """Rerun config for the nav_3d stack, with the planner's debug entities at the given rate."""
     return {
@@ -123,22 +100,15 @@ def nav_rerun_config(planner_viz_hz: float) -> dict[str, Any]:
         "memory_limit": "64MB",
         # The robot box hangs off base_link on its own entity: a static transform
         # under world/tf would override the live one.
-        "static": {
-            "world/robot_body": _static_robot_body,
-        },
+        "static": nav_static(ROBOT_LENGTH, ROBOT_WIDTH, ROBOT_HEIGHT, wall_clearance_m),
         "visual_override": {
             **rerun_config["visual_override"],
-            "world/global_map": _render_global_map,
-            "world/full_map": _render_global_map,
             # The raw premap is millions of points. The seeded voxels are full_map.
             "world/loaded_map": None,
-            "world/path": _render_path,
             "world/camera_info": None,
             "world/color_image": None,
             "world/lidar": None,
-            **planner_visual_override(
-                planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=wall_clearance_m
-            ),
+            **nav_visual_override(planner_viz_hz, voxel_size, wall_clearance_m),
         },
     }
 
@@ -225,6 +195,6 @@ unitree_go2_nav_3d_relocalization = autoconnect(
     LocalMapRelocalization.blueprint(
         world_frame="odom",
         republish_loaded_map=30.0,
-        relocalize=MID360.model_copy(update={"fitness_threshold": 0.8, "ransac_restarts": 3}),
+        relocalize=GO2_NAV,
     ),
 ).global_config(n_workers=11)

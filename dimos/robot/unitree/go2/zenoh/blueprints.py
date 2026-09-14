@@ -45,7 +45,7 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import (
     MLSPlannerNativeConfig,
 )
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
-from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
+from dimos.navigation.nav_3d.mls_planner.viz import nav_static, nav_visual_override
 from dimos.robot.unitree.go2.constants import (
     BASE_LINK_HEIGHT,
     ROBOT_HEIGHT,
@@ -56,6 +56,7 @@ from dimos.robot.unitree.go2.zenoh.zenohconnection import GO2Zenoh
 from dimos.visualization.vis_module import vis_module
 
 voxel_size = 0.08
+wall_clearance_m = 0.1
 # Raise above 0 (2.0 works) to draw what the planner searched over: surface, nodes and
 # cost-colored edges. Drives both its publishing and the rerun overrides.
 planner_viz_hz = 2.0
@@ -63,17 +64,6 @@ planner_viz_hz = 2.0
 # GO2Zenoh publishes this mount onto tf, where nav reads its odometry corrections.
 # Either a raw (roll, pitch, yaw) tuple in degrees or a GO2ZenohConfig.mid360_mount preset.
 MID360_MOUNT = "SF"
-
-
-def _static_robot_body(rr: Any) -> list[Any]:
-    """Go2-shaped box on the body frame."""
-    return [
-        rr.Boxes3D(
-            half_sizes=[ROBOT_LENGTH / 2, ROBOT_WIDTH / 2, ROBOT_HEIGHT / 2],
-            colors=[(0, 255, 127)],
-        ),
-        rr.Transform3D(parent_frame="tf#/base_link"),
-    ]
 
 
 def _camera_info_to_pinhole(camera_info: Any) -> Any:
@@ -123,14 +113,6 @@ def _render_map(msg: Any) -> Any:
     return msg.to_rerun(voxel_size=0.01)
 
 
-def _render_path(msg: Any) -> Any:
-    # The planner emits an empty path when it finds no route to the goal.
-    # Logging those would blank the line, so drop them and keep the last path.
-    if len(msg.poses) == 0:
-        return None
-    return msg
-
-
 def _rerun_config(visual_override: dict[str, Any] | None = None) -> dict[str, Any]:
     """The bridge's own view, plus whatever the layer above it adds."""
     return {
@@ -138,17 +120,12 @@ def _rerun_config(visual_override: dict[str, Any] | None = None) -> dict[str, An
         "tf_axes": 0.5,
         # The robot box hangs off base_link on its own entity: a static transform
         # under world/tf would override the live one.
-        "static": {
-            "world/robot_body": _static_robot_body,
-        },
+        "static": nav_static(ROBOT_LENGTH, ROBOT_WIDTH, ROBOT_HEIGHT, wall_clearance_m),
         "visual_override": {
             "world/camera_info": _camera_info_to_pinhole,
             "world/pointlio_map": _render_map,
             "world/lidar": _render_map,
-            "world/local_map": _render_map,
-            "world/global_map": _render_map,
-            "world/path": _render_path,
-            **planner_visual_override(planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=0.1),
+            **nav_visual_override(planner_viz_hz, voxel_size, wall_clearance_m),
             **(visual_override or {}),
         },
     }
@@ -170,7 +147,7 @@ mls_planner_config = MLSPlannerNativeConfig(
     robot_height=ROBOT_HEIGHT,
     start_z_offset_m=BASE_LINK_HEIGHT,
     surface_closing_radius=0.3,
-    wall_clearance_m=0.1,
+    wall_clearance_m=wall_clearance_m,
     wall_buffer_m=0.75,
     wall_buffer_weight=100.0,
     step_threshold_m=0.16,
