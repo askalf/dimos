@@ -12,11 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The Rust estimator against the C++ Point-LIO's own trajectory on the same walk.
+"""The Rust estimator against a C++ Point-LIO trajectory over the same walk.
 
 ``mid360_athens_stairs`` is a 305 s handheld Mid-360 recording kept as two LFS
-artifacts: the raw ``.pcap`` (the input) and a ``.db`` holding what the C++
-module published while it was captured (``pointlio_odometry``, the golden).
+artifacts: the raw ``.pcap`` (the input) and a ``.db`` holding the trajectory
+recorded alongside it (``pointlio_odometry``, the golden).
+
+The golden was not produced by this repo's C++ module: go2web captured it with
+Point-LIO Lite, an aarch64-static build it embeds and supervises as a sidecar.
+Its tuning is the same -- ``go2web/assets/pointlio-default.yaml`` matches
+``PointLioTuning`` field for field, extrinsics and gravity included -- but the
+build, the architecture (aarch64 contracts FMA where the x86 builds do not) and
+the realtime scheduling all differ, and on this walk each of those is enough on
+its own to land on a different branch. Treat it as one valid trajectory over
+this walk, not as the answer.
 
 Point-LIO is chaotic at the ULP level, so this is a band check, not equality --
 see ``rust/PARITY.md`` for the C++'s own spread under benign perturbation
