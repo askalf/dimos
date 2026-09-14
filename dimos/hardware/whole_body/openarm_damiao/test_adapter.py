@@ -14,7 +14,6 @@
 
 from collections.abc import Iterator
 import runpy
-import sys
 
 import can_motor_control
 import numpy as np
