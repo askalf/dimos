@@ -1187,3 +1187,24 @@ def test_one_answer_per_place_carries_its_own_frame() -> None:
     assert objects[0].stamp == 102.0, "the stamp of the look that was reported"
     assert objects[0].box2d == (1.0, 2.0, 3.0, 4.0)
     assert objects_of(answers, top=1) == objects[:1]
+
+
+def test_a_stream_says_which_family_of_model_wrote_it() -> None:
+    """A stream of vectors is unusable without knowing the checkpoint behind it.
+
+    Two families now write patch streams, and their text towers are not
+    interchangeable: encoding "a traffic cone" with SigLIP and scoring it against
+    Perception Encoder vectors would compare two different spaces and answer
+    confidently with noise. The tag has to round-trip, both ways, for both.
+    """
+    from dimos.mapping.hyperspace.embedder import member_tag
+    from dimos.mapping.hyperspace.frames import spec_of
+    from dimos.mapping.hyperspace.ingest import sql_safe
+
+    for spec in (
+        "pe:PE-Core-B-16",
+        "pe:PE-Core-L-14-336",
+        "google/siglip2-base-patch16-224",
+        "google/siglip2-so400m-patch16-naflex@1024",
+    ):
+        assert spec_of(sql_safe(member_tag(spec))) == spec, spec

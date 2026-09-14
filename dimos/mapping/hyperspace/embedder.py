@@ -94,6 +94,13 @@ def member_tag(spec: str) -> str:
     ``base-patch16-naflex-576``, ``...-224#2x3`` -> ``base-patch16-224-2x3``.
     Stored with every keyframe so the query side knows which text towers to
     load."""
+    from dimos.mapping.hyperspace.pe_embedder import is_pe, pe_name
+
+    if is_pe(spec):
+        # A Perception Encoder checkpoint keeps its own name, behind a marker the
+        # query side reads back: the stream has to say which family wrote it, not
+        # only which size, or the wrong text tower is loaded against it.
+        return f"pe-{pe_name(spec)}"
     name, budget, tiles = parse_member(spec)
     tag = name.rstrip("/").rsplit("/", 1)[-1].removeprefix("siglip2-")
     if budget:
@@ -337,6 +344,22 @@ class SigLIP2Patches(SigLIPModel):
         return np.ascontiguousarray(features.cpu().numpy(), dtype=np.float32)
 
 
+def _member(spec: str, device: str, towers: Literal["both", "vision", "text"]) -> Any:
+    """One ensemble member: a SigLIP2 checkpoint, or a Perception Encoder one.
+
+    Both answer `embed_grids` and `embed_text_array`, which is all the ensemble and
+    everything downstream of it ever asks for.
+    """
+    from dimos.mapping.hyperspace.pe_embedder import PEPatches, is_pe, pe_name
+
+    if is_pe(spec):
+        return PEPatches(model_name=pe_name(spec), device=device, towers=towers)
+    name, budget, tiles = parse_member(spec)
+    return SigLIP2Patches(
+        model_name=name, max_patches=budget, tiles=tiles, device=device, towers=towers
+    )
+
+
 class PatchEnsemble:
     """Several :class:`SigLIP2Patches` over the same frames, one grid each.
 
@@ -354,12 +377,7 @@ class PatchEnsemble:
             raise ValueError("PatchEnsemble needs at least one checkpoint")
         self.specs = list(specs)
         self.tags = [member_tag(spec) for spec in specs]
-        self.members = [
-            SigLIP2Patches(
-                model_name=name, max_patches=budget, tiles=tiles, device=device, towers=towers
-            )
-            for name, budget, tiles in map(parse_member, specs)
-        ]
+        self.members = [_member(spec, device, towers) for spec in specs]
 
     @property
     def primary(self) -> SigLIP2Patches:

@@ -169,6 +169,9 @@ def spec_of(tag: str) -> str:
     The stream name carries the answer because a stream of vectors is unusable without
     it -- you cannot encode the query text to compare against.
     """
+    if tag.startswith("pe_"):
+        # Written by a Perception Encoder checkpoint; its name is the rest of the tag.
+        return f"pe:{tag[3:].replace('_', '-')}"
     budget = ""
     head, _, tail = tag.rpartition("_")
     if tail.isdigit() and head.endswith("naflex"):
