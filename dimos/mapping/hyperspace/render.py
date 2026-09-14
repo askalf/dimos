@@ -493,8 +493,12 @@ const views = (data.views || []).map(view => {
         new THREE.LineBasicMaterial({ color: 0x4b5168, transparent: true, opacity: 0.5 }))
     frustum.visible = false
     scene.add(frustum)
-    return { plane, frustum, arrived: Number(view.arrived) || 0 }
+    return { plane, frustum, eye, rank: view.rank, arrived: Number(view.arrived) || 0 }
 })
+
+// Which photograph belongs to which answer, so clicking an answer can go and stand
+// where the detector stood rather than somewhere the evidence happens to be edge-on.
+const viewOfRank = new Map(views.map(view => [view.rank, view]))
 
 const shapes = data.boxes.map(box => {
     // A second look at a place already found is drawn cooler, so the distinct answers
@@ -724,6 +728,31 @@ data.boxes.forEach((box, index) => {
         card.classList.add("on")
         target = drawn[index].position.clone()
         range = Math.max(1.5, Math.max(...box.extent) * 6)
+        // Point at the box and you can easily end up behind its photograph, or looking
+        // at it edge-on -- a plane has no thickness. So take the direction from the
+        // answer's own frame instead: stand behind where that camera stood and a little
+        // above it, looking the way it looked. The picture is then nearly face-on with
+        // the box beyond it, which is the whole point of hanging the two in one space.
+        const seen = viewOfRank.get(box.rank)
+        if (seen) {
+            // Flying to a photograph the clock has not reached yet shows an empty frustum,
+            // so stop the replay and settle it at the moment this answer arrived.
+            playedFrom = null
+            showUpTo(Math.max(arrivals[index], seen.arrived))
+            const along = new THREE.Vector3().subVectors(target, seen.eye)
+            const reach = along.length()
+            if (reach > 1e-3) {
+                along.divideScalar(reach)
+                const back = Math.max(2.5, reach * 0.6)
+                const stand = seen.eye.clone().addScaledVector(along, -back)
+                stand.z += back * 0.35
+                const offset = new THREE.Vector3().subVectors(stand, target)
+                range = Math.max(1.5, offset.length())
+                const unit = offset.normalize()
+                pitch = Math.acos(Math.min(1, Math.max(-1, unit.z)))
+                yaw = Math.atan2(unit.y, unit.x)
+            }
+        }
         place()
         // Flying somewhere you cannot see is no use: on a phone the sheet gets out of
         // the way once it has been used.
