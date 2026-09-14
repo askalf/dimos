@@ -46,6 +46,7 @@ from dimos.mapping.hyperspace.embedder import (
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
 from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
 from dimos.mapping.hyperspace.msgs import FoundObjects
+from dimos.mapping.hyperspace.queries import AREA_PROMPTS, Place, Query, QueryBook, near_enough
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import refine_config_of
 from dimos.memory.module import MemoryModule, MemoryModuleConfig
@@ -292,6 +293,10 @@ class HyperspaceConfig(MemoryModuleConfig):
     pooled_hot_threshold: float = 0.005
     # Frame answers are given in unless a request names another.
     world_frame: str = "odom"
+    # The robot's own link, for a proximity query's "within N metres of me". Its pose
+    # comes from tf like everything else; when tf cannot give it, the radius is reported
+    # as not applied rather than measured from the origin.
+    robot_frame: str = "base_link"
     voxel_size: float = 0.10
     hot_threshold: float = 0.02
     max_hot_patches: int = 6000
@@ -523,34 +528,311 @@ class Hyperspace(MemoryModule):
             return
         await asyncio.get_running_loop().run_in_executor(None, self.answer, text, request_id, frame)
 
-    @skill
-    def find(self, text: str, top: int = 10) -> SkillResult:
-        """Where in the map is `text`? E.g. "a traffic cone", "the red chair".
+    # --- the query surface ------------------------------------------------------
+    #
+    # Three ways to ask, one implementation, and a handle to come back to. An agent that
+    # blocks until every place is found waits ten seconds for an answer whose first line
+    # was ready in two, so every start returns what it has and leaves the rest behind an
+    # id. See `queries.py` for what separates the three kinds.
 
-        Returns the best-scoring voxel centers (meters, in the world frame) and
-        how many voxels answered. Also publishes the full answer on
-        ``query_result`` / ``query_answer`` for anything listening.
+    @property
+    def queries(self) -> QueryBook:
+        """Questions asked and what was found for them, so an agent can come back for
+        the rest instead of waiting for all of it up front."""
+        book = getattr(self, "_queries", None)
+        if book is None:
+            book = self._queries = QueryBook()
+        return book
+
+    @rpc
+    def run_query(
+        self,
+        text: str,
+        kind: str = "item",
+        count: int = 1,
+        query_id: str = "",
+        within_m: float = 0.0,
+        at_time: float = 0.0,
+    ) -> Query:
+        """Ask once. The one implementation the three skills wrap.
+
+        `kind` is "item" (OWLv2 draws a box), "heatmap" (hot patches into voxels, no
+        detector) or "area" (a room, contrasted against objects rather than against the
+        room). `within_m` keeps only places that close to where the robot is -- or to
+        where it was at `at_time`, which is how "what was near me when that happened"
+        is asked. `query_id` names the question so a second call cannot be mistaken for
+        the first; one is made up when it is not given.
         """
         text = text.strip()
         if not text:
-            return SkillResult.fail("INVALID_INPUT", "text must not be empty")
-        answer = self.answer(text)
-        best = answer["best"][:top]
-        if not best:
-            return SkillResult.ok(
-                f"nothing in the map looks like {text!r}",
-                query=text,
-                voxels=0,
-                stats=answer["stats"],
+            raise ValueError("a query needs something to look for")
+        if kind not in ("item", "heatmap", "area"):
+            raise ValueError(f"unknown query kind {kind!r}; item, heatmap or area")
+
+        query = Query(query_id=query_id or self.queries.next_id(kind), text=text, kind=kind)
+        started = time.monotonic()
+        if kind == "item":
+            self._fill_from_detector(query)
+        else:
+            self._fill_from_patches(query, kind)
+        query.ms = (time.monotonic() - started) * 1000
+
+        origin = self._where_the_robot_is(at_time)
+        if within_m and origin is None:
+            query.note = (
+                f"asked for places within {within_m:.1f} m but the robot's own position "
+                "is not known, so the radius was not applied"
             )
-        return SkillResult.ok(
-            f"{text!r}: {answer['voxels']} voxels, best at {best[0]['xyz']} (score {best[0]['score']})",
-            query=text,
-            frame=answer["frame"],
-            voxels=answer["voxels"],
-            best=best,
-            stats=answer["stats"],
+        elif within_m:
+            before = len(query.places)
+            query.places = near_enough(query.places, origin, within_m)
+            if before and not query.places:
+                query.note = f"{before} place(s) found, none within {within_m:.1f} m"
+        if count > 0:
+            query.taken = min(count, len(query.places))
+        self.queries.put(query)
+        logger.info(
+            f"hyperspace {kind} {text!r} [{query.query_id}]: {len(query.places)} place(s), "
+            f"{query.refused} refused, {query.ms:.0f} ms"
         )
+        return query
+
+    def _fill_from_detector(self, query: Query) -> None:
+        """The OWLv2 path: boxes, and a detector that is allowed to say no."""
+        self.live.config.top = 0
+        result = self.live.ask(query.text)
+        self.found.publish(result)
+        query.refused = result.refused
+        query.timings = dict(result.timings)
+        query.places = [
+            Place(
+                where=tuple(float(value) for value in found.centre),
+                frame=found.frame,
+                kind="item",
+                score=float(found.confidence),
+                distance_m=float(found.depth_m),
+                extent=tuple(float(value) for value in found.extent),
+                views=int(found.views),
+                seen_at=float(found.arrived),
+            )
+            for found in result.objects
+        ]
+        if not query.places and result.refused:
+            # The difference an agent most needs: the search DID find frames worth
+            # looking at, and the detector would not draw a box on any of them. On
+            # "kitchen" over an office recording every one of the top frames was the
+            # kitchen and OWLv2 refused all twelve, because it boxes objects and a
+            # kitchen is a place. Answering "nothing found" there is a lie.
+            query.note = (
+                f"the search found {result.refused} place(s) worth looking at and the "
+                f"detector would not draw a box on any of them. {query.text!r} may be a "
+                "place rather than a thing -- try an area or heatmap query"
+            )
+
+    def _fill_from_patches(self, query: Query, kind: str) -> None:
+        """No detector: the hot patches themselves, put into the world.
+
+        Nothing here can refuse, which is the point. It answers where a box cannot --
+        a query the detector has no word for, and anything that is not an object.
+        """
+        prompts = AREA_PROMPTS if kind == "area" else None
+        heat = self.engine.heatmap(query.text, background_prompts=prompts)
+        query.timings = {"search": heat.stats.get("search_s", 0.0)}
+        clusters = heat.clusters or []
+        if clusters:
+            query.places = [
+                Place(
+                    where=tuple(float(value) for value in cluster.centre),
+                    frame=heat.frame,
+                    kind=kind,
+                    score=float(cluster.score),
+                    views=int(getattr(cluster, "views", 0) or 1),
+                )
+                for cluster in clusters
+            ]
+        else:
+            # No clustering to speak of, so the strongest voxels are the answer. Better
+            # than nothing and honestly labelled: a voxel is a place, not a thing.
+            centres = heat.centres()
+            scores = heat.scores()
+            query.places = [
+                Place(
+                    where=(float(centre[0]), float(centre[1]), float(centre[2])),
+                    frame=heat.frame,
+                    kind=kind,
+                    score=float(score),
+                )
+                for centre, score in zip(centres[:20], scores[:20], strict=False)
+            ]
+        if not query.places:
+            query.note = f"no patch anywhere in the map scored for {query.text!r}"
+
+    def _where_the_robot_is(self, at_time: float = 0.0) -> tuple[float, float, float] | None:
+        """The robot's own position, now or at a moment, or None when nothing knows.
+
+        None rather than the origin: a radius measured from a position nobody recorded
+        would quietly answer about the wrong part of the map.
+        """
+        frames = getattr(self.live, "frames", None)
+        if frames is None:
+            return None
+        try:
+            pose = frames.pose(
+                self.config.robot_frame, at_time or time.time(), self.config.world_frame
+            )
+        except Exception as error:
+            logger.debug(f"hyperspace has no pose for the radius: {error}")
+            return None
+        if pose is None:
+            return None
+        return (float(pose[0][3]), float(pose[1][3]), float(pose[2][3]))
+
+    @skill
+    def start_item_query(self, text: str, count: int = 1, query_id: str = "") -> SkillResult:
+        """Find a THING and get its position and size. E.g. "a fire extinguisher".
+
+        Returns the strongest place immediately; ask `query_results` with the returned
+        `query_id` for the others. A detector draws the box, so it can refuse -- which is
+        what makes a box worth trusting, and why a place-like query ("the kitchen") is
+        better asked with `start_area_query`.
+        """
+        return self._answer_with(text, "item", count, query_id)
+
+    @skill
+    def start_heatmap_query(
+        self,
+        text: str,
+        count: int = 1,
+        query_id: str = "",
+        within_m: float = 0.0,
+        at_time: float = 0.0,
+    ) -> SkillResult:
+        """Where does the map LOOK LIKE `text`? Positions, no boxes, nothing refuses.
+
+        The patch scores go straight into the world, so this answers when no detector
+        has a word for what is being asked. Set `within_m` to keep only places that
+        close to the robot, and `at_time` to measure that from where it was at a moment
+        rather than from where it is now.
+        """
+        return self._answer_with(text, "heatmap", count, query_id, within_m, at_time)
+
+    @skill
+    def start_area_query(self, text: str, count: int = 1, query_id: str = "") -> SkillResult:
+        """Find a PLACE rather than a thing. E.g. "kitchen", "the loading dock".
+
+        Same search as a heatmap, contrasted against objects instead of against the room,
+        so asking for a room does not subtract the room. Use this when the answer is
+        somewhere to go rather than something to pick up.
+        """
+        return self._answer_with(text, "area", count, query_id)
+
+    @skill
+    def query_results(self, query_id: str, count: int = 0) -> SkillResult:
+        """The rest of the answers to a query already started. 0 takes all that are left.
+
+        Each call hands back the ones not handed over yet, so calling twice walks the
+        list rather than repeating it.
+        """
+        query = self.queries.get(query_id.strip())
+        if query is None:
+            return SkillResult.fail(
+                "NO_SUCH_QUERY",
+                f"no query {query_id!r}; it was never asked or it has aged out of the "
+                f"last {self.queries.keep}. Known: {self.queries.ids()}",
+            )
+        rest = query.places[query.taken :]
+        if count > 0:
+            rest = rest[:count]
+        query.taken += len(rest)
+        return SkillResult.ok(
+            f"{len(rest)} more for {query.text!r}"
+            + (f", {query.remaining} still held" if query.remaining else ", that is all of them"),
+            query_id=query.query_id,
+            query=query.text,
+            kind=query.kind,
+            places=[place.as_dict() for place in rest],
+            remaining=query.remaining,
+        )
+
+    def _answer_with(
+        self,
+        text: str,
+        kind: str,
+        count: int,
+        query_id: str,
+        within_m: float = 0.0,
+        at_time: float = 0.0,
+    ) -> SkillResult:
+        """Every skill's body: ask, then say what came back in one readable line."""
+        if not text.strip():
+            return SkillResult.fail("INVALID_INPUT", "text must not be empty")
+        try:
+            query = self.run_query(text, kind, count, query_id, within_m, at_time)
+        except ValueError as error:
+            return SkillResult.fail("INVALID_INPUT", str(error))
+        handed = query.places[: query.taken]
+        if not handed:
+            return SkillResult.ok(
+                query.note or f"nothing in the map looks like {text!r}",
+                query_id=query.query_id,
+                query=text,
+                kind=kind,
+                places=[],
+                remaining=0,
+                refused=query.refused,
+                note=query.note,
+            )
+        first = handed[0]
+        return SkillResult.ok(
+            f"{text!r}: {len(query.places)} place(s), best at "
+            f"{[round(value, 1) for value in first.where]} in {first.frame} "
+            f"(score {first.score:.2f})"
+            + (f", {query.remaining} more held as {query.query_id}" if query.remaining else ""),
+            query_id=query.query_id,
+            query=text,
+            kind=kind,
+            frame=first.frame,
+            places=[place.as_dict() for place in handed],
+            remaining=query.remaining,
+            refused=query.refused,
+            note=query.note,
+            took_ms=round(query.ms),
+        )
+
+    @rpc
+    def query_page(self, query_id: str, path: str = "") -> str:
+        """Write the page a PERSON looks at for a query already asked. Returns the path.
+
+        Not a skill: an agent cannot read a 3D scene, and handing it three megabytes of
+        HTML to summarise would waste the one thing the page is good at. It is for the
+        human the agent is working for.
+        """
+        from pathlib import Path
+
+        from dimos.mapping.hyperspace import render
+
+        query = self.queries.get(query_id.strip())
+        if query is None:
+            raise ValueError(f"no query {query_id!r}; known: {self.queries.ids()}")
+        out = Path(path or f"/tmp/hyperspace_{query.query_id}.html").expanduser()
+        answers = self.live.answers if query.kind == "item" else []
+        self.live.frames.load_tf()
+        render.boxes_html(
+            out,
+            query.text,
+            answers,
+            render.scene_points(self.store, self.live.frames.tf, self.config.world_frame),
+            render.trajectory(self.store, self.live.frames.tf, self.config.world_frame),
+            recording=str(getattr(self.store, "path", "")),
+            views=render.camera_views(answers, self.live.frames, self.config.world_frame),
+            stats={
+                "kind": query.kind,
+                "places": len(query.places),
+                "refused": query.refused,
+                "took": f"{query.ms:.0f} ms",
+            },
+        )
+        return str(out)
 
     def publish_scene(self, frame: str | None = None) -> int:
         """Occupied voxels from the keyframes' depth thumbnails, for viewers."""

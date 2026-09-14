@@ -20,6 +20,7 @@ Shared by the live ``Hyperspace`` module and the offline CLI.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import math
 import sqlite3
 from typing import TYPE_CHECKING, Any
@@ -384,7 +385,30 @@ class HyperspaceQuery:
 
         return place
 
-    def heatmap(self, text: str, frame: str | None = None) -> hs.Heatmap:
+    def heatmap(
+        self,
+        text: str,
+        frame: str | None = None,
+        background_prompts: Sequence[str] | None = None,
+    ) -> hs.Heatmap:
+        """Where the map looks like *text*, as scored voxels.
+
+        *background_prompts* replaces the contrast for this one call. An area query wants
+        to be contrasted against objects rather than against a room, since the usual
+        floor/wall/ceiling set would subtract the very thing it is looking for. Restored
+        afterwards, so one odd query does not change what the next one means.
+        """
+        if background_prompts is not None:
+            kept, self.config.background_prompts = (
+                self.config.background_prompts,
+                list(background_prompts),
+            )
+            self._backgrounds = None
+            try:
+                return self.heatmap(text, frame)
+            finally:
+                self.config.background_prompts = kept
+                self._backgrounds = None
         target = frame or self.world_frame
         queries = self.text_vectors(text)
         # The segment channel compares label text to query text within one
