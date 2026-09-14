@@ -12,8 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// dimos glue around pointlio-core: replay file I/O and the native module.
-pub mod compare;
-pub mod golden;
+// dimos glue around pointlio-core.
 pub mod module;
-pub mod replay;

@@ -22,7 +22,6 @@ pub mod ivox;
 pub mod laser_mapping;
 pub mod preprocess;
 pub mod so3;
-pub mod sort;
 pub mod voxel_grid;
 
 use nalgebra::Vector3;

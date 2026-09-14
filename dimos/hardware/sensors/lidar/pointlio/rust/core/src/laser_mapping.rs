@@ -32,7 +32,6 @@ use crate::imu_processing::ImuProcess;
 use crate::ivox::{IVox, IVoxOptions};
 use crate::preprocess::{LivoxPoint, Preprocess};
 use crate::so3::hat;
-use crate::sort::std_sort;
 use crate::voxel_grid::voxel_grid;
 use crate::Config;
 
@@ -92,8 +91,8 @@ fn frob_normalized(m: &M3) -> M3 {
     }
 }
 
-fn time_list(a: &PointXYZI, b: &PointXYZI) -> bool {
-    a.curvature < b.curvature
+fn by_offset_time(a: &PointXYZI, b: &PointXYZI) -> std::cmp::Ordering {
+    a.curvature.total_cmp(&b.curvature)
 }
 
 /// What `publish_odometry` fills (`odomAftMapped`).
@@ -281,7 +280,7 @@ impl LaserMapping {
         let mut ptr = self.pre.process(points);
         let cfg = &self.cfg;
         if cfg.cut_frame {
-            std_sort(&mut ptr, &time_list);
+            ptr.sort_unstable_by(by_offset_time);
             let mut time_div = stamp;
             let mut ptr_div = Vec::new();
             for p in &ptr {
@@ -476,7 +475,7 @@ impl LaserMapping {
         } else {
             self.feats_down_body = self.measures.lidar.clone();
         }
-        std_sort(&mut self.feats_down_body, &time_list);
+        self.feats_down_body.sort_unstable_by(by_offset_time);
         self.time_seq = time_compressing(&self.feats_down_body);
         let n = self.feats_down_body.len();
         self.feats_down_size = n;

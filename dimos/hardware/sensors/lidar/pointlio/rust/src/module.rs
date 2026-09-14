@@ -14,9 +14,11 @@
 
 //! Point-LIO native module: PointCloud2 + Imu in, odometry + body cloud + tf out.
 
-use dimos_livox::pipeline::GRAVITY_MS2;
 use dimos_module::nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 use dimos_module::{native_config, Input, Module, Output, Tf, Transform};
+
+/// The driver publishes linear acceleration in m/s^2; Point-LIO wants it in g.
+const GRAVITY_MS2: f64 = 9.80665;
 use lcm_msgs::geometry_msgs::{Point, Pose, PoseWithCovariance, Twist, TwistWithCovariance};
 use lcm_msgs::geometry_msgs::{Quaternion as QuatMsg, Vector3};
 use lcm_msgs::nav_msgs::Odometry;

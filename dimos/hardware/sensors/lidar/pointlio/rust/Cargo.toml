@@ -8,10 +8,6 @@ license = "Apache-2.0"
 [lib]
 
 [[bin]]
-name = "pointlio_replay"
-path = "src/bin/replay.rs"
-
-[[bin]]
 name = "pointlio_native"
 path = "src/bin/native.rs"
 
@@ -30,7 +26,6 @@ lidar = "sensor_msgs.PointCloud2"
 odometry = "nav_msgs.Odometry"
 
 [dependencies]
-dimos-livox = { path = "../../livox/rust" }
 pointlio-core = { path = "core" }
 dimos-module = { path = "../../../../../../native/rust/dimos-module" }
 lcm-msgs = { git = "https://github.com/dimensionalOS/dimos-lcm.git", branch = "rust-codegen" }

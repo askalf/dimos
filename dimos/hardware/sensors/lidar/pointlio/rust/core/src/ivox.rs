@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::common::PointXYZI;
-use crate::sort::nth_element;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -87,7 +86,7 @@ pub struct IVox {
     cands: Vec<Cand>,
 }
 
-// 16 bytes: the partition loops in `nth_element` are memory-bound.
+// 16 bytes: the kNN selection partition loops are memory-bound.
 #[derive(Clone, Copy)]
 struct Cand {
     dist: f64,
@@ -144,7 +143,7 @@ impl IVox {
         }
     }
 
-    /// Up to `max_num` nearest map points within `max_range`, in the C++ `nth_element` order
+    /// Up to `max_num` nearest map points within `max_range`, closest first.
     /// (first is the closest), written into `out`; false and `out` untouched when none
     /// (GetClosestPoint leaves its output stale then).
     pub fn closest_points(
@@ -166,10 +165,10 @@ impl IVox {
         let found = !cands.is_empty();
         if found {
             if cands.len() > max_num {
-                nth_element(&mut cands, max_num - 1, &less);
+                cands.select_nth_unstable_by(max_num - 1, closer);
                 cands.truncate(max_num);
             }
-            nth_element(&mut cands, 0, &less);
+            cands.select_nth_unstable_by(0, closer);
             out.clear();
             out.extend(
                 cands
@@ -201,7 +200,7 @@ impl IVox {
             }
         }
         if old + k < cands.len() {
-            nth_element(&mut cands[old..], k - 1, &less);
+            cands[old..].select_nth_unstable_by(k - 1, closer);
             cands.truncate(old + k);
         }
     }
@@ -258,8 +257,8 @@ fn distance2(a: &PointXYZI, b: &PointXYZI) -> f64 {
 }
 
 // `DistPoint::operator<` (by squared distance).
-fn less(a: &Cand, b: &Cand) -> bool {
-    a.dist < b.dist
+fn closer(a: &Cand, b: &Cand) -> std::cmp::Ordering {
+    a.dist.total_cmp(&b.dist)
 }
 
 fn nearby_grids(t: NearbyType) -> Vec<Key> {

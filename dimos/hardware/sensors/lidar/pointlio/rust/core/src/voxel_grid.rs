@@ -15,7 +15,6 @@
 // pcl::VoxelGrid<PointXYZINormal>::applyFilter (PCL 1.15, downsample_all_data): one centroid per
 // occupied leaf, output ordered by leaf index, points summed in spreadsort order.
 use crate::common::PointXYZI;
-use crate::sort::integer_sort;
 
 #[derive(Clone, Copy)]
 struct IndexIdx {
@@ -58,9 +57,7 @@ pub fn voxel_grid(input: &[PointXYZI], leaf: f32) -> Vec<PointXYZI> {
             }
         })
         .collect();
-    integer_sort(&mut index_vector, &|t: &IndexIdx| t.idx, &|a, b| {
-        a.idx < b.idx
-    });
+    index_vector.sort_unstable_by_key(|t| t.idx);
     let mut out = Vec::new();
     let mut index = 0;
     while index < index_vector.len() {
