@@ -86,22 +86,19 @@ FMA build's own number.
 ## Tooling
 
 The study used a deterministic C++ harness (`cpp/harness.cpp`, plus `harness_fma`
-/ `harness_o2` flake variants), an intermediate `.plio` replay format and a
-`pointlio_replay` with `dump` / `perturb` / `compare` subcommands. All of it
-chased bit equality, which this file concludes is unattainable, so it was
-removed once the band was measured; it is at commit 3ac24e801 if a future
-question needs it.
+/ `harness_o2` variants), a `.plio` replay format and a `pointlio_replay` with
+`dump` / `perturb` / `compare`. All of it chased bit equality, which this file
+concludes is unattainable; removed at commit 3ac24e801.
 
 What remains is `pointlio_replay --pcap`, which feeds the estimator frame by
-frame and writes a TUM trajectory, and `test_replay_reference.py`, which holds the
-port inside the band above against the C++ module's own recorded trajectory
-(`mid360_athens_stairs.db`): 0.51 m APE RMSE over the full recording, 34 mm
-median over the first 150 s, 17 s to run.
+frame and writes a TUM trajectory, and `test_replay_reference.py`, which scores
+the port against a recorded Point-LIO trajectory (`mid360_athens_stairs.db`) on
+RPE median: 64 mm over ~10 s windows, 17 s to run.
 
-Note the footprint numbers below predate dropping the verbatim libstdc++/boost
-sorts: `std::nth_element`'s order was what made neighbour lists bit-exact, and
-with that requirement gone `select_nth_unstable_by` replaces it. The full
-recording now replays in 17 s rather than ~100 s.
+The footprint numbers below predate dropping the verbatim libstdc++/boost sorts.
+`std::nth_element`'s order was what made neighbour lists bit-exact; with that
+requirement gone `select_nth_unstable_by` replaces it, and the full recording
+replays in 17 s rather than ~100 s.
 
 ## Footprint
 

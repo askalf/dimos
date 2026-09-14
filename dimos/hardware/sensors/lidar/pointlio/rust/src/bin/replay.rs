@@ -14,11 +14,9 @@
 
 // Replay a Mid-360 pcap through the estimator and write the trajectory as TUM.
 //
-// Frame by frame, not wall-clock paced: the next packet is only read once the
-// estimator has finished the previous frame, so the result is the same on a
-// loaded machine as on an idle one and no frame can be dropped. That is what
-// makes it comparable against a recorded reference; the live module's LCM path has
-// no backpressure and would silently drop under load.
+// Frame by frame rather than wall-clock paced: the next packet is read only once
+// the estimator has finished the last, so no frame drops and the output does not
+// depend on machine load. The module's LCM path has no backpressure.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
