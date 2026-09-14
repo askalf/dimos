@@ -79,3 +79,35 @@ def test_the_battery_is_paced_by_the_operator() -> None:
     (bench,) = _atoms(alfred_benchmark, Benchmarker)
     assert bench.kwargs["gate_source"] == "stream"
     assert bench.kwargs["robot"] == "alfred"
+
+
+def test_the_operator_can_actually_reposition_between_runs() -> None:
+    """The gate tells them to drive the base; the wiring has to let them.
+
+    The viewer publishes tele_cmd_vel and the coordinator hears twist_command.
+    Nothing joins those by name, so without the remap the instruction is a lie.
+    """
+    assert alfred_benchmark.remapping_map[("ControlCoordinator", "twist_command")] == "tele_cmd_vel"
+    assert _streams(alfred_benchmark, "RerunWebSocketServer")["tele_cmd_vel"] == "out"
+
+
+def test_the_speed_ladder_stays_inside_alfreds_envelope() -> None:
+    """The Benchmarker's default ladder is the Go2's and tops out past Alfred's vmax."""
+    from dimos.robot.diy.alfred.alfred_model import ALFRED_BASE_VELOCITY_LIMITS
+    from dimos.robot.diy.alfred.blueprints.alfred_benchmark import ALFRED_BENCHMARK_SPEEDS
+
+    vx_max = ALFRED_BASE_VELOCITY_LIMITS[0]
+    speeds = [float(s) for s in ALFRED_BENCHMARK_SPEEDS.split(",")]
+    assert speeds, "an empty ladder benchmarks nothing"
+    assert max(speeds) < vx_max, "a run past vmax scores saturation, not tracking"
+    assert speeds == sorted(speeds), "the ladder should climb"
+
+    (bench,) = _atoms(alfred_benchmark, Benchmarker)
+    assert bench.kwargs["speeds"] == ALFRED_BENCHMARK_SPEEDS
+
+
+def test_nothing_arbitrates_the_base_but_the_coordinator() -> None:
+    """No mux upstream of the hardware - the whole point of the rework."""
+    names = {a.module.__name__ for a in alfred_benchmark.blueprints}
+    assert "MovementManager" not in names
+    assert "DanHolonomicTC" not in names
