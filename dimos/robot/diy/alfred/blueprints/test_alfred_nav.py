@@ -262,3 +262,54 @@ def test_nav_and_autotune_agree_on_where_the_artifact_lives() -> None:
     from dimos.robot.diy.alfred.blueprints.alfred_autotune import ALFRED_ARTIFACT_PATH
 
     assert ALFRED_ARTIFACT_PATH == ALFRED_FOLLOWER_ARTIFACT
+
+
+def test_the_planner_is_given_alfreds_real_size() -> None:
+    """The constants must not fall below what the URDF says the robot is.
+
+    The MLS planner's wall_clearance is a HARD clearance measured from base_link,
+    and its robot_height is the headroom a cell needs to be standable. Both were
+    set well under Alfred: 0.20 m clearance against a 0.255 m inscribed radius -
+    the distance at which it collides whatever its yaw - and 0.5 m of headroom
+    for a 1.86 m machine.
+
+    Re-derived from the collision scene rather than pinned to a literal, so a
+    change to the URDF fails here instead of on a wall.
+    """
+    import numpy as np
+    import yourdfpy
+
+    from dimos.robot.diy.alfred.alfred_model import (
+        ALFRED_FOOTPRINT_RADIUS_M,
+        ALFRED_HEIGHT_M,
+        ALFRED_V1_MODEL,
+    )
+
+    loaded = ALFRED_V1_MODEL.load()
+    urdf = yourdfpy.URDF.load(
+        loaded.source_path, build_collision_scene_graph=True, load_collision_meshes=True
+    )
+    bounds = urdf.collision_scene.bounds
+    # Worst xy corner: the circumscribed radius, which is what a circular
+    # footprint needs when the robot can sit at any yaw.
+    measured_radius = max(float(np.hypot(x, y)) for x in bounds[:, 0] for y in bounds[:, 1])
+    measured_height = float(bounds[1, 2])
+
+    assert ALFRED_FOOTPRINT_RADIUS_M >= measured_radius - 1e-3, (
+        f"clearance {ALFRED_FOOTPRINT_RADIUS_M} is under the measured "
+        f"{measured_radius:.3f} m; the planner would route Alfred through gaps it cannot fit"
+    )
+    assert ALFRED_HEIGHT_M >= measured_height - 1e-2, (
+        f"headroom {ALFRED_HEIGHT_M} is under the measured {measured_height:.3f} m"
+    )
+
+
+def test_the_planner_and_its_visualization_agree_on_clearance() -> None:
+    """A drawn clearance that is not the enforced one is worse than none."""
+    from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
+    from dimos.robot.diy.alfred.alfred_model import ALFRED_FOOTPRINT_RADIUS_M
+
+    (planner,) = _atoms(alfred_nav, MLSPlannerNative)
+    assert planner.kwargs["wall_clearance_m"] == ALFRED_FOOTPRINT_RADIUS_M
+    # ALFRED.body_height is 0.5 and is NOT the planner's headroom any more.
+    assert planner.kwargs["robot_height"] > 1.5
