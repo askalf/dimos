@@ -334,6 +334,22 @@ class AlfredAutotuneDriver(Module):
             self.cmd_vel.publish(Twist())
         return self._gate_action
 
+    def _edge_time(self, run: ExcitationRun) -> float:
+        """When this run's excitation actually starts, in run-relative seconds.
+
+        ``step()`` holds zero for ``t_start`` before the edge to give the fit a
+        clean baseline. The fitters do not want that baseline: they index from
+        the edge, so anything before it reads as pure deadtime. Found by scanning
+        the run's own signal rather than assuming t_start, so a ramp or deadzone
+        battery lands on its first commanded motion too.
+        """
+        dt = 1.0 / self.config.tick_hz
+        n_ticks = max(1, round(run.duration_s * self.config.tick_hz))
+        for i in range(n_ticks):
+            if abs(run.signal(i * dt)) > 0.0:
+                return i * dt
+        return 0.0
+
     def _segment(self, run: ExcitationRun) -> tuple[np.ndarray, np.ndarray, float] | None:
         """Close out one run's capture as a fitter segment, or None if too thin."""
         samples = self._capture(False)
@@ -345,7 +361,29 @@ class AlfredAutotuneDriver(Module):
                 needed=self.config.min_samples_per_run,
             )
             return None
+
         t, measured = project_to_axis(samples, run.channel)
+
+        # Drop the pre-step baseline. Keeping it cost the first battery its
+        # deadtime estimate: 0.5 s of flat pose ahead of the edge pinned L at the
+        # 0.30 s ceiling of DEFAULT_L_BOUNDS on all three axes, which then
+        # inflated tau until wz railed too.
+        edge = self._edge_time(run)
+        if edge > 0.0:
+            keep = t >= edge
+            if int(keep.sum()) < self.config.min_samples_per_run:
+                logger.warning(
+                    "Alfred autotune run has too little pose after its step edge; dropping it",
+                    run=run.label,
+                    after_edge=int(keep.sum()),
+                    needed=self.config.min_samples_per_run,
+                )
+                return None
+            t, measured = t[keep] - edge, measured[keep]
+            # The fitter reads an absolute displacement, so re-zero the baseline
+            # at the edge as well as the clock.
+            measured = measured - measured[0]
+
         return t, measured, float(run.amplitude)
 
     def _run(self) -> None:
@@ -440,6 +478,23 @@ class AlfredAutotuneDriver(Module):
         except Exception:
             logger.exception("Alfred autotune could not write its artifact")
             return
+
+        try:
+            raw = Path(self.config.report_path).with_name("alfred_segments.npz")
+            flat: dict[str, np.ndarray] = {}
+            for channel, segs in segments.items():
+                for i, (t, measured, amp) in enumerate(segs):
+                    flat[f"{channel}/{i}/t"] = t
+                    flat[f"{channel}/{i}/measured"] = measured
+                    flat[f"{channel}/{i}/amp"] = np.asarray(amp)
+            # numpy's stub types the second positional as bool; the **kwargs
+            # form is the documented one and works at runtime.
+            np.savez_compressed(raw, **flat)  # type: ignore[arg-type]
+            logger.info("Raw segments saved; a re-fit needs no robot", path=str(raw))
+        except Exception:
+            # The artifact is the deliverable; losing the re-fit cache is not
+            # worth failing a battery the operator just spent six minutes on.
+            logger.exception("Could not save the raw segments")
 
         logger.info(
             "Alfred autotune complete",
