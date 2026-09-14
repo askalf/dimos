@@ -50,6 +50,8 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNat
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
 from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
 from dimos.robot.diy.alfred.alfred_model import (
+    ALFRED_FOOTPRINT_RADIUS_M,
+    ALFRED_HEIGHT_M,
     ALFRED_PLANAR_BASE,
     alfred_arm_joints,
     alfred_follower_artifact,
@@ -86,7 +88,6 @@ LIDAR_FRAME = "mid360_link"
 VOXEL_SIZE_M = 0.08
 MAP_MAX_RANGE_M = 15.0  # far returns are the costliest to raytrace and the least reliable
 STEP_THRESHOLD_M = 0.06  # wheeled base: a kerb is an obstacle (Go2 uses 0.16)
-WALL_CLEARANCE_M = 0.2
 PLANNER_VIZ_HZ = 0.0  # raise to draw the planner's search (nodes, edges, surface)
 ALFRED_RERUN_ROOT = "world/alfred"
 
@@ -266,7 +267,7 @@ _rerun_config = {
         "world/path": partial(_path_colored, color=(60, 220, 120)),
         "world/coordinator_joint_state": _AlfredJointStateVisual(),
         **planner_visual_override(
-            PLANNER_VIZ_HZ, voxel_size=VOXEL_SIZE_M, wall_clearance_m=WALL_CLEARANCE_M
+            PLANNER_VIZ_HZ, voxel_size=VOXEL_SIZE_M, wall_clearance_m=ALFRED_FOOTPRINT_RADIUS_M
         ),
     },
 }
@@ -301,9 +302,16 @@ alfred_nav = (
             world_frame=ODOM_FRAME,
             base_frame="base_link",
             voxel_size=VOXEL_SIZE_M,
-            robot_height=ALFRED.body_height,
+            # The clear space a cell needs to be standable - the whole robot,
+            # 1.86 m, not ALFRED.body_height's 0.5. At 0.5 the planner would
+            # route a 1.86 m machine under a 0.6 m overhang.
+            robot_height=ALFRED_HEIGHT_M,
             start_z_offset_m=0.0,
-            wall_clearance_m=WALL_CLEARANCE_M,
+            # Cells closer than this to a wall are impassable, measured from
+            # base_link. The old 0.2 was below even the inscribed radius (0.255),
+            # the distance at which Alfred collides whatever its yaw - so the
+            # planner was routing it through gaps it cannot fit.
+            wall_clearance_m=ALFRED_FOOTPRINT_RADIUS_M,
             wall_buffer_m=0.75,
             wall_buffer_weight=100.0,
             step_threshold_m=STEP_THRESHOLD_M,

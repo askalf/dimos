@@ -91,6 +91,21 @@ ALFRED_LIFT_LOWER_M = PILLAR_MIN_POSITION_M  # -0.500, bottom stop
 ALFRED_LIFT_UPPER_M = PILLAR_MAX_POSITION_M  # -0.002, just under the top switch
 ALFRED_LIFT_LINK = "lift_link"
 
+# Alfred's own dimensions, measured off alfred_v1.urdf's collision scene at the
+# home pose. test_alfred_nav re-derives both from the URDF and fails if the
+# constants drift below what the robot actually is, so these cannot quietly rot.
+#
+# The MLS planner has a CIRCULAR footprint, and Alfred is holonomic - it can sit
+# at any yaw - so the honest hard clearance is the circumscribed radius, not the
+# inscribed one. Inscribed is 0.255: closer than that is a guaranteed collision
+# whatever the yaw. Anything between the two is a bet on favourable heading at
+# the pinch point.
+ALFRED_FOOTPRINT_RADIUS_M = 0.373  # base_link -> worst xy corner
+ALFRED_INSCRIBED_RADIUS_M = 0.255  # base_link -> nearest face
+# Top of the collision scene. This is the headroom a cell needs to be standable,
+# which is the whole robot, not the part of it near the floor.
+ALFRED_HEIGHT_M = 1.86
+
 # Joint velocity limits come from the URDF; acceleration is not in URDF, so one default.
 ALFRED_JOINT_ACCELERATION_LIMIT = 1.0
 ALFRED_V1_MODEL = (
