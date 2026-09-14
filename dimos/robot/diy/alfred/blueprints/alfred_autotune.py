@@ -57,9 +57,6 @@ from dimos.control.autotune.live import make_sinks
 from dimos.control.autotune.profile import BatteryConfig, Channel, RobotProfile
 from dimos.control.autotune.report import write_tuned_artifact
 from dimos.control.autotune.runner import autotune_offline
-from dimos.control.tasks.holonomic_pose_follower_task.holonomic_pose_follower_task import (
-    DEFAULT_ARTIFACT_PATH,
-)
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
@@ -70,7 +67,11 @@ from dimos.memory.module import Recorder, RecorderConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
-from dimos.robot.diy.alfred.alfred_model import ALFRED_BASE_VELOCITY_LIMITS
+from dimos.robot.diy.alfred.alfred_model import (
+    ALFRED_BASE_VELOCITY_LIMITS,
+    ALFRED_CHARACTERIZATION_REPORT,
+    ALFRED_FOLLOWER_ARTIFACT,
+)
 from dimos.robot.diy.alfred.config import ALFRED
 from dimos.robot.diy.alfred.effector_high_level import AlfredHighLevel
 from dimos.robot.diy.alfred.mount_tf import AlfredMountTf
@@ -83,9 +84,9 @@ LIDAR_FRAME = "mid360_link"
 
 _VX_MAX, _VY_MAX, _WZ_MAX = ALFRED_BASE_VELOCITY_LIMITS
 
-# Alongside the Go2's, which is where the follower's artifact_path already points.
-ALFRED_ARTIFACT_PATH = str(Path(DEFAULT_ARTIFACT_PATH).parent / "alfred_posedomain.json")
-ALFRED_REPORT_PATH = str(Path(DEFAULT_ARTIFACT_PATH).parent / "alfred_characterization.json")
+# alfred_model owns where these live, so alfred-nav resolves the same paths.
+ALFRED_ARTIFACT_PATH = ALFRED_FOLLOWER_ARTIFACT
+ALFRED_REPORT_PATH = ALFRED_CHARACTERIZATION_REPORT
 
 
 def alfred_autotune_profile() -> RobotProfile:

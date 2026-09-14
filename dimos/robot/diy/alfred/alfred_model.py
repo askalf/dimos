@@ -27,6 +27,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dimos.control.tasks.holonomic_pose_follower_task.holonomic_pose_follower_task import (
+    DEFAULT_ARTIFACT_PATH as _GO2_FOLLOWER_ARTIFACT,
+)
 from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.spec.config import RobotModelConfig
 from dimos.robot.assets.model import PlanarBaseDefinition, RobotModel
@@ -43,6 +46,35 @@ from dimos.robot.manipulators.openarm.config import (
     openarm_urdf_joints,
 )
 from dimos.utils.data import LfsPath
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
+
+# Where `dimos run alfred-autotune` writes what it measures, alongside the Go2's.
+_ARTIFACT_DIR = Path(_GO2_FOLLOWER_ARTIFACT).parent
+ALFRED_FOLLOWER_ARTIFACT = str(_ARTIFACT_DIR / "alfred_posedomain.json")
+ALFRED_CHARACTERIZATION_REPORT = str(_ARTIFACT_DIR / "alfred_characterization.json")
+
+
+def alfred_follower_artifact() -> str:
+    """Alfred's own plant model once autotune has written it; the Go2's until then.
+
+    The follower raises on a missing artifact, so this cannot simply point at
+    Alfred's before it exists. Resolving at blueprint-build time instead means a
+    finished autotune run is picked up on the next launch with nothing to edit,
+    and a robot that has never been characterized still starts - loudly, on a
+    quadruped's gains, which it will overshoot on.
+    """
+    if Path(ALFRED_FOLLOWER_ARTIFACT).exists():
+        return ALFRED_FOLLOWER_ARTIFACT
+    logger.warning(
+        "Alfred has no tuned artifact; the follower falls back to the Go2's plant model "
+        "and will run hot and overshoot. Produce Alfred's with: dimos run alfred-autotune "
+        "--alfredautotunedriver.armed true",
+        expected=ALFRED_FOLLOWER_ARTIFACT,
+    )
+    return _GO2_FOLLOWER_ARTIFACT
+
 
 ALFRED_DESCRIPTION_ROOT = LfsPath("alfred_description")
 ALFRED_PACKAGE_PATHS: dict[str, Path] = {
