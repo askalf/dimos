@@ -171,6 +171,9 @@ def _driver():
 
     d = AlfredAutotuneDriver.__new__(AlfredAutotuneDriver)
     d.config = AlfredAutotuneDriverConfig()
+    d._buf_lock = threading.Lock()
+    d._buf = []
+    d._capturing = False
     d._gate = threading.Event()
     d._gate_action = GATE_ADVANCE
     d._relaying = False
@@ -246,3 +249,55 @@ def test_the_viewer_supplies_both_the_gate_and_the_hands() -> None:
     streams = {s.name: s.direction for s in driver.streams}
     assert streams.get("clicked_point") == "in"
     assert streams.get("tele_cmd_vel") == "in"
+
+
+def _capture_with_baseline(edge_s: float, rate_hz: float = ODOM_HZ):
+    """What the driver actually captures: flat pose, then the step response."""
+    _, _, pose = synth_step(
+        0.9,
+        0.4,
+        0.05,
+        amp=0.25,
+        duration_s=3.0,
+        model=MeasurementModel(rate_hz=rate_hz, noise_std=0.0),
+    )
+    n_flat = round(edge_s * rate_hz)
+    xs = np.concatenate([np.zeros(n_flat), pose])
+    return _samples(xs, np.zeros(xs.size), np.zeros(xs.size))
+
+
+def test_the_pre_step_baseline_is_trimmed_before_fitting() -> None:
+    """Regression: the first hardware battery railed its deadtime on this.
+
+    step() holds zero for t_start before the edge. Handing that baseline to the
+    fitter reads as pure deadtime - 0.5 s of it pinned L at the 0.30 s ceiling of
+    DEFAULT_L_BOUNDS on all three axes, and the inflated tau took wz to its
+    ceiling too.
+    """
+    from dimos.control.autotune.fit.pose_fopdt import DEFAULT_L_BOUNDS
+
+    d = _driver()
+    run = step_battery(alfred_autotune_profile(), duration_s=3.0)[0]
+    edge = d._edge_time(run)
+    assert edge > 0.0, "this battery has no pre-step dwell, so the test proves nothing"
+
+    d._buf = _capture_with_baseline(edge)
+    d._capturing = True
+    t, measured, _ = d._segment(run)
+
+    assert t[0] == pytest.approx(0.0), "segment does not start at the step edge"
+    assert measured[0] == pytest.approx(0.0, abs=1e-9), "baseline not re-zeroed at the edge"
+    # The whole failure was a deadtime of the dwell's length being inferred.
+    assert edge > DEFAULT_L_BOUNDS[1], (
+        "the dwell is inside the deadtime bounds, so railing would not have been the symptom"
+    )
+
+
+def test_the_edge_is_found_from_the_signal_not_assumed() -> None:
+    """A ramp or deadzone battery has a different edge; scanning finds it anyway."""
+    d = _driver()
+    run = step_battery(alfred_autotune_profile(), duration_s=3.0)[0]
+
+    edge = d._edge_time(run)
+    assert run.signal(edge) != 0.0, "the found edge is not commanding anything"
+    assert run.signal(edge - 1.0 / d.config.tick_hz) == 0.0, "there is motion before the edge"
