@@ -22,6 +22,7 @@ from typing import Any, cast
 
 import pytest
 
+from dimos.control.components import HardwareType
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
 from dimos.core.coordination.blueprints import Blueprint
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
@@ -30,11 +31,13 @@ from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.robot.diy.alfred.alfred_model import (
     ALFRED_LIFT_LOWER_M,
     ALFRED_LIFT_UPPER_M,
+    ALFRED_PLANAR_BASE,
+    alfred_arm_joints,
     alfred_joint_names,
     alfred_model_config,
     alfred_rerun_urdf,
 )
-from dimos.robot.diy.alfred.blueprints.alfred_nav import alfred_nav
+from dimos.robot.diy.alfred.blueprints.alfred_nav import ALFRED_BASE_HARDWARE_ID, alfred_nav
 from dimos.robot.diy.alfred.blueprints.alfred_sim import alfred_sim
 from dimos.robot.diy.alfred.effector_high_level import AlfredHighLevel
 from dimos.robot.diy.alfred.mount_tf import AlfredMountTf, mount_transforms
@@ -70,20 +73,68 @@ def _lfs_archive_available() -> bool:
         return False
 
 
-def test_alfred_nav_keeps_the_base_out_of_the_coordinator() -> None:
-    """AlfredHighLevel owns the FlowBase (Portal + wheel odom); the coordinator must not."""
+def test_alfred_nav_leaves_the_flowbase_to_alfred_high_level() -> None:
+    """The coordinator plans for the base but must never be a second Portal writer.
+
+    Locomanipulation needs the base in the coordinator so a whole-body plan can move it,
+    but AlfredHighLevel still owns the hardware: the coordinator's base is a transport
+    adapter that only publishes a twist for MovementManager to mux.
+    """
     assert _atoms(alfred_nav, AlfredHighLevel), "navigation base owner missing"
-    hardware_ids = {hw.hardware_id for hw in _coordinator_kwargs(alfred_nav)["hardware"]}
-    assert hardware_ids == {PILLAR_HARDWARE_ID, OPENARM_HARDWARE_ID}
+    hardware = {hw.hardware_id: hw for hw in _coordinator_kwargs(alfred_nav)["hardware"]}
+    assert set(hardware) == {PILLAR_HARDWARE_ID, OPENARM_HARDWARE_ID, ALFRED_BASE_HARDWARE_ID}
+
+    base = hardware[ALFRED_BASE_HARDWARE_ID]
+    assert base.hardware_type is HardwareType.BASE
+    # "flowbase" would open a second Portal client against the same base driver.
+    assert base.adapter_type == "transport_lcm"
+
+
+def test_alfred_nav_routes_the_planned_base_twist_through_movement_manager() -> None:
+    """The base adapter's raw topics must meet the module streams that face them."""
+    topics = {name: spec.args[0] for (name, _type), spec in alfred_nav.transport_map.items()}
+    assert topics["manip_cmd_vel"] == f"/{ALFRED_BASE_HARDWARE_ID}/cmd_vel"
+    # Odometry feedback for the base trajectory task is StartRelay's pose.
+    assert topics["start_pose"] == f"/{ALFRED_BASE_HARDWARE_ID}/odom"
+
+
+def test_alfred_nav_splits_a_whole_body_plan_between_the_two_trajectory_tasks() -> None:
+    (atom,) = _atoms(alfred_nav, ManipulationModule)
+    split = atom.kwargs["trajectory_tasks"]
+    assert set(split["base_trajectory"]) == set(ALFRED_PLANAR_BASE.joint_names)
+    assert PILLAR_LIFT_JOINT in split["joint_trajectory"]
+    assert not set(split["joint_trajectory"]) & set(ALFRED_PLANAR_BASE.joint_names)
+
+    # The coordinator names the base joints differently from the planner; the alias keeps
+    # a plan's base coordinates and the hardware's twist joints the same three numbers.
+    aliases = atom.kwargs["joint_state_aliases"]
+    assert set(aliases.values()) == set(ALFRED_PLANAR_BASE.joint_names)
 
 
 def test_alfred_nav_tasks_cover_lift_and_both_arms() -> None:
-    (task,) = cast("list[TaskConfig]", _coordinator_kwargs(alfred_nav)["tasks"])
-    assert task.type == "trajectory"
+    tasks = cast("list[TaskConfig]", _coordinator_kwargs(alfred_nav)["tasks"])
+    (task,) = [t for t in tasks if t.type == "trajectory"]
     assert set(task.joint_names) == set(alfred_joint_names())
     limits = task.params["velocity_limits"]
     assert set(limits) == set(task.joint_names)
     assert limits[PILLAR_LIFT_JOINT] == 0.1
+
+
+def test_alfred_nav_holds_the_arms_under_the_trajectory_task() -> None:
+    """A driving base must not swing the arms, but a plan still outranks the hold."""
+    tasks = cast("list[TaskConfig]", _coordinator_kwargs(alfred_nav)["tasks"])
+    (hold,) = [t for t in tasks if t.type == "joint_hold"]
+    (trajectory,) = [t for t in tasks if t.type == "trajectory"]
+
+    # Arms only: the lift is a braked leadscrew and does not swing.
+    assert set(hold.joint_names) == set(alfred_arm_joints())
+    assert PILLAR_LIFT_JOINT not in hold.joint_names
+    assert hold.priority < trajectory.priority
+
+
+def test_alfred_nav_feeds_the_hold_the_muxed_base_twist() -> None:
+    """hold_arms only knows the base is moving if cmd_vel reaches the coordinator."""
+    assert alfred_nav.remapping_map[("ControlCoordinator", "twist_command")] == "cmd_vel"
 
 
 def test_alfred_nav_runs_on_lidar_odometry() -> None:

@@ -27,16 +27,21 @@ viewer. Transport is pinned to LCM because the Point-LIO C++ native does not spe
 from __future__ import annotations
 
 from functools import partial
+import math
 import os
 from typing import Any
 
-from dimos.control.components import HardwareComponent
+from dimos.control.components import HardwareComponent, HardwareType, make_twist_base_joints
 from dimos.control.coordinator import ControlCoordinator, TaskConfig
+from dimos.control.tasks.joint_hold_task.joint_hold_task import joint_hold_task
 from dimos.control.tasks.trajectory_task.trajectory_task import joint_trajectory_task
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
+from dimos.core.transport import LCMTransport
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
 from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
 from dimos.navigation.movement_manager.movement_manager import MovementManager
@@ -44,8 +49,9 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNat
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
 from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
 from dimos.robot.diy.alfred.alfred_model import (
+    ALFRED_PLANAR_BASE,
     alfred_arm_joints,
-    alfred_model_config,
+    alfred_planar_model_config,
     alfred_rerun_urdf,
 )
 from dimos.robot.diy.alfred.blueprints.pillar import (
@@ -90,14 +96,46 @@ def _openarm_hardware_from_env() -> HardwareComponent:
     )
 
 
+ALFRED_BASE_HARDWARE_ID = "flowbase"
+BASE_TRAJECTORY_TASK_NAME = "base_trajectory"
+JOINT_TRAJECTORY_TASK_NAME = "joint_trajectory"
+# The coordinator does not own the FlowBase: it publishes a twist that MovementManager
+# muxes, so AlfredHighLevel stays the only writer. Odometry comes back on the same
+# hardware's odom topic, which `.transports()` below points at StartRelay's start_pose.
+_flowbase_hardware = HardwareComponent(
+    hardware_id=ALFRED_BASE_HARDWARE_ID,
+    hardware_type=HardwareType.BASE,
+    joints=make_twist_base_joints(ALFRED_BASE_HARDWARE_ID),
+    adapter_type="transport_lcm",
+    auto_enable=True,
+)
+_BASE_VX_LIMIT, _BASE_VY_LIMIT, _BASE_WZ_LIMIT = ALFRED_PLANAR_BASE.velocity_limits
+
+
 def alfred_manipulation_tasks() -> list[TaskConfig]:
-    """One trajectory task for arms and lift; a limit is required per joint once any is set."""
+    """Arms and lift on one trajectory task, plus a hold that catches the arms.
+
+    The hold claims only the arms, at a lower priority than the trajectory task, so a
+    plan always wins them and the hold is what is left when nothing else is driving.
+    The lift is left out: it is a leadscrew under its own brake and does not swing.
+    """
     return [
         joint_trajectory_task(
             [*alfred_arm_joints(), PILLAR_LIFT_JOINT],
             velocity_limits={
                 **dict.fromkeys(alfred_arm_joints(), ARM_VELOCITY_LIMIT_RAD_S),
                 PILLAR_LIFT_JOINT: PILLAR_LIFT_VELOCITY_LIMIT_M_S,
+            },
+        ),
+        joint_hold_task(alfred_arm_joints(), name="hold_arms"),
+        TaskConfig(
+            name=BASE_TRAJECTORY_TASK_NAME,
+            type="planar_base_trajectory",
+            joint_names=list(_flowbase_hardware.joints),
+            # The planner limits x and y separately, so a diagonal may exceed either.
+            params={
+                "max_linear": math.hypot(_BASE_VX_LIMIT, _BASE_VY_LIMIT),
+                "max_angular": _BASE_WZ_LIMIT,
             },
         ),
     ]
@@ -226,16 +264,45 @@ alfred_nav = (
         MovementManager.blueprint(),
         PillarConnection.blueprint(),
         planner(
-            model=alfred_model_config(),
+            model=alfred_planar_model_config(),
             visualization={"backend": "viser"},
+            # The coordinator knows the base as three twist joints; the planner knows it
+            # as three planar coordinates. Same three numbers, different names.
+            joint_state_aliases=dict(
+                zip(_flowbase_hardware.joints, ALFRED_PLANAR_BASE.joint_names, strict=True)
+            ),
+            # Splits a whole-body plan: arms and lift to the trajectory task, the base to
+            # the planar base task. Either side aborting cancels the other.
+            trajectory_tasks={
+                JOINT_TRAJECTORY_TASK_NAME: [*alfred_arm_joints(), PILLAR_LIFT_JOINT],
+                BASE_TRAJECTORY_TASK_NAME: list(ALFRED_PLANAR_BASE.joint_names),
+            },
         ),
+        # MovementManager's cmd_vel is the muxed teleop-over-navigation twist, and the
+        # only place the base's actual motion is visible to the coordinator; hold_arms
+        # reads it. There is no BASE hardware here, so the coordinator's own twist ->
+        # base-joint mapping stays a no-op.
         ControlCoordinator.blueprint(
             instance_name="ControlCoordinator",
-            hardware=[pillar_hardware(), _openarm_hardware_from_env()],
+            hardware=[pillar_hardware(), _openarm_hardware_from_env(), _flowbase_hardware],
             tasks=alfred_manipulation_tasks(),
-        ),
+        ).remappings([(ControlCoordinator, "twist_command", "cmd_vel")]),
     )
-    .transports(dict(PILLAR_MOTOR_TRANSPORTS))
+    .transports(
+        {
+            **dict(PILLAR_MOTOR_TRANSPORTS),
+            # The base hardware's transport adapter owns two raw topics derived from its
+            # hardware_id. Bind the module streams that face them onto the same names:
+            # the coordinator's base twist becomes MovementManager's manipulation input,
+            # and StartRelay's pose becomes the adapter's odometry feedback.
+            ("manip_cmd_vel", Twist): LCMTransport.spec(
+                f"/{ALFRED_BASE_HARDWARE_ID}/cmd_vel", Twist
+            ),
+            ("start_pose", PoseStamped): LCMTransport.spec(
+                f"/{ALFRED_BASE_HARDWARE_ID}/odom", PoseStamped
+            ),
+        }
+    )
     # Point-LIO is a C++ native and speaks LCM only; the Rust natives accept either.
     .global_config(n_workers=12, robot_model="alfred", transport="lcm")
 )
