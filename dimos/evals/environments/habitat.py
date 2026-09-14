@@ -20,20 +20,21 @@ import json
 import math
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import model_validator
 
-from dimos.evals.environments.backend_spec import SimLaunchSpec
+from dimos.evals.environments.sim import Sim, SimConfig
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.protocol.service.spec import BaseConfig
 
 if TYPE_CHECKING:
+    from dimos.e2e_tests.dimos_cli_call import DimosCliCall
+    from dimos.evals.agents.base import Agent
     from dimos.memory.store.base import Store
     from dimos.simulation.habitat.connection import HabitatConnectionConfig
 
 
-class HabitatEvalConfig(BaseConfig):
+class HabitatEnvironmentConfig(SimConfig):
     """Scene overrides; None preserves HabitatConnectionConfig's current default.
 
     Paths must resolve in the Habitat subprocess. scene_id is the dataset's
@@ -53,21 +54,25 @@ class HabitatEvalConfig(BaseConfig):
     executable: str | None = None
 
     @model_validator(mode="after")
-    def finite_spawn(self) -> HabitatEvalConfig:
+    def finite_spawn(self) -> HabitatEnvironmentConfig:
         values = (*(self.start_position_ros or ()), self.start_yaw_deg)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Habitat spawn and yaw must be finite")
+        if self.attach:
+            raise ValueError("Habitat evals require fresh launches; attach is not supported")
         return self
 
 
-class HabitatEvalBackend:
-    """SimBackendSpec implementation. Sim owns processes and recording resources."""
+class HabitatEnvironment(Sim):
+    """Habitat scene settings; Sim owns processes, MCP, recordings and cleanup."""
 
-    def __init__(self, config: HabitatEvalConfig) -> None:
-        self.config = config
+    config: HabitatEnvironmentConfig
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self._spawn: PoseStamped | None = None
 
-    def preflight(self) -> None:
+    def preflight(self, agent: Agent) -> None:
         """Check scene inputs and the existing native build/install prerequisites.
 
         Reuse HabitatConnection's build flow. Do not require the separate
@@ -79,26 +84,31 @@ class HabitatEvalBackend:
                 raise FileNotFoundError(path)
         if self.config.executable is not None and not Path(self.config.executable).is_file():
             raise FileNotFoundError(self.config.executable)
+        super().preflight(agent)
 
     def connection_config(self) -> HabitatConnectionConfig:
         """Resolve overrides against existing sensor defaults, without semantic access."""
         from dimos.simulation.habitat.connection import HabitatConnectionConfig
 
-        overrides = self.config.model_dump(exclude_none=True)
+        fields = HabitatEnvironmentConfig.model_fields.keys() - SimConfig.model_fields.keys()
+        overrides = self.config.model_dump(include=fields, exclude_none=True)
         if "scene_dataset_config" in overrides and overrides["scene_dataset_config"] != "default":
             overrides["scene_dataset_config"] = str(
                 Path(overrides["scene_dataset_config"]).expanduser().resolve()
             )
         return HabitatConnectionConfig(**overrides, publish_semantic=False)
 
-    def launch_spec(self) -> SimLaunchSpec:
+    def configure_launch(self, proc: DimosCliCall) -> None:
         """Supply scene overrides and recording selection, not a skill or planner API.
 
-        Sim.blueprint owns the robot/navigation/skill composition, as for DimSim.
+        The case owns the robot/navigation/skill composition, as for DimSim.
         HabitatConnection consumes its Twist commands and publishes observations.
         """
         config = self.connection_config()
-        fields = (*HabitatEvalConfig.model_fields, "publish_semantic")
+        fields = (
+            *sorted(HabitatEnvironmentConfig.model_fields.keys() - SimConfig.model_fields.keys()),
+            "publish_semantic",
+        )
         environment = [("DIMOS_TRANSPORT", "zenoh")]
         for name in fields:
             value = getattr(config, name)
@@ -108,32 +118,35 @@ class HabitatEvalBackend:
                     value if isinstance(value, str) else json.dumps(value),
                 )
             )
-        return SimLaunchSpec(
-            blueprint=(),
-            simulation_flag=None,
-            # Keep RGB, the derived point cloud, pose, maps and navigation
-            # traces. Raw depth is used internally, not stored by this eval.
-            global_args=(
-                "--record-topics",
-                ",".join(
-                    (
-                        "color_image",
-                        "camera_info",
-                        "habitat_scan",
-                        "odometry",
-                        "tf",
-                        "local_map",
-                        "global_map",
-                        "goal",
-                        "path",
-                        "cmd_vel",
-                        "stop_movement",
-                        "goal_reached",
-                    )
-                ),
+        proc.simulator = None
+        # Keep RGB, the derived point cloud, pose, maps and navigation
+        # traces. Raw depth is used internally, not stored by this eval.
+        proc.global_args = [
+            "--record-topics",
+            ",".join(
+                (
+                    "color_image",
+                    "camera_info",
+                    "habitat_scan",
+                    "odometry",
+                    "tf",
+                    "local_map",
+                    "global_map",
+                    "goal",
+                    "path",
+                    "cmd_vel",
+                    "stop_movement",
+                    "goal_reached",
+                )
             ),
-            environment=tuple(environment),
-        )
+        ]
+        proc.extra_env.update(dict(environment))
+
+    def prepare_recording(self, recording: Store, path: Path, deadline: float) -> dict[str, Path]:
+        self.wait_ready(recording, deadline=deadline)
+        metadata = path.parent / "habitat_episode.json"
+        metadata.write_text(json.dumps(self.episode_metadata(), indent=2))
+        return {"episode": metadata}
 
     def wait_ready(self, recording: Store, *, deadline: float) -> None:
         """Wait for fresh observations; Sim separately checks the MCP endpoint."""
@@ -174,7 +187,7 @@ class HabitatEvalBackend:
             "connection_overrides": config.model_dump(
                 mode="json",
                 include={
-                    *HabitatEvalConfig.model_fields,
+                    *(HabitatEnvironmentConfig.model_fields.keys() - SimConfig.model_fields.keys()),
                     "publish_semantic",
                 },
             ),

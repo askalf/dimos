@@ -12,19 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2026 Dimensional Inc.
-# SPDX-License-Identifier: Apache-2.0
-
 """Observation smoke using existing dimos modules, not a navigation benchmark.
 
     dimos evals run dimos.evals.suites.habitat_smoke --agent dimos.evals.agents.pi
 
-Use build_suite(HabitatEvalConfig(scene_dataset_config=..., scene_id=...)) in
+Use build_suite(scene_dataset_config=..., scene_id=...) in
 another suite module to select a downloaded scene. Defaults match habitat-nav.
 """
 
-from dimos.evals.environments.habitat_spec import HabitatEvalConfig
-from dimos.evals.environments.sim import Sim
+from dimos.evals.environments.habitat import HabitatEnvironment
 from dimos.evals.types import EvalCase, Outcome, Suite, recording
 
 
@@ -36,13 +32,13 @@ def sensor_score(outcome: Outcome) -> float:
             return 0.0
         try:
             for name in required:
-                _ = getattr(store.streams, name).last().data  # Force lazy payload decoding.
+                getattr(store.streams, name).last().data  # noqa: B018 - force lazy decoding
         except LookupError:
             return 0.0
         return 1.0
 
 
-def build_suite(config: HabitatEvalConfig | None = None) -> Suite:
+def build_suite(*, scene_dataset_config: str | None = None, scene_id: str | None = None) -> Suite:
     return [
         EvalCase(
             id="habitat_observe",
@@ -50,9 +46,9 @@ def build_suite(config: HabitatEvalConfig | None = None) -> Suite:
                 "Use the available observation tool to inspect the scene. "
                 "Briefly describe what you see."
             ),
-            environment=Sim(
-                simulator="habitat",
-                habitat=config or HabitatEvalConfig(),
+            environment=HabitatEnvironment(
+                scene_dataset_config=scene_dataset_config,
+                scene_id=scene_id,
                 blueprint=["habitat-nav", "mcp-server", "observe-skill"],
             ),
             grade=sensor_score,

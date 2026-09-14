@@ -16,8 +16,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-import json
+from abc import abstractmethod
+from collections.abc import Sequence
 import math
 from pathlib import Path
 import time
@@ -26,10 +26,8 @@ from typing import TYPE_CHECKING, Any
 from dimos.agents.mcp.mcp_adapter import McpAdapter
 from dimos.constants import RECORDINGS_DIR
 from dimos.core.run_registry import list_runs
-from dimos.e2e_tests.dim_sim_client import DimSimClient
 from dimos.e2e_tests.dimos_cli_call import DimosCliCall
 from dimos.evals.environments.base import Environment
-from dimos.evals.environments.habitat_spec import HabitatEvalBackend, HabitatEvalConfig
 from dimos.evals.environments.lib.launch import default_mcp_url, validate_blueprints
 from dimos.evals.types import RunningEnvironment
 from dimos.protocol.service.spec import BaseConfig
@@ -37,16 +35,13 @@ from dimos.protocol.service.spec import BaseConfig
 if TYPE_CHECKING:
     from dimos.evals.agents.base import Agent
     from dimos.memory.store.base import Store
+    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 
 class SimConfig(BaseConfig):
-    blueprint: list[str] = []
+    blueprint: list[str]
     # Module registry names to disable in the composed blueprint.
     disable: tuple[str, ...] = ()
-    simulator: str = "dimsim"
-    scene: str = "apartment"
-    habitat: HabitatEvalConfig | None = None
-    setup: Callable[[DimSimClient], None] | None = None
     attach: bool = False
     launch_timeout_s: float = 1200.0
     at_rest_m: float = 0.05
@@ -68,20 +63,21 @@ class Sim(Environment):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._recording: Store | None = None
-        self._backend: HabitatEvalBackend | None = None
-        if self.config.simulator == "habitat":
-            habitat = self.config.habitat or HabitatEvalConfig()
-            if "scene" in self.config.model_fields_set:
-                if habitat.scene_id is not None and habitat.scene_id != self.config.scene:
-                    raise ValueError("scene and habitat.scene_id must agree")
-                habitat = habitat.model_copy(update={"scene_id": self.config.scene})
-            self._backend = HabitatEvalBackend(habitat)
-            if self.config.setup is not None or self.config.attach:
-                raise ValueError(
-                    "Habitat evals use fresh launches and Habitat configuration, not DimSim setup/attach"
-                )
-        elif self.config.habitat is not None:
-            raise ValueError("habitat configuration requires simulator='habitat'")
+
+    @abstractmethod
+    def configure_launch(self, proc: DimosCliCall) -> None:
+        """Set simulator flags/environment on the owned process before launch."""
+
+    def setup_scene(self) -> None:
+        """Apply optional simulator setup after MCP is ready, before recording discovery."""
+
+    def prepare_recording(self, recording: Store, path: Path, deadline: float) -> dict[str, Path]:
+        """Wait for simulator observations and return extra artifacts, if needed."""
+        return {}
+
+    @abstractmethod
+    def latest_pose(self, recording: Store) -> PoseStamped:
+        """Return achieved pose for settling; raise LookupError before the first sample."""
 
     def preflight(self, agent: Agent) -> None:
         if self.config.attach:
@@ -94,14 +90,7 @@ class Sim(Environment):
             if not McpAdapter(mcp_url).wait_for_ready(timeout=2.0):
                 raise RuntimeError(f"attach needs a running dimos at {mcp_url}")
             return
-        if self._backend is not None:
-            if not self.config.blueprint:
-                raise ValueError("Habitat evals require a dimos blueprint composition")
-            self._backend.preflight()
-        backend_names = self._backend.launch_spec().blueprint if self._backend else ()
-        validate_blueprints(
-            (*backend_names, *self.config.blueprint, *agent.config.modules, *self.config.disable)
-        )
+        validate_blueprints((*self.config.blueprint, *agent.config.modules, *self.config.disable))
 
     def start(self, modules: Sequence[str]) -> RunningEnvironment:
         # SQLite memory codecs are only needed for a running simulator.
@@ -109,28 +98,17 @@ class Sim(Environment):
 
         deadline = time.monotonic() + self.config.launch_timeout_s
         pid = None
+        proc = None
         if not self.config.attach:
             proc = DimosCliCall()
-            backend_names: tuple[str, ...] = ()
-            module_args: tuple[str, ...] = ()
-            if self._backend is not None:
-                launch = self._backend.launch_spec()
-                proc.simulator = launch.simulation_flag
-                proc.global_args = [*launch.global_args, "--record"]
-                proc.extra_env.update(dict(launch.environment))
-                backend_names = launch.blueprint
-                module_args = launch.module_args
-            else:
-                proc.simulator = self.config.simulator
-                proc.global_args = ["--dimsim-scene", self.config.scene, "--record"]
+            self.configure_launch(proc)
+            proc.global_args.append("--record")
             disabled = [arg for name in self.config.disable for arg in ("--disable", name)]
             proc.demo_args = [
                 "run",
-                *backend_names,
                 *self.config.blueprint,
                 *modules,
                 *disabled,
-                *module_args,
             ]
             self._resources.callback(proc.stop)
             proc.start()
@@ -138,7 +116,7 @@ class Sim(Environment):
             pid = proc.process.pid
         mcp_url = default_mcp_url()
         adapter = McpAdapter(mcp_url)
-        if self._backend is not None:
+        if proc is not None:
             process = proc.process
             assert process is not None
             while not adapter.wait_for_ready(
@@ -146,26 +124,20 @@ class Sim(Environment):
             ):
                 if process.poll() is not None:
                     raise RuntimeError(
-                        f"Habitat eval process exited with code {process.returncode}"
+                        f"Simulator eval process exited with code {process.returncode}"
                     )
                 if time.monotonic() >= deadline:
-                    raise TimeoutError(f"MCP at {mcp_url} not ready before Habitat launch deadline")
+                    raise TimeoutError(
+                        f"MCP at {mcp_url} not ready before simulator launch deadline"
+                    )
         elif not adapter.wait_for_ready(timeout=self.config.launch_timeout_s, interval=2.0):
             raise RuntimeError(f"MCP at {mcp_url} not ready — is dimos up?")
-        if self.config.setup is not None:
-            sim = DimSimClient()
-            self._resources.callback(sim.stop)
-            sim.start()
-            self.config.setup(sim)
+        self.setup_scene()
         path = self._wait_recording(deadline, pid)
         self._recording = SqliteStore(path=str(path), must_exist=True)
         self._resources.callback(self._recording.stop)
         artifacts = {"recording": path}
-        if self._backend is not None:
-            self._backend.wait_ready(self._recording, deadline=deadline)
-            metadata = path.parent / "habitat_episode.json"
-            metadata.write_text(json.dumps(self._backend.episode_metadata(), indent=2))
-            artifacts["episode"] = metadata
+        artifacts.update(self.prepare_recording(self._recording, path, deadline))
         return RunningEnvironment(mcp_url=mcp_url, streams=(), artifacts=artifacts)
 
     def _wait_recording(self, deadline: float, pid: int | None) -> Path:
@@ -188,18 +160,12 @@ class Sim(Environment):
         """Wait until the robot is at rest after skills that start asynchronous motion."""
         if self._recording is None:
             return
-        if self._backend is None and "odom" not in self._recording.streams:
-            return
         anchor = None
         anchor_t = 0.0
         deadline = time.monotonic() + budget_s
         while time.monotonic() < deadline:
             try:
-                pose = (
-                    self._backend.latest_pose(self._recording)
-                    if self._backend
-                    else self._recording.streams.odom.last().data
-                )
+                pose = self.latest_pose(self._recording)
             except LookupError:
                 return
             position = pose.position
