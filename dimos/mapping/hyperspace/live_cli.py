@@ -134,6 +134,11 @@ def main(
         "--tower-device",
         help="where the text towers run; 'cpu' keeps the card for the detector",
     ),
+    dtype: str = typer.Option(
+        DetectConfig.dtype,
+        "--dtype",
+        help="detector precision: '' for float32, or fp16 (2x on CUDA). bf16 moves scores",
+    ),
 ) -> None:
     """Answer each query the way the live module would, and write a page per query."""
     recording_path = recording_path.expanduser()
@@ -160,6 +165,7 @@ def main(
                 max_episodes=max_episodes,
                 world_frame=world_frame,
                 depth2depth=depth2depth,
+                dtype=dtype,
             ),
             models=wanted,
             merge_m=merge_m,

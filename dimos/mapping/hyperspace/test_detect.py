@@ -1149,3 +1149,21 @@ def test_far_depth_survives_the_read_so_the_cut_off_can_be_reported(
     assert float(depth[0, 0]) == pytest.approx(40.0), "not zeroed on the way out"
     found = object_points((28.0, 20.0, 36.0, 28.0), (WIDTH, HEIGHT), depth, intrinsics())
     assert not found and "past the 10 m cut-off" in found.why
+
+
+def test_a_detector_precision_is_named_or_refused() -> None:
+    """A typo'd dtype must say so, not quietly run float32.
+
+    The whole point of the knob is a measured 2x on CUDA; a silent fallback looks exactly
+    like a speedup that did not arrive, which is the most expensive kind of bug to chase.
+    """
+    import pytest
+    import torch
+
+    from dimos.mapping.hyperspace.detect import DetectConfig, _torch_dtype
+
+    assert DetectConfig.dtype == "", "float32 stays the default until fp16 is validated"
+    assert _torch_dtype("fp16") is torch.float16
+    assert _torch_dtype("bf16") is torch.bfloat16
+    with pytest.raises(ValueError, match="unknown detector dtype"):
+        _torch_dtype("float8")

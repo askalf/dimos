@@ -93,9 +93,20 @@ class DetectConfig:
     # measured on this Mac and LOST: OWLv2 pads every frame to 960x960, so the cost is
     # per pixel and there is little per-call overhead to amortize, while the bigger
     # activation tensor pushes MPS around -- 275 ms a frame at 1, 300 at 4, 514 at 12.
-    # The knob stays because a CUDA box with headroom is the case where it should win;
-    # raise it there and measure before believing it.
+    # MEASURED ON CUDA TOO, 2026-09-14, and it loses there as well -- on an RTX 5070 with
+    # 720p frames: batch 1 = 784 ms/frame at 1.9 GB, 2 = 765 at 3.7, 4 = 780 at 6.2, and
+    # 8 is out of memory. Flat, for the same reason it was flat on the Mac. The knob
+    # stays, but nobody should expect it to pay.
     batch: int = 1
+    # Precision for the detector's forward pass. "" leaves it at the detector's own
+    # float32. MEASURED on an RTX 5070 over eight real frames from the bike ride, forward
+    # pass only: fp32 439 ms, fp16 222 ms (2.0x), bf16 240 ms.
+    #
+    # fp16, not bf16, and the reason is the threshold. bf16 has three fewer mantissa bits
+    # and every one of those eight scores came back 0.03-0.08 LOW (0.797 -> 0.751,
+    # 0.685 -> 0.610), which is enough to drop a box under the 0.5 acceptance cut and
+    # lose a real answer. fp16 held seven of the eight within 0.008.
+    dtype: str = ""
     # Episodes considered before the strongest `max_episodes` of them are detected.
     # Only bounds the work of placing them; a query with more candidates than this is
     # already answering about a very common thing.
@@ -572,6 +583,27 @@ class RecordingFrames:
         return filled
 
 
+def _torch_dtype(name: str) -> Any:
+    """`"fp16"` -> `torch.float16`, and a wrong name says so rather than running fp32.
+
+    Silently falling back would look exactly like a speedup that failed to arrive.
+    """
+    import torch
+
+    known = {
+        "fp16": torch.float16,
+        "float16": torch.float16,
+        "half": torch.float16,
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp32": torch.float32,
+        "float32": torch.float32,
+    }
+    if name not in known:
+        raise ValueError(f"unknown detector dtype {name!r}; one of {sorted(known)}")
+    return known[name]
+
+
 def _holes_as_zero(metres: NDArray[np.float32]) -> NDArray[np.float32]:
     """Zero where the sensor said nothing. Everything it did say is kept.
 
@@ -600,6 +632,8 @@ class Owlv2Boxes:
             settings: dict[str, Any] = {"model_name": self.config.checkpoint}
             if self.config.device:
                 settings["device"] = self.config.device
+            if self.config.dtype:
+                settings["dtype"] = _torch_dtype(self.config.dtype)
             self._detector = Owlv2Detector(**settings)
         return self._detector
 
