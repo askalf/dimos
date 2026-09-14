@@ -461,6 +461,19 @@ class ManipulationModule(Module):
             ExecutionStatus.EXECUTING,
         }:
             self.wait_for_execution(timeout=0.0)
+            return
+
+        # The manager can reach a terminal status with nobody left to apply it: a
+        # nonblocking execute() returns immediately, and if no caller waits before the
+        # motion ends, the result is only ever cached. The guard above then refuses to
+        # poll precisely because the manager already finished, so _state stays EXECUTING
+        # for the life of the module. Every later plan is refused by can_plan() with the
+        # Plan button disabled and no error to explain it. wait(0.0) on a finished run
+        # returns that cached terminal result, so this costs one poll and never blocks.
+        with self._lock:
+            stranded = self._state is ManipulationState.EXECUTING
+        if stranded:
+            self.wait_for_execution(timeout=0.0)
 
     def get_error(self) -> str:
         """Get last error message.
