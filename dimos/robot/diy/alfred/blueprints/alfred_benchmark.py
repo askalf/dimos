@@ -78,6 +78,8 @@ LIDAR_FRAME = "mid360_link"
 ALFRED_BASE_HARDWARE_ID = "flowbase"
 BASE_VELOCITY_TASK_NAME = "vel_flowbase"
 NAV_FOLLOWER_TASK_NAME = "holonomic_follower"
+# Fraction of vmax the corner regulator may not throttle below.
+_CORNER_FLOOR = 0.25 * ALFRED_BASE_VELOCITY_LIMITS[0]
 
 _VX_MAX = ALFRED_BASE_VELOCITY_LIMITS[0]
 # Fractions of Alfred's own envelope, so the ladder scales if it is recommissioned.
@@ -173,6 +175,15 @@ def _base_tasks() -> list[TaskConfig]:
                 # Alfred's own if autotune has run, the Go2's otherwise. A bad
                 # score on a quadruped's gains is not a controller problem.
                 "artifact_path": alfred_follower_artifact(),
+                # A sharp vertex makes the nearest point on the path flip between
+                # the incoming and outgoing legs, and the reference yaw flips
+                # with it - the robot sits on the corner oscillating. Monotonic
+                # progress cannot flip back.
+                "progress_back_m": 0.0,
+                # And do not let the vertex's discretized dyaw/ds throttle the
+                # approach to a standstill. 25% of vmax still slows hard for a
+                # corner; it just arrives at one.
+                "min_corner_speed": _CORNER_FLOOR,
             },
         ),
     ]
