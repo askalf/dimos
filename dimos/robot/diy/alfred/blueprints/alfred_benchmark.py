@@ -61,7 +61,10 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.std_msgs.Int8 import Int8
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
-from dimos.robot.diy.alfred.alfred_model import alfred_follower_artifact
+from dimos.robot.diy.alfred.alfred_model import (
+    ALFRED_BASE_VELOCITY_LIMITS,
+    alfred_follower_artifact,
+)
 from dimos.robot.diy.alfred.config import ALFRED
 from dimos.robot.diy.alfred.effector_high_level import AlfredHighLevel
 from dimos.robot.diy.alfred.mount_tf import AlfredMountTf
@@ -75,6 +78,10 @@ LIDAR_FRAME = "mid360_link"
 ALFRED_BASE_HARDWARE_ID = "flowbase"
 BASE_VELOCITY_TASK_NAME = "vel_flowbase"
 NAV_FOLLOWER_TASK_NAME = "holonomic_follower"
+
+_VX_MAX = ALFRED_BASE_VELOCITY_LIMITS[0]
+# Fractions of Alfred's own envelope, so the ladder scales if it is recommissioned.
+ALFRED_BENCHMARK_SPEEDS = ",".join(f"{frac * _VX_MAX:.2f}" for frac in (0.3, 0.5, 0.7, 0.9))
 
 _flowbase_hardware = HardwareComponent(
     hardware_id=ALFRED_BASE_HARDWARE_ID,
@@ -196,7 +203,11 @@ _alfred_base_control = autoconnect(
         instance_name="ControlCoordinator",
         hardware=[_flowbase_hardware],
         tasks=_base_tasks(),
-    ),
+        # The viewer's keyboard arrives as tele_cmd_vel; the coordinator hears
+        # twist_command and maps it onto the base's virtual joints, where
+        # vel_flowbase claims it at priority 20. Without this the gate's
+        # instruction to reposition between runs is a lie.
+    ).remappings([(AlfredBenchmarkCoordinator, "twist_command", "tele_cmd_vel")]),
 )
 
 
@@ -213,7 +224,16 @@ alfred_benchmark = (
         # "all" is the tangent-heading geometry plus the decoupled-yaw full-pose
         # cases. gate_source="stream" waits for the operator between every run,
         # which is what AlfredViewerGate feeds.
-        Benchmarker.blueprint(robot="alfred", battery="all", gate_source="stream"),
+        Benchmarker.blueprint(
+            robot="alfred",
+            battery="all",
+            gate_source="stream",
+            # The Benchmarker's default ladder is the Go2's and tops out at
+            # 1.0 m/s. Alfred's declared vmax is 0.5, so three of those five
+            # speeds are outside its envelope and would score saturation rather
+            # than tracking. Ladder to 90% of vmax instead.
+            speeds=ALFRED_BENCHMARK_SPEEDS,
+        ),
         AlfredViewerGate.blueprint(),
     )
     # The Benchmarker calls the robot's pose `odom`; StartRelay publishes it as
