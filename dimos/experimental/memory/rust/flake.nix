@@ -37,8 +37,11 @@
 
         cargoLock = {
           lockFile = ../../../../Cargo.lock;
+          # Every git dep in the shared workspace lock needs a hash here, used by
+          # this crate or not; bump it whenever the dep's rev moves.
           outputHashes = {
             "dimos-lcm-0.1.0" = "sha256-GGkx4Mn6NYP6KZecmoRLKGWIih/+y8OgNn12DeXX6n8=";
+            "pointlio-core-0.1.0" = "sha256-iC7nDbEipfi3cViK7fqKiy2hT9ENGi4Ge7L6Wt1W01Q=";
           };
         };
 
