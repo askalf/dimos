@@ -1263,24 +1263,3 @@ def test_the_text_towers_stay_off_the_card_the_detector_needs(store: SqliteStore
     # And an explicit choice still wins, for a card with room to spare.
     shared = LiveQuery(store, LiveConfig(detect=DetectConfig(device="cuda"), tower_device="cuda"))
     assert shared.towers.device == "cuda"
-
-
-def test_the_index_read_releases_the_file_cache_behind_it(store: SqliteStore) -> None:
-    """The page cache holding vectors already copied into arrays is a second copy.
-
-    Measured on a 30 GB machine holding three models: 21 GB used, **zero free**, and
-    9 GB of cache that was exactly the bytes already sitting in the arrays. The arrays
-    then got evicted between being loaded and being used, so the first query paid 10-25 s
-    faulting them back in. `load` now tells the kernel it can forget the file.
-    """
-    import os
-
-    from dimos.mapping.hyperspace.resident import _drop_the_cache_of
-
-    freed = _drop_the_cache_of(store._registry_conn)
-    # A COUNT OF FILES, not bytes: the kernel does not report what it dropped, and the
-    # file size is not it -- bike.db is 122 GB on disk and the cache holding it was 9.
-    if hasattr(os, "posix_fadvise"):
-        assert freed == 1, "one database file was told to forget its pages"
-    else:
-        assert freed == 0, "a platform without posix_fadvise skips rather than raising"

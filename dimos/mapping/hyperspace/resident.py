@@ -29,7 +29,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -410,51 +409,11 @@ def load(store: Any, tag: str, stream: str) -> ResidentPatches:
     placements = _placements(stream, blobs, codec, ids)
     meta = time.monotonic() - started
 
-    freed = _drop_the_cache_of(conn)
-
     logger.info(
         f"hyperspace: {tag} resident -- {len(vectors)} x {width} "
         f"({vectors.nbytes / 1e6:.0f} MB) in {read:.1f}s, payloads in {meta:.1f}s"
-        + (f", cache dropped for {freed} file(s)" if freed else "")
     )
     return ResidentPatches(tag=tag, stream=stream, vectors=vectors, last_id=ids[-1], **placements)
-
-
-def _drop_the_cache_of(conn: Any) -> int:
-    """Tell the kernel it can forget the file pages this read pulled through.
-
-    Every vector has just been copied into an array that will live for the process, so
-    the page cache holding the same bytes is a second copy that nobody will read again
-    -- and it competes with the arrays for the same memory. Measured on a 30 GB machine
-    holding three models: 21 GB used, **zero free**, and 9 GB of cache that was exactly
-    this. The arrays then got evicted between being loaded and being used, so the first
-    query paid 10 to 25 seconds faulting them back in.
-
-    Returns how many files were told to forget, NOT how many bytes came back: the
-    kernel does not report that, and the file's SIZE is not it -- bike.db is 122 GB on
-    disk while the cache holding it was nine. Reporting the size would have been a
-    flattering number for a thing that did something smaller.
-
-    It is advisory, and a failure costs nothing but the memory it would have freed, so a
-    platform without it (macOS has no `posix_fadvise`) simply skips.
-    """
-    if not hasattr(os, "posix_fadvise"):
-        return 0
-    freed = 0
-    try:
-        for _, name, path in conn.execute("PRAGMA database_list").fetchall():
-            if not path or name == "temp":
-                continue
-            handle = os.open(path, os.O_RDONLY)
-            try:
-                os.posix_fadvise(handle, 0, 0, os.POSIX_FADV_DONTNEED)
-                freed += 1
-            finally:
-                os.close(handle)
-    except OSError as error:
-        logger.debug(f"hyperspace could not release the file cache: {error}")
-        return 0
-    return freed
 
 
 class ResidentIndex:
