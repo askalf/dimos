@@ -63,8 +63,10 @@ class DetectConfig:
     """Everything the detector path can be turned by, in one place."""
 
     # OWLv2's own per-box acceptance score. Its scores are calibrated, so this is a real
-    # refusal threshold rather than a ranking cut.
-    threshold: float = 0.15
+    # refusal threshold rather than a ranking cut, and half is Jeff's call (2026-09-13):
+    # the runs at 0.15 answered with boxes down at 0.16-0.23 that were the detector
+    # reaching rather than finding, and every one of them cost a place.
+    threshold: float = 0.5
     checkpoint: str = OWLV2_CHECKPOINT
     device: str = ""
     # Frames of one episode to try before calling it undetected. The peak frame is

@@ -87,7 +87,7 @@ def main(
     max_episodes: int = typer.Option(12, "--max-episodes", help="episodes to run the detector on"),
     min_episode_frames: int = typer.Option(2, "--min-frames", help="drop runs shorter than this"),
     gap_s: float = typer.Option(1.0, "--gap", help="quiet this long ends an episode (s)"),
-    threshold: float = typer.Option(0.15, "--threshold", help="OWLv2's per-box acceptance score"),
+    threshold: float = typer.Option(0.5, "--threshold", help="OWLv2's per-box acceptance score"),
     attempts: int = typer.Option(3, "--attempts", help="frames of an episode to try"),
     batch: int = typer.Option(1, "--batch", help="frames per detector forward pass"),
     checkpoint: str = typer.Option("", "--owl", help="an OWLv2 checkpoint other than base"),
