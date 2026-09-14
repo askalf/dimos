@@ -127,6 +127,7 @@ def fill(
     with_depth: bool = True,
     copy_tf: bool = True,
     flat: bool = False,
+    start_ts: float = 10.0,
 ) -> PatchIngestor:
     model = StubModel()
     config = IngestConfig(
@@ -146,7 +147,7 @@ def fill(
     ingestor = PatchIngestor(store, model, config, copy_tf=copy_tf)  # type: ignore[arg-type]
     ingestor.add_camera_info(camera_info())
     for index, pose in enumerate(poses):
-        ts = 10.0 + index
+        ts = start_ts + index
         x, y, z, w = quaternion_of(pose[:3, :3])
         transform = Transform(
             translation=Vector3(*pose[:3, 3]),
@@ -953,6 +954,59 @@ def test_the_resident_index_carries_everything_a_patch_is_placed_by(
     assert first.score > 0.5, "half precision still separates the object from the room"
 
 
+def test_the_index_grows_while_the_ingest_is_still_writing(store: SqliteStore) -> None:
+    """A live query has to see what the robot drove past a second ago.
+
+    On a robot the db starts empty and fills while questions are being asked, so
+    "load the index once at startup" answers off a map that stops at boot. The index
+    picks up what has landed since it last looked, without re-reading what it holds.
+    """
+    from dimos.mapping.hyperspace.frames import BACKGROUND_PROMPTS, hot_frames
+    from dimos.mapping.hyperspace.resident import ResidentIndex
+
+    class StubTowers:
+        def query(self, spec: str, text: str) -> np.ndarray:
+            del spec
+            return StubModel.embed_text(text)
+
+        def background(self, spec: str) -> np.ndarray:
+            del spec
+            return np.stack([StubModel.embed_text(prompt) for prompt in BACKGROUND_PROMPTS])
+
+        def close(self) -> None:
+            pass
+
+    held = ResidentIndex()
+    members = [("stub", cli.patch_stream_for("", "stub"))]
+
+    # Nothing written yet: an empty db is the normal state at boot, not an error.
+    assert held.grow(store, members) == 0
+
+    first = fill(store, ring(2, 2.5), flat=True)
+    assert held.grow(store, members) == first.stats["kept"] * SIDE * SIDE
+    patches = held.get(members[0][1])
+    assert patches is not None
+    before = patches.rows
+    seen = len(hot_frames(store, "object", towers=StubTowers(), resident=held))
+    assert seen == first.stats["kept"]
+
+    # The ingest keeps going. Later frames, from poses the first read never saw.
+    second = fill(store, ring(4, 3.0), flat=True, start_ts=100.0)
+    assert second.stats["kept"], "the second pass kept something to find"
+    added = held.grow(store, members)
+    assert added == second.stats["kept"] * SIDE * SIDE, "only the new rows were read"
+    assert patches is held.get(members[0][1]), "grown in place, not reloaded"
+    assert patches.rows == before + added
+    assert patches.capacity >= patches.rows
+    assert len(hot_frames(store, "object", towers=StubTowers(), resident=held)) == (
+        first.stats["kept"] + second.stats["kept"]
+    ), "the frames written after the index was warmed answer too"
+
+    # And a poll with nothing new is free rather than a reload.
+    assert held.grow(store, members) == 0
+    assert patches.rows == before + added
+
+
 def test_the_chunk_read_and_the_row_read_agree(store: SqliteStore) -> None:
     """The fast read is sqlite-vec's own storage, so it has to be checked against SQL.
 
@@ -1073,3 +1127,63 @@ def test_hot_frames_finds_nothing_for_words_the_recording_does_not_contain(
 
     fill(store, ring(4, 2.5), flat=True)
     assert hot_frames(store, "something else entirely", towers=StubTowers()) == []
+
+
+def test_one_answer_per_place_carries_its_own_frame() -> None:
+    """A second look at a cone is a better box for that cone, not another cone.
+
+    The RPC's answer is what a caller navigates by, so two rows for one thing would
+    have it drive to the same place twice; and an answer without the picture it was
+    made from cannot be checked by anyone.
+    """
+    from dimos.mapping.hyperspace.detect import Box3D, Detection
+    from dimos.mapping.hyperspace.module import _objects_of
+
+    def looked(
+        rank: int, place: int, score: float, centre: tuple[float, float, float]
+    ) -> Detection:
+        found = Detection(
+            query="a cone",
+            rank=rank,
+            ts=100.0 + rank,
+            camera_frame=CAMERA,
+            episode_frames=4,
+            episode_span=1.0,
+            episode_score=1.0,
+            models=["stub"],
+            attempts=1,
+            score=score,
+            box2d=(1.0, 2.0, 3.0, 4.0),
+            box3d=Box3D(frame=WORLD, centre=centre, extent=(0.4, 0.4, 0.4), pixels=10, depth_m=2.0),
+        )
+        found.place_id = place
+        found.image = Image.from_numpy(
+            np.full((4, 4, 3), 7, dtype=np.uint8), frame_id=CAMERA, ts=found.ts
+        )
+        return found
+
+    answers = [
+        looked(1, 1, 0.6, (1.0, 0.0, 0.0)),
+        looked(2, 1, 0.9, (1.1, 0.0, 0.0)),  # the same cone, seen better
+        looked(3, 2, 0.7, (9.0, 0.0, 0.0)),  # a different cone
+        Detection(
+            query="a cone",
+            rank=4,
+            ts=104.0,
+            camera_frame=CAMERA,
+            episode_frames=1,
+            episode_span=0.0,
+            episode_score=0.1,
+            models=["stub"],
+            attempts=3,
+        ),
+    ]
+
+    objects = _objects_of(answers, top=0)
+    assert [round(found.confidence, 2) for found in objects] == [0.9, 0.7], "strongest first"
+    assert [found.place_id for found in objects] == [1, 2], "one row per place"
+    assert objects[0].views == 2, "and it says how many looks agreed"
+    assert objects[0].image is not None and objects[0].camera_frame == CAMERA
+    assert objects[0].stamp == 102.0, "the stamp of the look that was reported"
+    assert objects[0].box2d == (1.0, 2.0, 3.0, 4.0)
+    assert _objects_of(answers, top=1) == objects[:1]

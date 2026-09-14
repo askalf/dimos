@@ -57,6 +57,11 @@ THUMBNAIL_STREAM = "hyperspace_depth_thumbnails"
 # Written once -- live by the depth2depth module, or after the fact by `fill_depth` --
 # so that placing a box never pays for a model.
 FILLED_STREAM = "hyperspace_filled_depth"
+# The colour frame each embedding frame was made from, as JPEG. Live there is no
+# recording to go back to -- the camera's 30 Hz never touches disk -- and the detector
+# has to be handed the picture of a place the robot drove past minutes ago. Keeping the
+# gated 5 Hz is about a gigabyte an hour against the 70 the raw stream would cost.
+FRAME_STREAM = "hyperspace_frames"
 
 
 def index_slug(specs: Sequence[str]) -> str:
@@ -97,6 +102,11 @@ def thumbnail_stream_for(slug: str = "") -> str:
 def filled_stream_for(slug: str = "") -> str:
     """The filled-depth stream of one index."""
     return FILLED_STREAM if not slug else f"{FILLED_STREAM}__{slug}"
+
+
+def frame_stream_for(slug: str = "") -> str:
+    """The kept-colour-frame stream of one index."""
+    return FRAME_STREAM if not slug else f"{FRAME_STREAM}__{slug}"
 
 
 def _colour_at(colours: Any, stamps: Sequence[float], tolerance: float = 0.01) -> Any:
@@ -319,6 +329,11 @@ class IngestConfig:
     # floors and dark shelves, and reads *through* a freezer door -- so a patch
     # in front of one is placed metres too far. "" = raw sensor depth only.
     depth2depth_model: str = ""
+    # Keep the colour frame each embedding frame was made from. Off for an ingest of a
+    # recording, which already holds its colour; ON for a live run, where the camera's
+    # frames exist only on the wire and the detector still has to be shown the one from
+    # four minutes ago.
+    keep_frames: bool = False
 
 
 def grids_of(model: Any, image: Image) -> list[tuple[NDArray[np.float32], tuple[int, int]]]:
@@ -389,6 +404,7 @@ class PatchIngestor:
         self._keyframes: Stream[Any] | None = None
         self._thumbnails: Stream[Any] | None = None
         self._filled: Stream[Any] | None = None
+        self._frames: Stream[Any] | None = None
         # One vec0 stream per model; the member list is only certain once it has run.
         self.patches_by_member: dict[str, Stream[Any]] = {}
         self.tf_stream: Stream[TFMessage] = store.stream(TF_STREAM, TFMessage)
@@ -413,6 +429,29 @@ class PatchIngestor:
         if self._filled is None:
             self._filled = self.store.stream(filled_stream_for(self.slug), dict)
         return self._filled
+
+    @property
+    def frames(self) -> Stream[Any]:
+        """Where the kept colour frames land, opened once."""
+        if self._frames is None:
+            self._frames = self.store.stream(frame_stream_for(self.slug), Image)
+        return self._frames
+
+    def _keep_frame(self, camera_frame: str, ts: float, rgb: NDArray[np.uint8]) -> None:
+        """Keep the picture this embedding frame was made from, if asked to.
+
+        Off by default: a recording already holds its own colour, and writing a second
+        copy of it beside the first would be a waste of the disk. On, it is what lets a
+        live run answer at all -- the camera's frames are on the wire and nowhere else,
+        and the detector needs the one from four minutes ago.
+        """
+        if not self.config.keep_frames:
+            return
+        self.frames.append(
+            Image.from_numpy(np.ascontiguousarray(rgb), frame_id=camera_frame, ts=ts),
+            ts=ts,
+            tags={"camera_frame": camera_frame},
+        )
 
     def patch_stream(self, member: str) -> Stream[Any]:
         """This model's vec0 stream, opened once."""
@@ -629,6 +668,7 @@ class PatchIngestor:
             return
         model = self.slug or index_slug(self.member_specs or self.members) or "unnamed"
         tags = {"camera_frame": camera_frame, "model": model}
+        self._keep_frame(camera_frame, kept.ts, rgb)
 
         if depth is None:
             self.stats["kept_without_depth"] += 1
@@ -693,6 +733,7 @@ class PatchIngestor:
         if color is None:
             logger.warning(f"hyperspace: no camera_info for {camera_frame!r} yet; keyframe dropped")
             return
+        self._keep_frame(camera_frame, kept.ts, rgb)
         rows, cols = self.cell_grid(grids)
         if depth is None:
             self.stats["kept_without_depth"] += 1

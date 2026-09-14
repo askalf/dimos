@@ -26,6 +26,7 @@ once the transform buffer lets a rewrite win (see test_rewriting_tf_moves_the_an
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 import json
 import threading
 import time
@@ -44,6 +45,7 @@ from dimos.mapping.hyperspace.embedder import (
     PatchEnsemble,
 )
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
+from dimos.mapping.hyperspace.msgs import FoundObject, FoundObjects
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import refine_config_of
 from dimos.memory.module import MemoryModule, MemoryModuleConfig
@@ -126,10 +128,69 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
     depth_history: int = 64
     # Stride of the depth thumbnail kept per keyframe, for scene rendering.
     depth_thumbnail_stride: int = 4
+    # Keep the colour frame behind each embedding frame, so the detector can be shown
+    # it later. Required for a LIVE run and pointless for an ingest of a recording:
+    # see IngestConfig.keep_frames.
+    keep_frames: bool = False
+    # The layout the detector path reads. Live it has to be on -- a keyframe blob is
+    # not searchable one patch at a time -- so it defaults on here rather than in
+    # IngestConfig, which still has every old recording to think about.
+    flat: bool = True
 
 
 def _optional(value: float) -> float | None:
     return None if value < 0 else value
+
+
+def _held_members(held: Any) -> list[tuple[str, Any]]:
+    """(tag, patches) for every model the resident index is holding."""
+    return [(patches.tag, patches) for patches in held._held.values()]
+
+
+def _objects_of(answers: Sequence[Any], top: int) -> list[FoundObject]:
+    """One `FoundObject` per place, strongest first.
+
+    One per place, not one per answer: a second look at a cone already found is a
+    better box for that cone, not another cone. The look that gets reported is the
+    one the detector was surest of, and it brings its own frame with it.
+    """
+    best: dict[int, Any] = {}
+    for answer in answers:
+        if answer.box3d is None:
+            continue
+        place = answer.place_id if answer.place_id is not None else -answer.rank
+        if place not in best or answer.score > best[place].score:
+            best[place] = answer
+    ordered = sorted(best.values(), key=lambda answer: -answer.score)
+    if top > 0:
+        ordered = ordered[:top]
+    seen: dict[int, int] = {}
+    for answer in answers:
+        place = answer.place_id if answer.place_id is not None else -answer.rank
+        seen[place] = seen.get(place, 0) + (1 if answer.box3d is not None else 0)
+    found = []
+    for answer in ordered:
+        place = answer.place_id if answer.place_id is not None else -answer.rank
+        # The refined box when there is one: a place looked at twice has a sharper box
+        # than either look gave on its own.
+        box = answer.refined or answer.box3d
+        found.append(
+            FoundObject(
+                frame=box.frame,
+                centre=tuple(float(v) for v in box.centre),
+                extent=tuple(float(v) for v in box.extent),
+                depth_m=float(box.depth_m),
+                confidence=float(answer.score),
+                image=answer.image,
+                camera_frame=answer.camera_frame,
+                stamp=float(answer.ts),
+                box2d=tuple(float(v) for v in (answer.box2d or (0, 0, 0, 0))),
+                place_id=place,
+                views=seen.get(place, 1),
+                models=list(answer.models),
+            )
+        )
+    return found
 
 
 def store_members(store: Any, wait_s: float = 0.0) -> list[str]:
@@ -216,6 +277,8 @@ class HyperspacePatches(MemoryModule):
                 depth_max_dt=self.config.depth_max_dt,
                 depth_history=self.config.depth_history,
                 depth_thumbnail_stride=self.config.depth_thumbnail_stride,
+                keep_frames=self.config.keep_frames,
+                flat=self.config.flat,
             ),
             lookup=self._lookup,
         )
@@ -299,6 +362,30 @@ class HyperspaceConfig(MemoryModuleConfig):
     refine_min_frames: int = 1
     # Depth samples a voxel needs to appear in scene_map.
     scene_min_samples: int = 3
+    # --- the detector path (`find_objects`) -------------------------------------
+    # OWLv2's per-box acceptance score. See DetectConfig.threshold for what half
+    # costs: it is a real refusal, and the scores are not comparable across words.
+    owl_threshold: float = 0.5
+    # An OWLv2 checkpoint other than the base ensemble. "" = DetectConfig's own.
+    owl_checkpoint: str = ""
+    # Where the detector runs. Separate from `device`, which is the text towers':
+    # the towers are small enough for a cpu and OWLv2 is not.
+    owl_device: str = "auto"
+    # Models the frames-first search ranks with. [] = every model in the index,
+    # which is what the three-way agreement wants.
+    detect_models: list[str] = []
+    # Episodes to spend a detector call on, frames of each to try, and frames per
+    # forward pass. The detector is ~90% of a query, so these are the cost.
+    max_episodes: int = 12
+    detect_attempts: int = 3
+    detect_batch: int = 1
+    min_episode_frames: int = 2
+    episode_gap_s: float = 1.0
+    # Depth spread that is still the object (m), and how close two answers have to
+    # be to be one place.
+    depth_band_m: float = 0.5
+    merge_m: float = 0.75
+
     # Demo: after this many seconds, run demo_queries and publish the answers,
     # then repeat every demo_every_s. 0 disables.
     demo_after_s: float = 0.0
@@ -324,6 +411,9 @@ class Hyperspace(MemoryModule):
     query_result: Out[PointCloud2]
     query_answer: Out[String]
     scene_map: Out[PointCloud2]
+    # Every answer `find_objects` gives, also published, so a viewer or a recorder
+    # sees them without having made the call.
+    found: Out[FoundObjects]
 
     @rpc
     def start(self) -> None:
@@ -364,10 +454,119 @@ class Hyperspace(MemoryModule):
         )
         self._lock = threading.Lock()
         self._ids = iter(range(1, 1 << 30))
+        self._load_the_detector(specs)
         logger.info(
             f"hyperspace query: {self.model.tags} text towers on {device}, db {self.config.db_path}"
         )
         super().start()
+
+    def _load_the_detector(self, specs: list[str]) -> None:
+        """Everything `find_objects` needs, loaded now rather than on the first question.
+
+        OWLv2 is two and a half seconds to bring up and the text towers thirteen, and
+        the transforms are a pass over the store. Left lazy, all of that lands on
+        whoever asks first -- which on a robot is someone waiting on an answer.
+        """
+        from dimos.mapping.hyperspace.detect import DetectConfig, Owlv2Boxes, RecordingFrames
+        from dimos.mapping.hyperspace.frames import TextTowers
+        from dimos.mapping.hyperspace.resident import ResidentIndex
+
+        device = pick_device(self.config.owl_device, allow_mps=False)
+        self.detect_config = DetectConfig(
+            threshold=self.config.owl_threshold,
+            checkpoint=self.config.owl_checkpoint or DetectConfig.checkpoint,
+            device=device,
+            attempts=self.config.detect_attempts,
+            batch=self.config.detect_batch,
+            max_episodes=self.config.max_episodes,
+            min_episode_frames=self.config.min_episode_frames,
+            episode_gap_s=self.config.episode_gap_s,
+            depth_band_m=self.config.depth_band_m,
+            max_depth_m=self.config.max_depth_m,
+            world_frame=self.config.world_frame,
+        )
+        self.frames = RecordingFrames(self.store, config=self.detect_config)
+        self.boxes = self.register_disposable(Owlv2Boxes(self.detect_config))
+        self.towers = self.register_disposable(TextTowers(device))
+        self.held = ResidentIndex()
+        self._members = list(self.config.detect_models)
+        started = time.monotonic()
+        for spec in self._members or specs:
+            self.towers.background(spec)
+        warmed = self.boxes.warm()
+        logger.info(
+            f"hyperspace detect: OWLv2 {self.detect_config.checkpoint} on {device} in "
+            f"{warmed:.1f}s, text towers in {time.monotonic() - started - warmed:.1f}s, "
+            f"threshold {self.config.owl_threshold}"
+        )
+
+    def _catch_up(self) -> int:
+        """Take in whatever the ingest has written since the last question.
+
+        The db is empty at boot and fills while the robot drives, so an index loaded
+        once would answer off the map as it was at startup. Cheap when nothing is new.
+        """
+        from dimos.mapping.hyperspace.frames import member_streams
+
+        wanted = set(self._members)
+        members = [
+            (tag, stream)
+            for tag, stream in member_streams(self.store)
+            if not wanted or tag in wanted
+        ]
+        return self.held.grow(self.store, members) if members else 0
+
+    @rpc
+    def find_objects(self, text: str, top: int = 0) -> FoundObjects:
+        """Where is `text`? Boxes in the world, with the frames that found them.
+
+        The whole chain, on the map as it stands this instant: the patch index ranks
+        frames, the models' agreement picks the places worth looking at, OWLv2 draws a
+        box on the best frame of each, and that box plus the frame's depth becomes a box
+        in the world. Answers come back strongest-first, one per place.
+        """
+        from dimos.mapping.hyperspace.detect import find, merge_duplicates
+
+        text = text.strip()
+        if not text:
+            raise ValueError("find_objects needs something to look for")
+        with self._lock:
+            started = time.monotonic()
+            timings: dict[str, float] = {}
+            added = self._catch_up()
+            timings["index"] = time.monotonic() - started
+            models = [tag for tag, _ in _held_members(self.held)]
+            answers = list(
+                find(
+                    self.store,
+                    self.store,
+                    text,
+                    config=self.detect_config,
+                    models=models,
+                    towers=self.towers,
+                    frames=self.frames,
+                    boxes=self.boxes,
+                    keep_images=True,
+                    resident=self.held,
+                    timings=timings,
+                )
+            )
+            merge_duplicates(answers, self.config.merge_m)
+            result = FoundObjects(
+                query=text,
+                frame=self.config.world_frame,
+                objects=_objects_of(answers, top),
+                refused=sum(1 for answer in answers if not answer.found),
+                ms=round((time.monotonic() - started) * 1000, 1),
+                timings={name: round(value, 4) for name, value in timings.items()},
+            )
+            self.found.publish(result)
+            logger.info(
+                f"hyperspace find {text!r}: {len(result)} place(s), {result.refused} refused, "
+                f"{result.ms} ms over {sum(p.rows for _, p in _held_members(self.held))} patches "
+                f"(+{added} new)"
+            )
+            return result
 
     def answer(
         self, text: str, request_id: int | None = None, frame: str | None = None

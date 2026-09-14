@@ -838,3 +838,90 @@ def test_an_unplaced_detection_is_never_called_a_duplicate() -> None:
     found = [placed(1, 0.5, (0.0, 0.0, 0.0)), flat]
     assert merge_duplicates(found) == 1
     assert flat.duplicate_of is None
+
+
+def test_live_the_detector_is_shown_the_frames_the_ingest_kept(tmp_path: Path) -> None:
+    """A live run has no colour stream, and the detector still has to see a picture.
+
+    The camera's thirty frames a second exist on the wire and nowhere else, so the only
+    pictures a robot can be shown later are the ones an embedding frame was made from.
+    This store has no `color_image` at all -- which is exactly the live shape -- and the
+    box still has to be placed.
+    """
+    from dimos.mapping.hyperspace.ingest import filled_stream_for, frame_stream_for
+
+    store = SqliteStore(path=str(tmp_path / "live.db"))
+    store.start()
+    store.stream("camera_info", CameraInfo).append(camera_info(), ts=10.0)
+    kept = store.stream(frame_stream_for(""), Image)
+    filled = store.stream(filled_stream_for(""), dict)
+    for ts in (10.0, 10.25):
+        kept.append(
+            Image.from_numpy(
+                np.full((HEIGHT, WIDTH, 3), 128, dtype=np.uint8), frame_id=CAMERA, ts=ts
+            ),
+            ts=ts,
+            tags={"camera_frame": CAMERA},
+        )
+        filled.append(
+            {
+                "camera_frame": CAMERA,
+                "ts": ts,
+                "depth_mm": (planted_depth() * 1000).astype(np.uint16),
+            },
+            ts=ts,
+            tags={"camera_frame": CAMERA},
+        )
+    store.stream("tf", TFMessage).append(
+        TFMessage(
+            Transform(
+                translation=Vector3(0.0, 0.0, 0.0),
+                rotation=Quaternion(0.0, 0.0, 0.0, 1.0),
+                frame_id=WORLD,
+                child_frame_id=CAMERA,
+                ts=10.0,
+            )
+        ),
+        ts=10.0,
+    )
+
+    frames = RecordingFrames(store, config=DetectConfig(world_frame=WORLD))
+    assert "color_image" not in store.list_streams(), "the live shape: no colour stream"
+    assert frames.color(10.0) is not None, "the kept frame is the picture"
+    assert frames.depth(CAMERA, 10.0) is not None
+
+    boxes = StubBoxes((SQUARE[0], SQUARE[2], SQUARE[1], SQUARE[3]), score=0.9)
+    episode = Episode(
+        frames=[
+            Frame(
+                frame=CAMERA,
+                ts=ts,
+                hits=[
+                    Hit(
+                        member="stub",
+                        frame=CAMERA,
+                        ts=ts,
+                        cell=0,
+                        grid=(8, 8),
+                        ray=(0.0, 0.0),
+                        depth=2.0,
+                        score=1.0,
+                    )
+                ],
+            )
+            for ts in (10.0, 10.25)
+        ]
+    )
+    answer = detect_episode(
+        episode,
+        "a square",
+        frames,
+        boxes,
+        rank=1,
+        config=DetectConfig(world_frame=WORLD),
+        keep_image=True,
+    )
+    assert answer.found, answer.note
+    assert answer.box3d is not None, "placed off the kept frame and the filled depth"
+    assert answer.image is not None, "and it carries the picture it was placed from"
+    store.stop()

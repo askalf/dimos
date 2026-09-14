@@ -76,10 +76,69 @@ class ResidentPatches:
     grid: NDArray[np.int16]
     ray: NDArray[np.float32]
     depth: NDArray[np.float32]
+    # Live, the arrays are over-allocated and only the first `count` rows are patches.
+    # -1 means "the whole array", which is what a read of a finished recording gives.
+    count: int = -1
+    # The last row id taken from the stream, so a later read can ask for what is new
+    # rather than for everything again.
+    last_id: int = 0
 
     @property
     def rows(self) -> int:
+        return int(self.vectors.shape[0]) if self.count < 0 else self.count
+
+    @property
+    def capacity(self) -> int:
         return int(self.vectors.shape[0])
+
+    def extend(self, block: ResidentPatches) -> int:
+        """Append another read's rows. Returns how many landed.
+
+        Capacity doubles rather than growing to fit, because a live index is appended
+        to several times a second and copying the whole array each time is quadratic:
+        a seven gigabyte index would spend its life memcpying itself.
+        """
+        added = block.rows
+        if not added:
+            return 0
+        if self.count < 0:
+            self.count = int(self.vectors.shape[0])
+        wanted = self.count + added
+        if wanted > self.capacity:
+            self._reserve(max(wanted, max(self.capacity * 2, 1024)))
+        # Two reads name their camera frames independently, so the block's frame ids
+        # are re-pointed at this index's table rather than trusted.
+        mapping = {}
+        for at, name in enumerate(block.camera_frames):
+            if name not in self.camera_frames:
+                self.camera_frames.append(name)
+            mapping[at] = self.camera_frames.index(name)
+        end = self.count + added
+        self.vectors[self.count : end] = block.vectors[:added]
+        self.frame_of[self.count : end] = [mapping[int(v)] for v in block.frame_of[:added]]
+        self.ts[self.count : end] = block.ts[:added]
+        self.cell[self.count : end] = block.cell[:added]
+        self.grid[self.count : end] = block.grid[:added]
+        self.ray[self.count : end] = block.ray[:added]
+        self.depth[self.count : end] = block.depth[:added]
+        self.count = end
+        self.last_id = max(self.last_id, block.last_id)
+        return added
+
+    def _reserve(self, capacity: int) -> None:
+        def grown(array: NDArray[Any]) -> NDArray[Any]:
+            shape = (capacity, *array.shape[1:])
+            out = np.empty(shape, dtype=array.dtype)
+            out[: self.count] = array[: self.count]
+            return out
+
+        self.vectors = grown(self.vectors)
+        self.frame_of = grown(self.frame_of)
+        self.ts = grown(self.ts)
+        self.cell = grown(self.cell)
+        self.grid = grown(self.grid)
+        self.ray = grown(self.ray)
+        self.depth = grown(self.depth)
 
     @property
     def width(self) -> int:
@@ -107,9 +166,12 @@ class ResidentPatches:
         # The query and the backgrounds go through together: one pass over the index
         # rather than one for the words and another for the room.
         texts = np.vstack([np.asarray(query, dtype=np.float32)[None, :], background])
-        out = np.empty(self.rows, dtype=np.float32)
-        for start in range(0, self.rows, SCORE_CHUNK):
-            block = np.asarray(self.vectors[start : start + SCORE_CHUNK], dtype=np.float32)
+        rows = self.rows
+        out = np.empty(rows, dtype=np.float32)
+        for start in range(0, rows, SCORE_CHUNK):
+            block = np.asarray(
+                self.vectors[start : min(start + SCORE_CHUNK, rows)], dtype=np.float32
+            )
             against = block @ texts.T
             out[start : start + len(block)] = against[:, 0] - against[:, 1:].max(axis=1)
         return out
@@ -224,6 +286,90 @@ def _vectors_of(conn: Any, stream: str, width: int, rows: int) -> NDArray[Any]:
     return out[:at]
 
 
+def since(store: Any, tag: str, stream: str, last_id: int) -> ResidentPatches | None:
+    """The patches written to this stream after `last_id`, or None if there are none.
+
+    The live counterpart of `load`. An ingest is still writing while queries are being
+    asked, so the index has to pick up what has landed since it last looked -- and
+    nothing here re-reads what it already holds, which is the whole point.
+
+    The vectors come one row at a time: vec0's chunk storage is only readable whole, and
+    a poll's worth of rows is small enough (about six microseconds each) that the fast
+    path would be the slow one here.
+    """
+    backend = store.stream(stream, dict)._source
+    blobs, codec = backend.blob_store, backend.codec
+    conn = store._registry_conn
+
+    ids = [
+        row[0]
+        for row in conn.execute(f'SELECT id FROM "{stream}" WHERE id > ? ORDER BY id', (last_id,))
+    ]
+    if not ids:
+        return None
+    probe = conn.execute(f'SELECT embedding FROM "{stream}_vec" LIMIT 1').fetchone()
+    width = len(np.frombuffer(probe[0], dtype=np.float32))
+    # `id` is the stream's row id and `rowid` is the vector table's; they are the same
+    # sequence, assigned by the same insert, which is what lets the vectors be asked for
+    # by id rather than by position.
+    marks = ",".join("?" * len(ids))
+    vectors = np.empty((len(ids), width), dtype=HELD_AS)
+    cursor = conn.execute(
+        f'SELECT embedding FROM "{stream}_vec" WHERE rowid IN ({marks}) ORDER BY rowid', ids
+    )
+    at = 0
+    while at < len(ids):
+        block = cursor.fetchmany(READ_CHUNK)
+        if not block:
+            break
+        vectors[at : at + len(block)] = np.frombuffer(
+            b"".join(row[0] for row in block), dtype=np.float32
+        ).reshape(len(block), width)
+        at += len(block)
+    if at != len(ids):
+        # A patch row without its vector means the two tables disagree, and scoring a
+        # half-written block would place patches by the wrong rays.
+        logger.warning(f"hyperspace: {tag} has {len(ids)} new rows but {at} new vectors; waiting")
+        return None
+
+    patches = _placements(stream, blobs, codec, ids)
+    return ResidentPatches(
+        tag=tag, stream=stream, vectors=vectors, count=len(ids), last_id=ids[-1], **patches
+    )
+
+
+def _placements(stream: str, blobs: Any, codec: Any, ids: Sequence[int]) -> dict[str, Any]:
+    """The little that placing a patch needs, read off the rows' payloads."""
+    rows = len(ids)
+    names: dict[str, int] = {}
+    frame_of = np.empty(rows, dtype=np.int32)
+    stamps = np.empty(rows, dtype=np.float64)
+    cells = np.empty(rows, dtype=np.int32)
+    grids = np.empty((rows, 2), dtype=np.int16)
+    rays = np.empty((rows, 2), dtype=np.float32)
+    depths = np.empty(rows, dtype=np.float32)
+    for at, row_id in enumerate(ids):
+        payload = codec.decode(blobs.get(stream, row_id))
+        name = str(payload["camera_frame"])
+        if name not in names:
+            names[name] = len(names)
+        frame_of[at] = names[name]
+        stamps[at] = float(payload["ts"])
+        cells[at] = int(payload["cell"])
+        grids[at] = payload["grid"]
+        rays[at] = payload["ray"]
+        depths[at] = float(payload["depth"])
+    return {
+        "camera_frames": [name for name, _ in sorted(names.items(), key=lambda kv: kv[1])],
+        "frame_of": frame_of,
+        "ts": stamps,
+        "cell": cells,
+        "grid": grids,
+        "ray": rays,
+        "depth": depths,
+    }
+
+
 def load(store: Any, tag: str, stream: str) -> ResidentPatches:
     """Pull one model's whole patch index into memory.
 
@@ -246,7 +392,6 @@ def load(store: Any, tag: str, stream: str) -> ResidentPatches:
     ids = [row[0] for row in conn.execute(f'SELECT id FROM "{stream}" ORDER BY id')]
 
     started = time.monotonic()
-    first = codec.decode(blobs.get(stream, ids[0]))
     probe = conn.execute(f'SELECT embedding FROM "{stream}_vec" LIMIT 1').fetchone()
     width = len(np.frombuffer(probe[0], dtype=np.float32))
 
@@ -261,42 +406,14 @@ def load(store: Any, tag: str, stream: str) -> ResidentPatches:
     read = time.monotonic() - started
 
     started = time.monotonic()
-    names: dict[str, int] = {}
-    frame_of = np.empty(rows, dtype=np.int32)
-    stamps = np.empty(rows, dtype=np.float64)
-    cells = np.empty(rows, dtype=np.int32)
-    grids = np.empty((rows, 2), dtype=np.int16)
-    rays = np.empty((rows, 2), dtype=np.float32)
-    depths = np.empty(rows, dtype=np.float32)
-    for at, row_id in enumerate(ids):
-        payload = first if at == 0 else codec.decode(blobs.get(stream, row_id))
-        name = str(payload["camera_frame"])
-        if name not in names:
-            names[name] = len(names)
-        frame_of[at] = names[name]
-        stamps[at] = float(payload["ts"])
-        cells[at] = int(payload["cell"])
-        grids[at] = payload["grid"]
-        rays[at] = payload["ray"]
-        depths[at] = float(payload["depth"])
+    placements = _placements(stream, blobs, codec, ids)
     meta = time.monotonic() - started
 
     logger.info(
         f"hyperspace: {tag} resident -- {len(vectors)} x {width} "
         f"({vectors.nbytes / 1e6:.0f} MB) in {read:.1f}s, payloads in {meta:.1f}s"
     )
-    return ResidentPatches(
-        tag=tag,
-        stream=stream,
-        vectors=vectors,
-        camera_frames=[name for name, _ in sorted(names.items(), key=lambda kv: kv[1])],
-        frame_of=frame_of,
-        ts=stamps,
-        cell=cells,
-        grid=grids,
-        ray=rays,
-        depth=depths,
-    )
+    return ResidentPatches(tag=tag, stream=stream, vectors=vectors, last_id=ids[-1], **placements)
 
 
 class ResidentIndex:
@@ -327,6 +444,31 @@ class ResidentIndex:
         for tag, stream in members:
             self.of(store, tag, stream)
         return time.monotonic() - started
+
+    def grow(self, store: Any, members: Sequence[tuple[str, str]]) -> int:
+        """Take in whatever an ingest has written since the last look. Returns the rows.
+
+        A live index starts empty and fills while queries are being asked, so "load it
+        once at startup" is not available: a query that has not caught up cannot see the
+        thing the robot drove past a second ago. Cheap when nothing has landed -- one
+        indexed count per model -- so it is safe to call before every query.
+        """
+        added = 0
+        for tag, stream in members:
+            held = self._held.get(stream)
+            if held is None:
+                # Nothing held yet, and `load` refuses an empty stream, so wait for the
+                # first patches rather than treating "not written yet" as an error.
+                try:
+                    self._held[stream] = load(store, tag, stream)
+                except (ValueError, KeyError, TypeError):
+                    continue
+                added += self._held[stream].rows
+                continue
+            block = since(store, tag, stream, held.last_id)
+            if block is not None:
+                added += held.extend(block)
+        return added
 
     def drop(self, stream: str) -> None:
         self._held.pop(stream, None)

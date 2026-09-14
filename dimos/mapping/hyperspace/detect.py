@@ -44,6 +44,7 @@ from dimos.mapping.hyperspace.ingest import (
     TF_STREAM,
     decoded,
     filled_stream_for,
+    frame_stream_for,
     intrinsics_of,
 )
 from dimos.msgs.sensor_msgs.Image import Image
@@ -328,6 +329,13 @@ class RecordingFrames:
         self._filled_stream = filled if filled in recording.list_streams() else None
         if self._filled_stream:
             logger.info(f"hyperspace: placing boxes off {filled}")
+        # Live, the colour stream is the frames the ingest kept: the camera's own 30 Hz
+        # was never written anywhere, and the only pictures that exist are the ones an
+        # embedding frame was made from.
+        kept = frame_stream_for("")
+        self._kept_frames = kept if kept in recording.list_streams() else None
+        if self._kept_frames:
+            logger.info(f"hyperspace: showing the detector {kept}")
 
     def warm(self) -> float:
         """Do the first lookup's work now, while nobody is waiting on an answer.
@@ -379,11 +387,20 @@ class RecordingFrames:
         return poses[0] if valid[0] else None
 
     def color(self, ts: float) -> Image | None:
-        found = self.recording.streams[self.color_stream].at(ts, tolerance=0.05).to_list()
-        if not found:
-            return None
-        nearest = min(found, key=lambda observation: abs(float(observation.ts) - ts))
-        return decoded(nearest.data)
+        """The picture taken at this moment, from wherever this recording keeps them.
+
+        The kept frames first: on a live run they are the only pictures there are, and
+        on a recording that has both they are the same photograph the patches were made
+        from, which is the one the box was measured against.
+        """
+        for name in (self._kept_frames, self.color_stream):
+            if name is None or name not in self.recording.list_streams():
+                continue
+            found = self.recording.streams[name].at(ts, tolerance=0.05).to_list()
+            if found:
+                nearest = min(found, key=lambda observation: abs(float(observation.ts) - ts))
+                return decoded(nearest.data)
+        return None
 
     def depth(self, camera_frame: str, ts: float) -> NDArray[np.float32] | None:
         """Metres on the colour camera's grid, zero where there is no reading.
