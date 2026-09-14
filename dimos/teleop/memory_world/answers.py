@@ -61,6 +61,13 @@ def _as_json_can_hold_it(value: float) -> float | str:
     return value if math.isfinite(value) else repr(value)
 
 
+# How many distinct early poses of the robot's path are offered as the start of a route
+# "from the starting point". Each one is a full planning attempt, so this bounds the work;
+# a recording where two dozen consecutive early poses can all reach nothing has something
+# wrong with it that a longer search would hide rather than fix.
+RECORDING_START_TRIES = 24
+
+
 class AskRequest(BaseModel):
     text: str = Field(min_length=1, max_length=400)
     # Which stretch of the recording to look in, as fractions of its length: 0 is the
@@ -207,17 +214,45 @@ class WorldAnswers:
             return tuple(float(v) for v in positions[-1])  # type: ignore[return-value]
         raise HTTPException(status_code=503, detail="the robot's path is not known yet")
 
-    def _robot_start_pose(self) -> tuple[float, float, float]:
-        """Where the robot was when the recording began -- "the starting point".
+    def _recording_start_candidates(self) -> list[tuple[float, float, float]]:
+        """Where a route "from the starting point" may begin, best first.
 
-        The same list `_robot_end_pose` reads, from the other end. It is in time order
-        (`replay.py` notes the version-1 fix that made it so), so `positions[0]` really is
-        the beginning and not merely the first row that happened to be written.
+        The recording's first pose, then successively later ones along the robot's own
+        path. More than one is needed because the first is often not a place a route can
+        LEAVE: the map is ray-traced and a voxel is kept only once several scans agree on
+        it, so at t=0 there is barely any map around the robot. Measured on grocery.mcap,
+        `/navigate` refused from the first five distinct poses and planned 25.68 m from
+        the twentieth -- about 2.7 seconds in.
+
+        Every one of them is a place the robot demonstrably was, so the answer is still
+        "the starting point"; the payload names the one that worked.
+
+        Being able to STAND somewhere is not the same as being able to leave it, which is
+        why this returns candidates for the planner to try rather than picking one by
+        asking `candidates()`: a pose can have standable cells near it and still sit on an
+        island the map never connected. That mistake made the first version of this fix
+        return the very first pose and refuse exactly as before.
         """
         positions = self._orbit_positions_for(self._effective_orbit_frame()).get("positions") or []
-        if positions:
-            return tuple(float(v) for v in positions[0])  # type: ignore[return-value]
-        raise HTTPException(status_code=503, detail="the robot's path is not known yet")
+        if not positions:
+            raise HTTPException(status_code=503, detail="the robot's path is not known yet")
+        starts: list[tuple[float, float, float]] = []
+        previous: tuple[float, float, float] | None = None
+        for sample in positions:
+            where = (float(sample[0]), float(sample[1]), float(sample[2]))
+            # `frame_positions` repeats a position through gaps and back-fills the
+            # beginning with the first known one, so the head of this list is the same
+            # point many times over. Offering it repeatedly would spend the whole budget
+            # on one pose.
+            if where == previous:
+                continue
+            previous = where
+            # Through the same floor snap an explicit `start` gets, because that is the
+            # path this was proved on; the raw pose stands in when the snap declines.
+            starts.append(self._ground_under_viewer(where) or where)
+            if len(starts) >= RECORDING_START_TRIES:
+                break
+        return starts
 
     def _ground_under_viewer(
         self, viewer: tuple[float, float, float] | None = None
@@ -316,24 +351,25 @@ class WorldAnswers:
         # `getViewerRobotPosition()` -- so taking it raw started the route a metre above
         # every cell the planner can stand on, which is what this snap exists to prevent.
         if request.start_at == "recording_start":
-            # Not through `_ground_under_viewer`: that snap exists to turn a CAMERA
-            # height into a floor the planner can stand on, and this pose is already one
-            # the robot drove through. Sending it through the snap would look up the
-            # nearest sample of the robot's path to a point that IS a sample of the
-            # robot's path.
-            under: tuple[float, float, float] | None = self._robot_start_pose()
+            # A LIST, not a point: the recording's first pose is often somewhere a route
+            # cannot leave, so the planner is offered successively later poses of the
+            # robot's own path until one works.
+            start_options = self._recording_start_candidates()
         else:
             under = (
                 self._ground_under_viewer(tuple(request.start))
                 if request.start
                 else self._ground_under_viewer()
             )
-        # And no fallback to the caller's raw position when the snap DECLINES. It
-        # declines when the robot's path is not known, which is the one state in which
-        # nothing can say what height the caller is standing at -- taking their camera
-        # height then is the very input the snap exists to refuse. `_robot_end_pose()`
-        # answers the same way it does for a caller who sent no start at all: 503.
-        start = under or self._robot_end_pose()
+            # And no fallback to the caller's raw position when the snap DECLINES. It
+            # declines when the robot's path is not known, which is the one state in which
+            # nothing can say what height the caller is standing at -- taking their camera
+            # height then is the very input the snap exists to refuse. `_robot_end_pose()`
+            # answers the same way it does for a caller who sent no start at all: 503.
+            start_options = [under or self._robot_end_pose()]
+        # The first option is what the rest of this method measures distances from; the
+        # one that actually planned replaces it below, and is what the payload reports.
+        start = start_options[0]
         with self._clients_lock:
             images = list(self._active_query_images)
 
@@ -401,27 +437,47 @@ class WorldAnswers:
         # happened to leave behind is one edit away from reporting a rejected candidate's
         # length beside the accepted candidate's points.
         goal, goal_view, points, taken = None, None, [], None
+        # Which start it was planned from, so the payload cannot claim one the route does
+        # not begin at -- the same rule the goal has followed since the loop below learned
+        # to try more than one candidate.
+        used_start = start
         # Every candidate, with no cap. A cap of 8 was arbitrary and did the very thing
         # this loop exists to stop: with twelve photos of a place and only the ninth
         # reachable, it refused while a 9 m route existed. The list is already bounded --
         # it is one place's photographs, not the whole answer's.
-        for view_index, candidate in candidates:
-            route = (
-                planner.plan(tuple(start), tuple(candidate))
-                if isinstance(planner, MlsRoutePlanner)
-                else planner.plan(start[:2], candidate[:2])
-            )
-            if route is None:
-                continue
-            found = [(float(x), float(y), float(z)) for x, y, z in route.points]
-            if len(found) < 2:
-                continue
-            if math.dist(found[0], found[-1]) <= 1e-9:
-                continue  # went nowhere; see below
-            goal, goal_view, points, taken = candidate, view_index, found, route
-            break
+        for attempt in start_options:
+            for view_index, candidate in candidates:
+                route = (
+                    planner.plan(tuple(attempt), tuple(candidate))
+                    if isinstance(planner, MlsRoutePlanner)
+                    else planner.plan(attempt[:2], candidate[:2])
+                )
+                if route is None:
+                    continue
+                found = [(float(x), float(y), float(z)) for x, y, z in route.points]
+                if len(found) < 2:
+                    continue
+                if math.dist(found[0], found[-1]) <= 1e-9:
+                    continue  # went nowhere; see below
+                goal, goal_view, points, taken = candidate, view_index, found, route
+                used_start = attempt
+                break
+            if goal is not None:
+                break
         if goal is None or taken is None:
-            raise HTTPException(status_code=422, detail="no route through the known free space")
+            # Name what was tried. "No route" over a start the caller did not choose and
+            # cannot see is unactionable -- and when `start_at=recording_start` walks the
+            # robot's early path, WHICH poses it walked is the whole of the diagnosis.
+            tried = ", ".join(
+                "(" + ", ".join(f"{v:.2f}" for v in option) + ")" for option in start_options[:3]
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"no route through the known free space: {len(candidates)} goal(s) from "
+                    f"{len(start_options)} start(s) [{tried}...]"
+                ),
+            )
         # The "went nowhere" test in the loop above: a route has to GO somewhere. The
         # planner can return a handful of identical points when it cannot connect the
         # start to the goal, and a length check alone passes them -- measured live at
@@ -439,7 +495,7 @@ class WorldAnswers:
         payload = {
             "query_id": query_id,
             "cluster": cluster.index,
-            "start": [float(v) for v in start],
+            "start": [float(v) for v in used_start],
             # So the viewer can MARK a start the person did not choose by standing there.
             # A route drawn from the recording's beginning with no marker on it reads as a
             # route from wherever the viewer happens to be.

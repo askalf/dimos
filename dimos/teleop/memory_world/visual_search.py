@@ -113,6 +113,11 @@ def index_stream_name_of(model_name: str, image_stream_name: str) -> str:
     return f"{image_stream_name}_index_{model_slug(model_name)}"
 
 
+# The most a knn query may ask the vector store for. sqlite-vec refuses a larger k
+# outright -- "k value in knn query too large, provided 4819 and the limit is 4096" -- so
+# a recording with more indexed frames than this cannot be asked for all of them at once,
+# which is what a windowed search would like to do.
+MAX_VECTOR_SEARCH_K = 4096
 # An mcap embedding names its frame only by stamp; this is how close it must be.
 STAMP_MATCH_TOLERANCE_S = 1e-3
 
@@ -697,15 +702,9 @@ class VisualMemoryIndex:
         stream = self._ensure_searchable()
         query = self.model.embed_text(text)
         if window is None:
-            hits = stream.search(query, k=k)
+            hits: Iterable[Any] = stream.search(query, k=min(k, MAX_VECTOR_SEARCH_K))
         else:
-            # Search FIRST, then narrow. `time_range(...).search(...)` reads as the
-            # natural order and silently returns NOTHING -- the range never reaches the
-            # vector store, which ranks the whole stream. And because the narrowing
-            # happens after the ranking, the search has to be asked for every frame:
-            # a top-200 that all falls outside the window would answer "nothing there"
-            # about a window it never looked in.
-            hits = stream.search(query, k=int(stream.count())).time_range(*window)
+            hits = self._search_window(stream, query, k, window)
         places: list[Place] = []
         for obs in hits:
             pose = obs.pose_tuple
@@ -727,6 +726,35 @@ class VisualMemoryIndex:
             if len(places) >= k:
                 break
         return places
+
+    def _search_window(
+        self,
+        stream: Any,
+        query: Any,
+        k: int,
+        window: tuple[float, float],
+    ) -> list[Any]:
+        """The *k* best hits stamped inside *window*, asking the store for as few as will do.
+
+        Search FIRST, then narrow: `time_range(...).search(...)` reads as the natural
+        order and silently returns NOTHING, because the range never reaches the vector
+        store, which ranks the whole stream regardless. Since the narrowing therefore
+        happens AFTER the ranking, a plain top-`k` that all falls outside the window would
+        answer "nothing there" about a window it never looked in.
+
+        So the ask widens until the window is filled -- rather than asking for every frame
+        at once, which is both wasteful and, past `MAX_VECTOR_SEARCH_K`, refused outright
+        by the store. When the ceiling is reached with fewer than *k* in hand, that is the
+        honest answer: the store has been asked for as much as it will rank.
+        """
+        total = int(stream.count())
+        ceiling = min(total, MAX_VECTOR_SEARCH_K)
+        asked = min(max(k, 1) * 4, ceiling)
+        while True:
+            hits = list(stream.search(query, k=asked).time_range(*window))
+            if len(hits) >= k or asked >= ceiling:
+                return hits
+            asked = min(asked * 4, ceiling)
 
     def stop(self) -> None:
         if self._model is not None:

@@ -237,9 +237,9 @@ class MemoryWorldConfig(ModuleConfig):
     search_top_k: int = PydanticField(default=200, ge=1)
     # Below this cosine, the best-matching frame is reported as no match at all. A
     # ranking always returns its top row, so without a floor "were there any people"
-    # is answered yes on every recording ever made. Measured on grocery.mcap, see
-    # `min_similarity` in README.md.
-    min_similarity: float = PydanticField(default=0.04, ge=-1.0, le=1.0)
+    # is answered yes on every recording ever made. Measured, not guessed: see
+    # "The match floor" in README.md.
+    min_similarity: float = PydanticField(default=0.098, ge=-1.0, le=1.0)
     # faster-whisper model size for the spoken query.
     whisper_model: str = "base.en"
     # The colour camera's calibration, used for the field of view the query
@@ -868,9 +868,13 @@ class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, 
                 recording began -- what someone means by "the starting point". "viewer"
                 is where the person asking is standing right now.
         """
-        wanted = (
-            "recording_start" if "record" in start.lower() or "start" in start.lower() else "viewer"
-        )
+        # "Where the person is" wins over "start", because one sentence can hold both:
+        # "start from where I am standing now" contains the word `start` and means the
+        # opposite of the recording's beginning.
+        said = start.lower()
+        here = any(word in said for word in ("view", "stand", "here", "current", "now", " me"))
+        begins = any(word in said for word in ("record", "start", "begin", "first"))
+        wanted = "recording_start" if begins and not here else "viewer"
         try:
             payload = self._navigate_to(
                 NavigateRequest(cluster=max(0, int(place) - 1), start_at=wanted)

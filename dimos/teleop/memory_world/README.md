@@ -12,6 +12,28 @@ pose of the frame that matched, so a place is somewhere the thing was **seen
 from**, not the thing's own position. Nothing is projected into the map.
 `DEMO.md` is the walkthrough.
 
+## The match floor
+
+A cosine ranking always returns its top row, so "were there any people" is answered yes
+on every recording ever made unless a best match that is merely the *least bad* is
+reported as no match. `min_similarity` is that floor.
+
+Measured on `grocery.mcap` (4819 indexed frames), five things plainly in a grocery
+recording against five that certainly are not:
+
+| present | best | absent | best |
+|---|---|---|---|
+| a shelf of bottles | +0.1617 | a ski slope | +0.0823 |
+| a refrigerator | +0.1370 | a snowmobile | +0.0633 |
+| a shopping basket | +0.1246 | a giraffe | +0.0529 |
+| a doorway | +0.1181 | an aeroplane cockpit | +0.0388 |
+| a person | +0.1143 | a coral reef | +0.0294 |
+
+The two ranges do not overlap: present spans +0.1143 to +0.1617, absent +0.0294 to
++0.0823. The default is the midpoint of that gap, **0.098**, which leaves about 0.016 of
+margin on each side. A different camera, scene or checkpoint will move both columns, so
+re-measure rather than carrying this number over.
+
 ## Running
 
 ```bash

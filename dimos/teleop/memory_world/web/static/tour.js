@@ -53,7 +53,8 @@ export class Tour {
                     Everything in this world was rebuilt from that recording &mdash; ${this._voxelCount()} voxels,
                     ${this._frameCount()} camera frames.
                     <ul><li>This tour is about the part that lets you ask it questions in plain words:
-                    <b>CLIP embeddings</b>.</li>
+                    <b>CLIP embeddings</b> recorded alongside the frames, and a <b>vector-database
+                    lookup</b> over them.</li>
                     <li>Drag to look, W A S D to walk, the wheel to scale; the tour flies you between exhibits.</li></ul>`,
                 enter: () => {
                     this._layers({ voxels: true, photos: false });
