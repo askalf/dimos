@@ -106,3 +106,27 @@ def test_an_area_is_contrasted_against_objects_not_against_a_room() -> None:
     assert not any(
         word in prompt for prompt in AREA_PROMPTS for word in ("floor", "wall", "ceiling", "room")
     ), f"an area contrast must not subtract the room: {AREA_PROMPTS}"
+
+
+def test_the_query_module_can_configure_everything_its_start_reads() -> None:
+    """Every `self.config.X` on the start path has to exist on the config.
+
+    `Hyperspace.start()` crashed on `max_depth_m` -- present on the ingest's config and
+    missing from the query module's -- so the detector never loaded and the module was
+    unusable, while `map live` and `map find` were fine because they build the query
+    object directly and never go through the module. Nothing caught it because nothing
+    started the module. A missing field is an AttributeError at start, which on a robot
+    is a module that is simply not there.
+    """
+    from pathlib import Path
+    import re
+
+    from dimos.mapping.hyperspace.module import HyperspaceConfig
+
+    source = Path(__file__).with_name("module.py").read_text()
+    # The query module's half of the file: from its config to the end.
+    start = source.index("class HyperspaceConfig(")
+    read = set(re.findall(r"self\.config\.([a-z_0-9]+)", source[start:]))
+    known = set(HyperspaceConfig.model_fields)
+    missing = sorted(read - known)
+    assert not missing, f"Hyperspace reads config fields it does not declare: {missing}"

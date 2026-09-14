@@ -350,6 +350,12 @@ class HyperspaceConfig(MemoryModuleConfig):
     # Subtract generic floor/wall/ceiling prompts from every patch score. See
     # `DetectConfig.contrast`; off is the right answer when the query IS a wall.
     contrast: bool = True
+    # Depth past this (m) is a hole, not a reading -- RealSense frames carry 65535 mm
+    # "no reading" sentinels. The same number `HyperspacePatchesConfig` uses, and the
+    # detector needs its own copy because it places boxes off depth the ingest never saw.
+    # NOTE it is an INDOOR number: bike.db is an outdoor ride and the 10 m cut refused a
+    # real cone at 11 m. Raise it deliberately for outdoor recordings.
+    max_depth_m: float = 10.0
 
     # Demo: after this many seconds, run demo_queries and publish the answers,
     # then repeat every demo_every_s. 0 disables.
