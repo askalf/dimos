@@ -12,45 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Characterize Alfred's FlowBase and emit the artifact the follower reads.
+"""Characterize Alfred's FlowBase and write the artifact the follower reads.
 
-    dimos --rerun-host 0.0.0.0 run alfred-autotune
+    dimos run alfred-autotune --alfredautotunedriver.armed true
 
-The holonomic pose follower self-calibrates from a pose-domain artifact, and the
-only one vendored is the Go2's. Running Alfred's follower against a Go2 plant
+One command. It drives the excitation battery, fits a FOPDT model per axis,
+tunes the gains and writes ``alfred_posedomain.json`` next to the Go2's, plus a
+characterization report. Nothing offline to run afterwards.
+
+The holonomic pose follower self-calibrates from a pose-domain artifact and the
+only one vendored is the Go2's. Pointing Alfred's follower at a quadruped's plant
 model means commanded and achieved speeds disagree, so the base runs hot and
-glides past its goal. This blueprint produces Alfred's own.
+glides past its goal. This produces Alfred's own.
 
-It drives a step battery through AlfredHighLevel while Point-LIO supplies world
-pose, and records each excitation run as one episode. Feedback is pose rather
-than wheel odometry on purpose: the fitter identifies what the robot actually
-did in the world, and a caster base's own encoders slip exactly when a step
-excitation is most informative.
+Feedback is world pose from Point-LIO, not wheel odometry: the fitter identifies
+what the robot actually did in the world, and a caster base's own encoders slip
+exactly when a step excitation is most informative. The driver projects that
+world pose onto the axis under test - forward travel for vx, lateral for vy,
+unwrapped yaw for wz - because the pose fitter identifies on a scalar per axis,
+not on a world pose.
 
-The run is the operator's to supervise. The battery commands motion at up to
-Alfred's declared vmax on all three axes, and nothing repositions the base
-between runs - clear a few metres, watch it, and reposition during the settle
-dwells. There is no obstacle checking here; this blueprint is the plant test,
-not navigation.
+SUPERVISE THE RUN. The battery commands motion at up to Alfred's declared vmax
+on all three axes with no obstacle checking of any kind: this is the plant test,
+not navigation. Clear a few metres, arm it deliberately, and reposition the base
+by hand during the settle dwells. It refuses to move unless armed.
 
-Afterwards the fit, tune, and emit steps need no robot:
-
-    from dimos.control.autotune.runner import autotune_offline
-    outputs = autotune_offline(profile, segments_by_channel, robot_id="alfred", sim_or_hw="hw")
-
-Write the resulting artifact next to the Go2's and point the follower's
-``artifact_path`` at it.
+The raw streams are recorded too, so a collection can be re-fitted later without
+re-driving the robot.
 """
 
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
 import threading
 from typing import Any
 
-from dimos.control.autotune.drive import run_battery
-from dimos.control.autotune.excitation import step_battery
+import numpy as np
+
+from dimos.control.autotune.drive import play_run
+from dimos.control.autotune.excitation import ExcitationRun, step_battery
 from dimos.control.autotune.live import make_sinks
 from dimos.control.autotune.profile import BatteryConfig, Channel, RobotProfile
+from dimos.control.autotune.report import write_tuned_artifact
+from dimos.control.autotune.runner import autotune_offline
+from dimos.control.tasks.holonomic_pose_follower_task.holonomic_pose_follower_task import (
+    DEFAULT_ARTIFACT_PATH,
+)
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
@@ -73,6 +82,10 @@ ODOM_FRAME = "odom"
 LIDAR_FRAME = "mid360_link"
 
 _VX_MAX, _VY_MAX, _WZ_MAX = ALFRED_BASE_VELOCITY_LIMITS
+
+# Alongside the Go2's, which is where the follower's artifact_path already points.
+ALFRED_ARTIFACT_PATH = str(Path(DEFAULT_ARTIFACT_PATH).parent / "alfred_posedomain.json")
+ALFRED_REPORT_PATH = str(Path(DEFAULT_ARTIFACT_PATH).parent / "alfred_characterization.json")
 
 
 def alfred_autotune_profile() -> RobotProfile:
@@ -103,6 +116,36 @@ def alfred_autotune_profile() -> RobotProfile:
     )
 
 
+def project_to_axis(
+    samples: list[tuple[float, float, float, float]], channel: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """World pose samples ``(t, x, y, yaw)`` to the scalar the pose fitter reads.
+
+    The fitter identifies one axis at a time against a single measured signal, so
+    a world pose has to be resolved onto the axis under test. Translation is taken
+    in the body frame the run STARTED in: a step in vy moves the robot sideways in
+    the world, and only the initial heading says which world direction that was.
+
+    Yaw is unwrapped before differencing so a run that crosses +/-pi does not read
+    as a 2*pi jump - which would otherwise fit as an enormous gain.
+    """
+    t0, x0, y0, yaw0 = samples[0]
+    t = np.array([s[0] - t0 for s in samples], dtype=float)
+
+    if channel == "wz":
+        yaw = np.unwrap(np.array([s[3] for s in samples], dtype=float))
+        return t, yaw - yaw[0]
+
+    dx = np.array([s[1] - x0 for s in samples], dtype=float)
+    dy = np.array([s[2] - y0 for s in samples], dtype=float)
+    cos0, sin0 = math.cos(yaw0), math.sin(yaw0)
+    if channel == "vx":
+        return t, dx * cos0 + dy * sin0
+    if channel == "vy":
+        return t, -dx * sin0 + dy * cos0
+    raise ValueError(f"unknown channel {channel!r}; expected vx, vy or wz")
+
+
 class AlfredAutotuneRecorderConfig(RecorderConfig):
     pass
 
@@ -110,9 +153,10 @@ class AlfredAutotuneRecorderConfig(RecorderConfig):
 class AlfredAutotuneRecorder(Recorder):
     """Captures the two streams the fitters read, segmented by episode.
 
-    Command and pose only. The imitation collector records a camera and the
-    coordinator's joints; neither identifies a base plant, and both would bloat
-    a session that is already one long motion test.
+    The driver fits in-process, so this is not on the critical path; it exists so
+    a collection can be re-fitted later without re-driving the robot. Command and
+    pose only: the imitation collector records a camera and the coordinator's
+    joints, neither of which identifies a base plant.
     """
 
     config: AlfredAutotuneRecorderConfig
@@ -133,28 +177,38 @@ class AlfredAutotuneDriverConfig(ModuleConfig):
     # Off by default. Arming is a deliberate act: this commands real motion on
     # all three axes with no obstacle checking of any kind.
     armed: bool = False
+    artifact_path: str = ALFRED_ARTIFACT_PATH
+    report_path: str = ALFRED_REPORT_PATH
+    # A run this short cannot carry a time constant; fitting it would pollute the
+    # pool rather than fail loudly.
+    min_samples_per_run: int = 8
 
 
 class AlfredAutotuneDriver(Module):
-    """Plays the excitation battery and marks each run as an episode."""
+    """Plays the battery, captures pose per run, fits and writes the artifact."""
 
     config: AlfredAutotuneDriverConfig
 
     cmd_vel: Out[Twist]
     status: Out[EpisodeStatus]
+    start_pose: In[PoseStamped]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._buf_lock = threading.Lock()
+        self._buf: list[tuple[float, float, float, float]] = []
+        self._capturing = False
 
     @rpc
     def start(self) -> None:
         super().start()
+        self.start_pose.subscribe(self._on_pose)
         if not self.config.armed:
             logger.warning(
-                "Alfred autotune is not armed; no motion will be commanded. "
-                "Re-run with --alfredautotunedriver.armed true once the area is clear."
+                "Alfred autotune is not armed; no motion will be commanded. Re-run with "
+                "--alfredautotunedriver.armed true once the area is clear and supervised."
             )
             return
         self._stop.clear()
@@ -172,6 +226,33 @@ class AlfredAutotuneDriver(Module):
             logger.exception("Failed to zero Alfred's base on autotune shutdown")
         super().stop()
 
+    def _on_pose(self, msg: PoseStamped) -> None:
+        with self._buf_lock:
+            if self._capturing:
+                self._buf.append((float(msg.ts), float(msg.x), float(msg.y), float(msg.yaw)))
+
+    def _capture(self, on: bool) -> list[tuple[float, float, float, float]]:
+        """Arm or disarm pose capture; returns what was captured."""
+        with self._buf_lock:
+            captured = list(self._buf)
+            self._buf = []
+            self._capturing = on
+        return captured
+
+    def _segment(self, run: ExcitationRun) -> tuple[np.ndarray, np.ndarray, float] | None:
+        """Close out one run's capture as a fitter segment, or None if too thin."""
+        samples = self._capture(False)
+        if len(samples) < self.config.min_samples_per_run:
+            logger.warning(
+                "Alfred autotune run produced too little pose to fit; dropping it",
+                run=run.label,
+                samples=len(samples),
+                needed=self.config.min_samples_per_run,
+            )
+            return None
+        t, measured = project_to_axis(samples, run.channel)
+        return t, measured, float(run.amplitude)
+
     def _run(self) -> None:
         profile = alfred_autotune_profile()
         runs = step_battery(profile, duration_s=self.config.step_duration_s)
@@ -186,24 +267,83 @@ class AlfredAutotuneDriver(Module):
             publish_twist=self.cmd_vel.publish,
             publish_status=self.status.publish,
         )
+
+        segments: dict[str, list[tuple[np.ndarray, np.ndarray, float]]] = {
+            channel: [] for channel in profile.channel_names
+        }
+        played = 0
         try:
-            played = run_battery(
-                runs,
-                sink,
-                episodes,
-                clock,
-                tick_hz=self.config.tick_hz,
-                settle_s=self.config.settle_s,
-            )
+            for index, run in enumerate(runs, start=1):
+                if self._stop.is_set():
+                    logger.warning("Alfred autotune stopped early", played=played, of=len(runs))
+                    break
+                self._capture(True)
+                play_run(run, sink, episodes, clock, tick_hz=self.config.tick_hz)
+                segment = self._segment(run)
+                if segment is not None:
+                    segments[run.channel].append(segment)
+                played += 1
+                logger.info("Alfred autotune run done", run=run.label, index=index, of=len(runs))
+                # Inter-run settle: hold zero so transients die before the next
+                # excitation, and so the operator can reposition the base.
+                sink.stop()
+                clock.sleep(self.config.settle_s)
         except Exception:
             logger.exception("Alfred autotune battery failed; zeroing the base")
             self.cmd_vel.publish(Twist())
             return
-        self.cmd_vel.publish(Twist())
+        finally:
+            self._capture(False)
+            self.cmd_vel.publish(Twist())
+
+        self._emit(profile, segments, played=played, total=len(runs))
+
+    def _emit(
+        self,
+        profile: RobotProfile,
+        segments: dict[str, list[tuple[np.ndarray, np.ndarray, float]]],
+        *,
+        played: int,
+        total: int,
+    ) -> None:
+        """Fit, tune and write. A partial battery still emits what it measured."""
+        fitted = {channel: len(segs) for channel, segs in segments.items()}
+        if not any(fitted.values()):
+            logger.error(
+                "Alfred autotune captured no usable segments; nothing to fit. Check that "
+                "Point-LIO is publishing and that start_pose reaches the driver.",
+                played=played,
+            )
+            return
+
+        try:
+            outputs = autotune_offline(profile, segments, robot_id="alfred", sim_or_hw="hw")
+        except Exception:
+            logger.exception("Alfred autotune fit failed", segments=fitted)
+            return
+
+        try:
+            # The package's own writer, so the artifact round-trips in the key
+            # order the follower's from_artifact expects.
+            artifact_path = write_tuned_artifact(self.config.artifact_path, outputs.artifact)
+            report_path = Path(self.config.report_path)
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(json.dumps(outputs.report, indent=2))
+        except Exception:
+            logger.exception("Alfred autotune could not write its artifact")
+            return
+
         logger.info(
-            "Alfred autotune battery complete. Fit offline with "
-            "dimos.control.autotune.runner.autotune_offline",
-            episodes=played,
+            "Alfred autotune complete",
+            artifact=str(artifact_path),
+            report=str(report_path),
+            runs_played=f"{played}/{total}",
+            segments_fitted=fitted,
+            valid_for_tuning=outputs.artifact.get("valid_for_tuning"),
+        )
+        logger.info(
+            "Point the follower at it: "
+            f'holonomic_pose_follower params {{"artifact_path": "{artifact_path}"}}'
         )
 
 
