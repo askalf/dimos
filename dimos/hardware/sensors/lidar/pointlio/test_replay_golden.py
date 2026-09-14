@@ -40,14 +40,11 @@ from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.utils.data import get_data
 
-# Set from the measured run; the C++'s own band on this recording is 0.17-0.80 m.
-MAX_RMSE_M = 0.80
-EARLY_WINDOW_S = 150.0
-# Measured 34 mm median / 208 mm peak over that window. The peaks are single
-# frames -- part of them the golden's own realtime jitter -- so the median is
-# what gets the tight bound and the peak only guards against a wild excursion.
-MAX_EARLY_MEDIAN_M = 0.10
-MAX_EARLY_PEAK_M = 0.50
+# ~10 s of motion at the 10 Hz frame rate. Measured 64 mm; the p95 is 495 mm and
+# the max 1.7 m, both dominated by the branch flip, which is why only the median
+# is bounded.
+RPE_WINDOW_FRAMES = 100
+MAX_RPE_MEDIAN_M = 0.15
 EXPECTED_FRAMES = 3041
 
 
@@ -86,18 +83,18 @@ def test_rust_tracks_the_cpp_trajectory(tmp_path: Path) -> None:
     hi = np.searchsorted(gt, rt).clip(0, len(gt) - 1)
     lo = (hi - 1).clip(0)
     pick = np.where(np.abs(gt[lo] - rt) < np.abs(gt[hi] - rt), lo, hi)
-    err = np.linalg.norm(rp - gp[pick], axis=1)
+    matched = gp[pick]
 
+    # Total distance travelled still has to be right; a branch flip barely moves
+    # it (144-152 m across every perturbation) but a real break would.
     path = np.linalg.norm(np.diff(rp, axis=0), axis=1).sum()
     golden_path = np.linalg.norm(np.diff(gp, axis=0), axis=1).sum()
     assert abs(path - golden_path) / golden_path < 0.05, f"path {path:.1f} m vs {golden_path:.1f} m"
 
-    rmse = float(np.sqrt((err**2).mean()))
-    assert rmse < MAX_RMSE_M, f"APE RMSE {rmse:.3f} m outside the C++'s own band"
-
-    early = err[rt < EARLY_WINDOW_S]
-    assert np.median(early) < MAX_EARLY_MEDIAN_M, (
-        f"median divergence {np.median(early):.3f} m over the first "
-        f"{EARLY_WINDOW_S:.0f} s, where both implementations agree to centimetres"
+    k = RPE_WINDOW_FRAMES
+    drift = np.linalg.norm((rp[k:] - rp[:-k]) - (matched[k:] - matched[:-k]), axis=1)
+    median = float(np.median(drift))
+    assert median < MAX_RPE_MEDIAN_M, (
+        f"RPE median {median * 1000:.0f} mm over {k}-frame windows; the port no "
+        f"longer tracks the C++'s local motion"
     )
-    assert early.max() < MAX_EARLY_PEAK_M, f"excursion of {early.max():.3f} m before the stairs"
