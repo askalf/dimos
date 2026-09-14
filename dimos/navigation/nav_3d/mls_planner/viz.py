@@ -184,16 +184,26 @@ def robot_clearance(height: float, wall_clearance_m: float) -> Archetype:
     )
 
 
+def _body_on_base_link(rr: Any, length: float, width: float, height: float) -> list[Any]:
+    return [robot_body_box(length, width, height), rr.Transform3D(parent_frame="tf#/base_link")]
+
+
+def _clearance_on_body(rr: Any, height: float, wall_clearance_m: float) -> list[Any]:
+    return [robot_clearance(height, wall_clearance_m)]
+
+
 def nav_static(
     length: float, width: float, height: float, wall_clearance_m: float
 ) -> dict[str, Callable[[Any], list[Any]]]:
-    """Bridge static entities: the body box and clearance cylinder riding on base_link."""
+    """Bridge static entities: the body box and clearance cylinder riding on base_link.
+
+    Module-level partials, since blueprint config is pickled out to the workers.
+    """
     return {
-        "world/robot_body": lambda rr: [
-            robot_body_box(length, width, height),
-            rr.Transform3D(parent_frame="tf#/base_link"),
-        ],
-        "world/robot_body/clearance": lambda rr: [robot_clearance(height, wall_clearance_m)],
+        "world/robot_body": partial(_body_on_base_link, length=length, width=width, height=height),
+        "world/robot_body/clearance": partial(
+            _clearance_on_body, height=height, wall_clearance_m=wall_clearance_m
+        ),
     }
 
 

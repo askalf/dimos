@@ -52,6 +52,17 @@ def test_goal_placeholder_is_not_drawn():
     assert viz.render_goal(PointStamped(x=1.0, y=2.0, z=0.0)) is not None
 
 
+def test_bridge_config_pickles_for_the_workers():
+    import pickle
+
+    static = pickle.loads(pickle.dumps(viz.nav_static(0.7, 0.3, 0.3, 0.1)))
+    overrides = pickle.loads(pickle.dumps(viz.nav_visual_override(2.0, 0.08, 0.1)))
+    import rerun as rr
+
+    assert len(static["world/robot_body"](rr)) == 2
+    assert callable(overrides["world/surface_map"])
+
+
 def test_overrides_follow_the_planner_publish_rate():
     off = viz.nav_visual_override(0.0, 0.08, 0.1)
     on = viz.nav_visual_override(2.0, 0.08, 0.1)
