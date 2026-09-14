@@ -14,11 +14,22 @@
 
 """Characterize Alfred's FlowBase and write the artifact the follower reads.
 
-    dimos run alfred-autotune --alfredautotunedriver.armed true
+    dimos --rerun-host 0.0.0.0 run alfred-autotune
 
 One command. It drives the excitation battery, fits a FOPDT model per axis,
 tunes the gains and writes ``alfred_posedomain.json`` next to the Go2's, plus a
 characterization report. Nothing offline to run afterwards.
+
+THE OPERATOR PACES IT. Nothing moves until you advance the gate, and the gate
+comes back between every run - 54 of them. Click anywhere in the rerun viewer to
+play the next run; drive the base with the viewer's keyboard in between to
+reposition it, which is most of what the run actually involves. The Go2's
+benchmark gates the same way, off its KeyboardTeleop; Alfred is headless over
+ssh, so the gate and the driving both come from the viewer instead of a pygame
+window that has no display to open on.
+
+    app.AlfredAutotuneDriver.skip()    drop a run the robot is badly placed for
+    app.AlfredAutotuneDriver.abort()   end the battery, fit what was measured
 
 The holonomic pose follower self-calibrates from a pose-domain artifact and the
 only one vendored is the Go2's. Pointing Alfred's follower at a quadruped's plant
@@ -32,10 +43,10 @@ world pose onto the axis under test - forward travel for vx, lateral for vy,
 unwrapped yaw for wz - because the pose fitter identifies on a scalar per axis,
 not on a world pose.
 
-SUPERVISE THE RUN. The battery commands motion at up to Alfred's declared vmax
-on all three axes with no obstacle checking of any kind: this is the plant test,
-not navigation. Clear a few metres, arm it deliberately, and reposition the base
-by hand during the settle dwells. It refuses to move unless armed.
+The battery commands motion at up to Alfred's declared vmax on all three axes
+with no obstacle checking of any kind: this is the plant test, not navigation.
+Clear a few metres and watch it. Nothing repositions the base automatically -
+that is what the gate is for.
 
 The raw streams are recorded too, so a collection can be re-fitted later without
 re-driving the robot.
@@ -57,13 +68,16 @@ from dimos.control.autotune.live import make_sinks
 from dimos.control.autotune.profile import BatteryConfig, Channel, RobotProfile
 from dimos.control.autotune.report import write_tuned_artifact
 from dimos.control.autotune.runner import autotune_offline
+from dimos.control.benchmarking.gate import GATE_ADVANCE, GATE_QUIT, GATE_SKIP
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
+from dimos.core.global_config import global_config
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.imitation.collection.episode_monitor import EpisodeStatus
 from dimos.memory.module import Recorder, RecorderConfig
+from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.navigation.nav_3d.mls_planner.start_relay import StartRelay
@@ -76,6 +90,7 @@ from dimos.robot.diy.alfred.config import ALFRED
 from dimos.robot.diy.alfred.effector_high_level import AlfredHighLevel
 from dimos.robot.diy.alfred.mount_tf import AlfredMountTf
 from dimos.utils.logging_config import setup_logger
+from dimos.visualization.vis_module import vis_module
 
 logger = setup_logger()
 
@@ -172,12 +187,13 @@ class AlfredAutotuneDriverConfig(ModuleConfig):
     # feedback arrives buys resolution the fit cannot use.
     tick_hz: float = 50.0
     step_duration_s: float = 4.0
-    # Long enough for the base to come to rest, and for an operator to reposition
-    # it by hand between runs.
-    settle_s: float = 3.0
-    # Off by default. Arming is a deliberate act: this commands real motion on
-    # all three axes with no obstacle checking of any kind.
-    armed: bool = False
+    # Held after a run so the base is at rest before the operator takes over. It
+    # is not the repositioning window - the gate is, and it waits as long as you
+    # need.
+    settle_s: float = 1.0
+    # 0 waits forever. The operator paces this run; a battery that marched on by
+    # itself would be driving an unattended robot.
+    gate_timeout_s: float = 0.0
     artifact_path: str = ALFRED_ARTIFACT_PATH
     report_path: str = ALFRED_REPORT_PATH
     # A run this short cannot carry a time constant; fitting it would pollute the
@@ -193,6 +209,11 @@ class AlfredAutotuneDriver(Module):
     cmd_vel: Out[Twist]
     status: Out[EpisodeStatus]
     start_pose: In[PoseStamped]
+    # The operator's gate and their hands on the base, both from the rerun
+    # viewer: this runs on a headless robot over ssh, so a pygame window is not
+    # available the way it is for the Go2's KeyboardTeleop.
+    clicked_point: In[PointStamped]
+    tele_cmd_vel: In[Twist]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -201,17 +222,25 @@ class AlfredAutotuneDriver(Module):
         self._buf_lock = threading.Lock()
         self._buf: list[tuple[float, float, float, float]] = []
         self._capturing = False
+        self._gate = threading.Event()
+        self._gate_action = GATE_ADVANCE
+        # Teleop only reaches the base between runs. The driver is the sole
+        # writer of cmd_vel, so a stray key during an excitation cannot corrupt
+        # the step it is trying to identify.
+        self._relaying = False
 
     @rpc
     def start(self) -> None:
         super().start()
         self.start_pose.subscribe(self._on_pose)
-        if not self.config.armed:
-            logger.warning(
-                "Alfred autotune is not armed; no motion will be commanded. Re-run with "
-                "--alfredautotunedriver.armed true once the area is clear and supervised."
-            )
-            return
+        self.clicked_point.subscribe(self._on_click)
+        self.tele_cmd_vel.subscribe(self._on_teleop)
+        logger.warning(
+            "Alfred autotune is waiting at the gate. Nothing moves until you advance it: "
+            "click anywhere in the rerun viewer to play each run, and drive the base with "
+            "the viewer's keyboard between runs to reposition it. "
+            "app.AlfredAutotuneDriver.skip() drops a run, .abort() ends the battery."
+        )
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="alfred-autotune", daemon=True)
         self._thread.start()
@@ -239,6 +268,64 @@ class AlfredAutotuneDriver(Module):
             self._buf = []
             self._capturing = on
         return captured
+
+    def _on_click(self, msg: PointStamped) -> None:
+        """A click anywhere in the viewer advances the battery by one run."""
+        self._gate_action = GATE_ADVANCE
+        self._gate.set()
+
+    def _on_teleop(self, msg: Twist) -> None:
+        """Operator driving between runs. Ignored while a run is playing."""
+        if self._relaying:
+            self.cmd_vel.publish(msg)
+
+    @rpc
+    def advance(self) -> None:
+        """Play the next run. The same thing a viewer click does."""
+        self._on_click(PointStamped())
+
+    @rpc
+    def skip(self) -> None:
+        """Drop the next run and move on - a run the robot was badly placed for."""
+        self._gate_action = GATE_SKIP
+        self._gate.set()
+
+    @rpc
+    def abort(self) -> None:
+        """Stop the battery and fit whatever has been measured so far."""
+        self._gate_action = GATE_QUIT
+        self._gate.set()
+
+    def _wait_for_gate(self, run: ExcitationRun, index: int, total: int) -> int:
+        """Block until the operator advances, skips or aborts.
+
+        The base is the operator's while this waits: teleop is relayed through so
+        they can reposition, which on a 54-run battery is most of what the run
+        actually involves.
+        """
+        self._gate.clear()
+        self._relaying = True
+        logger.info(
+            "Waiting at the gate - click the viewer to play, or reposition with its keyboard",
+            next_run=run.label,
+            index=index,
+            of=total,
+        )
+        try:
+            timeout = self.config.gate_timeout_s or None
+            while not self._gate.wait(timeout=0.2):
+                if self._stop.is_set():
+                    return GATE_QUIT
+                if timeout is not None:
+                    timeout -= 0.2
+                    if timeout <= 0:
+                        logger.warning("Gate timed out; ending the battery", run=run.label)
+                        return GATE_QUIT
+        finally:
+            self._relaying = False
+            # Whatever the operator left on the stick, the run starts from rest.
+            self.cmd_vel.publish(Twist())
+        return self._gate_action
 
     def _segment(self, run: ExcitationRun) -> tuple[np.ndarray, np.ndarray, float] | None:
         """Close out one run's capture as a fitter segment, or None if too thin."""
@@ -278,6 +365,19 @@ class AlfredAutotuneDriver(Module):
                 if self._stop.is_set():
                     logger.warning("Alfred autotune stopped early", played=played, of=len(runs))
                     break
+
+                action = self._wait_for_gate(run, index, len(runs))
+                if action == GATE_QUIT:
+                    logger.warning(
+                        "Battery aborted at the gate; fitting what was measured",
+                        played=played,
+                        of=len(runs),
+                    )
+                    break
+                if action == GATE_SKIP:
+                    logger.info("Run skipped at the gate", run=run.label, index=index)
+                    continue
+
                 self._capture(True)
                 play_run(run, sink, episodes, clock, tick_hz=self.config.tick_hz)
                 segment = self._segment(run)
@@ -285,8 +385,8 @@ class AlfredAutotuneDriver(Module):
                     segments[run.channel].append(segment)
                 played += 1
                 logger.info("Alfred autotune run done", run=run.label, index=index, of=len(runs))
-                # Inter-run settle: hold zero so transients die before the next
-                # excitation, and so the operator can reposition the base.
+                # Let transients die before the operator takes the base back; the
+                # gate, not this dwell, is where repositioning happens.
                 sink.stop()
                 clock.sleep(self.config.settle_s)
         except Exception:
@@ -349,6 +449,10 @@ class AlfredAutotuneDriver(Module):
 
 
 alfred_autotune = autoconnect(
+    # The operator's console: their gate (a click) and their hands on the base
+    # (the viewer's keyboard) both arrive here. The robot is headless over ssh,
+    # so this is the console - there is no pygame window to open on it.
+    vis_module(viewer_backend=global_config.viewer),
     AlfredHighLevel.blueprint().remappings([(AlfredHighLevel, "wheel_odometry", "odom_sources")]),
     AlfredMountTf.blueprint(root_frame=LIDAR_FRAME),
     # Pose feedback. Point-LIO owns odom -> mid360_link, so the mount tree roots

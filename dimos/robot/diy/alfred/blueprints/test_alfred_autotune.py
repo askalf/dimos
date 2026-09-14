@@ -22,12 +22,18 @@ Point-LIO world pose and the scalar those fitters read.
 from __future__ import annotations
 
 import math
+import threading
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from dimos.control.autotune.excitation import step_battery
 from dimos.control.autotune.fit.synth import MeasurementModel, synth_step
 from dimos.control.autotune.runner import autotune_offline
+from dimos.control.benchmarking.gate import GATE_ADVANCE, GATE_QUIT, GATE_SKIP
+from dimos.msgs.geometry_msgs.Twist import Twist
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.robot.diy.alfred.blueprints.alfred_autotune import (
     alfred_autotune,
     alfred_autotune_profile,
@@ -157,8 +163,86 @@ def test_blueprint_composes_with_pose_feedback_reaching_the_driver() -> None:
     assert streams.get("cmd_vel") == "out"
 
 
-def test_the_battery_is_refused_until_armed() -> None:
-    """It commands full-envelope motion on three axes with no obstacle checking."""
+def _driver():
+    from dimos.robot.diy.alfred.blueprints.alfred_autotune import (
+        AlfredAutotuneDriver,
+        AlfredAutotuneDriverConfig,
+    )
+
+    d = AlfredAutotuneDriver.__new__(AlfredAutotuneDriver)
+    d.config = AlfredAutotuneDriverConfig()
+    d._gate = threading.Event()
+    d._gate_action = GATE_ADVANCE
+    d._relaying = False
+    d._stop = threading.Event()
+    d._published = []
+    d.cmd_vel = SimpleNamespace(publish=d._published.append)
+    return d
+
+
+def test_the_gate_waits_and_a_click_advances_it() -> None:
+    """Nothing moves until the operator says so - there is no arm flag, the gate is it."""
+    from dimos.control.autotune.excitation import step_battery
     from dimos.robot.diy.alfred.blueprints.alfred_autotune import AlfredAutotuneDriverConfig
 
-    assert AlfredAutotuneDriverConfig().armed is False
+    # 0 means wait forever: a battery that marched on by itself would be driving
+    # an unattended robot.
+    assert AlfredAutotuneDriverConfig().gate_timeout_s == 0.0
+
+    d = _driver()
+    run = step_battery(alfred_autotune_profile(), duration_s=1.0)[0]
+
+    released = []
+    threading.Timer(0.05, lambda: (d._on_click(None), released.append(True))).start()
+    assert d._wait_for_gate(run, 1, 1) == GATE_ADVANCE
+    assert released, "the gate returned before anything advanced it"
+
+
+def test_skip_and_abort_carry_their_own_verdicts() -> None:
+    d = _driver()
+    run = step_battery(alfred_autotune_profile(), duration_s=1.0)[0]
+
+    threading.Timer(0.05, d.skip).start()
+    assert d._wait_for_gate(run, 1, 1) == GATE_SKIP
+
+    threading.Timer(0.05, d.abort).start()
+    assert d._wait_for_gate(run, 1, 1) == GATE_QUIT
+
+
+def test_teleop_drives_the_base_only_while_the_gate_is_open() -> None:
+    """A stray key during an excitation would corrupt the step being identified."""
+    d = _driver()
+    twist = Twist(linear=Vector3(0.2, 0.0, 0.0), angular=Vector3())
+
+    d._relaying = False  # a run is playing
+    d._on_teleop(twist)
+    assert d._published == [], "teleop reached the base mid-run"
+
+    d._relaying = True  # waiting at the gate
+    d._on_teleop(twist)
+    assert d._published == [twist]
+
+
+def test_the_gate_leaves_the_base_at_rest_before_a_run() -> None:
+    """Whatever the operator left on the stick, the excitation starts from zero."""
+    d = _driver()
+    run = step_battery(alfred_autotune_profile(), duration_s=1.0)[0]
+
+    threading.Timer(0.05, d.advance).start()
+    d._wait_for_gate(run, 1, 1)
+
+    assert d._relaying is False
+    assert d._published and d._published[-1].linear.x == 0.0
+
+
+def test_the_viewer_supplies_both_the_gate_and_the_hands() -> None:
+    """Headless over ssh: the click and the driving both come from the viewer."""
+    names = {a.instance_name or a.module.__name__ for a in alfred_autotune.blueprints}
+    assert "RerunWebSocketServer" in names, "no viewer, so no gate and no way to reposition"
+
+    (driver,) = [
+        a for a in alfred_autotune.blueprints if a.module.__name__ == "AlfredAutotuneDriver"
+    ]
+    streams = {s.name: s.direction for s in driver.streams}
+    assert streams.get("clicked_point") == "in"
+    assert streams.get("tele_cmd_vel") == "in"
