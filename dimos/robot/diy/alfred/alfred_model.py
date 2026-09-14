@@ -29,7 +29,7 @@ from pathlib import Path
 
 from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.spec.config import RobotModelConfig
-from dimos.robot.assets.model import RobotModel
+from dimos.robot.assets.model import PlanarBaseDefinition, RobotModel
 from dimos.robot.diy.alfred.pillar_connection import (
     PILLAR_HOME_POSITION_M,
     PILLAR_LIFT_JOINT,
@@ -71,6 +71,21 @@ ALFRED_V2_MODEL = (
     .with_default_joint_acceleration_limit(ALFRED_JOINT_ACCELERATION_LIMIT)
     .with_renamed_joints({ALFRED_LIFT_URDF_JOINT: PILLAR_LIFT_JOINT})
 )
+
+# The FlowBase as three synthetic planning coordinates, so a whole-body plan can move
+# the robot as well as the arms. Deliberately slower than free navigation: these are the
+# speeds the base runs at while it is carrying a plan with the arms out.
+# TUNE ON HARDWARE - nothing upstream declares a FlowBase limit to inherit.
+ALFRED_BASE_VELOCITY_LIMITS = (0.5, 0.5, 1.0)  # vx, vy m/s; wz rad/s
+ALFRED_BASE_ACCELERATION_LIMITS = (1.0, 1.0, 2.0)
+ALFRED_PLANAR_BASE = PlanarBaseDefinition(
+    velocity_limits=ALFRED_BASE_VELOCITY_LIMITS,
+    acceleration_limits=ALFRED_BASE_ACCELERATION_LIMITS,
+    root_link="alfred_planar_base_root",
+    joint_names=("alfred/base_x", "alfred/base_y", "alfred/base_yaw"),
+)
+ALFRED_V1_PLANAR_MODEL = ALFRED_V1_MODEL.with_planar_base(ALFRED_PLANAR_BASE)
+ALFRED_V2_PLANAR_MODEL = ALFRED_V2_MODEL.with_planar_base(ALFRED_PLANAR_BASE)
 
 ALFRED_COLLISION_EXCLUSIONS: list[tuple[str, str]] = [
     *OPENARM_GRIPPER_COLLISION_EXCLUSIONS,
@@ -140,6 +155,45 @@ def alfred_model_config(
         joint_names=joint_names,
         base_link="base_link",
         planning_groups=alfred_planning_groups(),
+        collision_exclusion_pairs=ALFRED_COLLISION_EXCLUSIONS,
+        auto_convert_meshes=True,
+        tf_extra_links=list(tf_extra_links or []),
+        home_joints=home_joints,
+    )
+
+
+def alfred_planar_joint_names() -> list[str]:
+    """Planning joints with the base in front, matching the planar model's order."""
+    return [*ALFRED_PLANAR_BASE.joint_names, *alfred_joint_names()]
+
+
+def alfred_planar_model_config(
+    *,
+    wheels: bool = False,
+    tf_extra_links: list[str] | None = None,
+) -> RobotModelConfig:
+    """The whole-body model: planar base, lift and both arms in one planning robot.
+
+    Same model as ``alfred_model_config`` with three synthetic base coordinates ahead of
+    it, so the planner can decide to drive as part of reaching. The base is unbounded in
+    translation and periodic in yaw, so it adds no reachability limit of its own; what
+    bounds it is the velocity and acceleration in ``ALFRED_PLANAR_BASE``.
+    """
+    joint_names = alfred_planar_joint_names()
+    home_joints = [0.0] * len(joint_names)
+    home_joints[joint_names.index(PILLAR_LIFT_JOINT)] = PILLAR_HOME_POSITION_M
+    return RobotModelConfig(
+        model=ALFRED_V2_PLANAR_MODEL if wheels else ALFRED_V1_PLANAR_MODEL,
+        joint_names=joint_names,
+        base_link=ALFRED_PLANAR_BASE.root_link,
+        planning_groups=[
+            *alfred_planning_groups(),
+            PlanningGroupDefinition(
+                name="moving_base",
+                joint_names=ALFRED_PLANAR_BASE.joint_names,
+                base_link=ALFRED_PLANAR_BASE.root_link,
+            ),
+        ],
         collision_exclusion_pairs=ALFRED_COLLISION_EXCLUSIONS,
         auto_convert_meshes=True,
         tf_extra_links=list(tf_extra_links or []),
