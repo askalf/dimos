@@ -347,7 +347,21 @@
         # Regenerate with `bin/regen-cargo-nix` after any Cargo.lock or member
         # Cargo.toml change; the `cargo-nix-current` CI job fails if it is
         # stale. Unlike a hash, a stale Cargo.nix is a diff CI can show you.
-        cargoNix = import ./Cargo.nix { inherit pkgs; };
+        # `turbojpeg-sys` vendors libjpeg-turbo and drives cmake from its own
+        # build script, so the sandbox needs cmake and nasm on hand.
+        # `dontUseCmakeConfigure` stops nixpkgs' cmake setup hook from also
+        # trying to configure the crate root, which has no CMakeLists.txt --
+        # the crate's build.rs is the only thing that should invoke cmake.
+        crateOverrides = pkgs.defaultCrateOverrides // {
+          turbojpeg-sys = _: {
+            nativeBuildInputs = [ pkgs.cmake pkgs.nasm ];
+            dontUseCmakeConfigure = true;
+          };
+        };
+        cargoNix = import ./Cargo.nix {
+          inherit pkgs;
+          defaultCrateOverrides = crateOverrides;
+        };
 
         # `binaries` names the cargo packages that are module executables. Each
         # gets its own derivation and its own flake attr, so editing one module
