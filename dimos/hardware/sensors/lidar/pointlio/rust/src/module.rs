@@ -25,8 +25,15 @@ use lcm_msgs::nav_msgs::Odometry;
 use lcm_msgs::sensor_msgs::{Imu, PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
 use pointlio_core::{LivoxPoint, PointLio, PointXYZI};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use validator::ValidationError;
+
+/// Python's `None`, sent as a JSON null under a key that is always present.
+/// native_config forbids `Option`, so an absent key cannot pass as None.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(transparent)]
+struct Nullable<T>(Option<T>);
 
 /// The Python `PointLioTuning` fields, 1:1. The tuning block is handed to
 /// `pointlio_core::Config` by a JSON round trip, so it stays name-compatible
@@ -36,6 +43,7 @@ use validator::ValidationError;
 #[validate(schema(function = core_config_parses))]
 pub struct Config {
     frame_id: String,
+    frame_id_prefix: Nullable<String>,
     sensor_frame_id: String,
     #[validate(range(exclusive_min = 0.0))]
     pointcloud_freq: f64,
@@ -204,8 +212,8 @@ impl PointLioModule {
                 )),
             );
             let t = Transform::new(
-                &self.config.frame_id,
-                &self.config.sensor_frame_id,
+                self.config.world_frame(),
+                self.config.sensor_frame(),
                 o.ts,
                 iso,
             );
@@ -214,7 +222,7 @@ impl PointLioModule {
         if due(&mut self.last_cloud_ts, o.ts, self.config.pointcloud_freq) {
             let cloud = lio.body_cloud();
             if !cloud.is_empty() {
-                let msg = cloud_message(&self.config.sensor_frame_id, o.ts, &cloud);
+                let msg = cloud_message(&self.config.sensor_frame(), o.ts, &cloud);
                 let _ = self.lidar.publish(&msg).await;
             }
         }
@@ -261,6 +269,7 @@ struct Layout {
 }
 
 fn layout(cloud: &PointCloud2) -> Result<Layout, String> {
+    let step = cloud.point_step as usize;
     let find = |name: &str, datatype: i8| -> Result<Option<usize>, String> {
         let Some(f) = cloud.fields.iter().find(|f| f.name == name) else {
             return Ok(None);
@@ -271,7 +280,16 @@ fn layout(cloud: &PointCloud2) -> Result<Layout, String> {
                 f.datatype
             ));
         }
-        Ok(Some(f.offset as usize))
+        // Points are read as exactly point_step bytes, so a field reaching past
+        // that would index out of the slice.
+        let size = if datatype == PointField::UINT8 { 1 } else { 4 };
+        let offset = f.offset as usize;
+        if offset + size > step {
+            return Err(format!(
+                "field {name} at offset {offset} (+{size}) overruns point_step {step}"
+            ));
+        }
+        Ok(Some(offset))
     };
     let need = |name: &str, datatype: i8| {
         find(name, datatype)?.ok_or_else(|| format!("cloud has no {name} field"))
@@ -320,6 +338,22 @@ fn livox_points(cloud: &PointCloud2) -> Result<Vec<LivoxPoint>, String> {
         .collect())
 }
 
+impl Config {
+    /// `<frame_id_prefix>/<name>`, as Module.frame_id composes it.
+    fn namespaced(&self, name: &str) -> String {
+        match self.frame_id_prefix.0.as_deref() {
+            Some(prefix) if !prefix.is_empty() => format!("{prefix}/{name}"),
+            _ => name.to_string(),
+        }
+    }
+    fn world_frame(&self) -> String {
+        self.namespaced(&self.frame_id)
+    }
+    fn sensor_frame(&self) -> String {
+        self.namespaced(&self.sensor_frame_id)
+    }
+}
+
 fn odometry_message(cfg: &Config, o: &pointlio_core::Odom) -> Odometry {
     let v = |a: [f64; 3]| Vector3 {
         x: a[0],
@@ -327,8 +361,8 @@ fn odometry_message(cfg: &Config, o: &pointlio_core::Odom) -> Odometry {
         z: a[2],
     };
     Odometry {
-        header: header(&cfg.frame_id, o.ts),
-        child_frame_id: cfg.sensor_frame_id.clone(),
+        header: header(&cfg.world_frame(), o.ts),
+        child_frame_id: cfg.sensor_frame(),
         pose: PoseWithCovariance {
             pose: Pose {
                 position: Point {
@@ -447,6 +481,29 @@ mod tests {
     }
 
     #[test]
+    fn field_past_point_step_is_an_error_not_a_panic() {
+        // A producer declaring offset_time at 16 in a 16 B point: reading it would
+        // index past the end of every point.
+        let mut data = Vec::new();
+        for v in [1.0f32, 2.0, 3.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        data.extend_from_slice(&42u32.to_le_bytes());
+        let c = cloud(
+            vec![
+                field("x", 0, PointField::FLOAT32),
+                field("y", 4, PointField::FLOAT32),
+                field("z", 8, PointField::FLOAT32),
+                field("offset_time", 16, PointField::UINT32),
+            ],
+            16,
+            data,
+        );
+        let err = livox_points(&c).unwrap_err();
+        assert!(err.contains("overruns point_step"), "{err}");
+    }
+
+    #[test]
     fn minimal_layout_has_no_intensity() {
         let mut data = Vec::new();
         for v in [1.0f32, 2.0, 3.0] {
@@ -480,6 +537,21 @@ mod tests {
         // 0.095 s later: inside the slack, so a jittery 10 Hz frame is not skipped.
         assert!(due(&mut last, 10.095, 10.0));
         assert!(!due(&mut last, 10.18, 10.0));
+    }
+
+    #[test]
+    fn frames_carry_the_namespace_prefix() {
+        let plain: Config = serde_json::from_str(SAMPLE).unwrap();
+        assert_eq!(plain.world_frame(), "odom");
+        assert_eq!(plain.sensor_frame(), "mid360_link");
+
+        let prefixed: Config = serde_json::from_str(&SAMPLE.replace(
+            r#""frame_id":"odom""#,
+            r#""frame_id":"odom","frame_id_prefix":"r1""#,
+        ))
+        .unwrap();
+        assert_eq!(prefixed.world_frame(), "r1/odom");
+        assert_eq!(prefixed.sensor_frame(), "r1/mid360_link");
     }
 
     #[test]

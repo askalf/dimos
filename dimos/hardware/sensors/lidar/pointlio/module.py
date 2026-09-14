@@ -216,7 +216,9 @@ class PointLio(NativeModule, perception.Lidar, perception.Odometry):
 class PointLioRustConfig(NativeModuleConfig, PointLioTuning):
     stdin_config: bool = True
     frame_id: str = "odom"
-    base_fields: frozenset[str] = frozenset({"frame_id"})
+    # frame_id_prefix too: the Rust module composes the namespaced frame itself,
+    # since it publishes odometry and tf without going back through Python.
+    base_fields: frozenset[str] = frozenset({"frame_id", "frame_id_prefix"})
     cwd: str | None = "rust"
     # The crate is a workspace member, so cargo builds into the repo-root target dir.
     executable: str = str(DIMOS_PROJECT_ROOT / "target" / "release" / "pointlio_native")
