@@ -36,7 +36,7 @@ from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF
 from dimos.memory.type.observation import Observation
 from dimos.memory.vis.utils import DEFAULT_RENDER_VOXEL, default_render_voxel
-from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, register_colormap_annotation
 from dimos.utils.data import resolve_named_path
 
 TIMELINE = "ts"
@@ -44,22 +44,17 @@ TIMELINE = "ts"
 # --voxel-size default, and the render size --render-voxel scales from when unset.
 DEFAULT_VOXEL_SIZE = 0.08
 
-COLORS = {
-    "naive": [90, 200, 90],
-}
 
 # Variants whose normal gate is active, so their normals are worth drawing.
 NORMAL_VARIANTS = {"defaults"}
 
-# Z half-extent of the fine local map query around the robot (m).
-FINE_Z_HALF_EXTENT_M = 50.0
+# Z half-extent of the fine column in a seeded run (m): the hole is a full z-column.
+Z_COLUMN_HALF_M = 50.0
 
-# Z-gradient stops: coarse map climbs a cool family, fine map a warm one, so
-# the clouds stay separable at every height.
+# Z-gradient the normal arrows derive their tint from; the clouds themselves are turbo.
 COARSE_RAMP = np.array(
     [[150, 70, 255], [60, 130, 255], [70, 220, 255], [215, 250, 255]], np.float32
 )
-FINE_RAMP = np.array([[255, 60, 50], [255, 130, 30], [255, 200, 60], [255, 250, 170]], np.float32)
 # Normal arrows blend toward magenta, the one hue family neither ramp uses.
 NORMAL_TINT = np.array([255, 60, 235], np.float32)
 NORMAL_TINT_BLEND = 0.45
@@ -79,16 +74,44 @@ def _planarity_scale(min_eigs: NDArray[np.float32]) -> NDArray[np.float32]:
     return np.clip(inv / np.median(inv), 0.25, 2.0).astype(np.float32)
 
 
-def _height_colors(centers: NDArray[np.float32], base: list[int]) -> NDArray[np.uint8]:
-    """Shade each voxel by height, keeping the method's base hue."""
-    if len(centers) == 0:
-        return np.empty((0, 3), np.uint8)
-    z = centers[:, 2]
-    span = float(z.max() - z.min())
-    # Only the top half of the brightness scale, so the low end stays visible.
-    t = (z - z.min()) / span if span > 1e-6 else np.zeros(len(z), np.float32)
-    brightness = 0.5 + 0.5 * t
-    return (np.asarray(base, np.float32) * brightness[:, None]).astype(np.uint8)
+def _z_range(points: NDArray[np.float32]) -> tuple[float, float]:
+    """2nd-98th height percentiles, so stray points cannot compress the colormap."""
+    lo, hi = np.percentile(points[:, 2], [2.0, 98.0]) if len(points) else (0.0, 1.0)
+    return float(lo), float(hi)
+
+
+def _turbo_ids(points: NDArray[np.float32], z_range: tuple[float, float]) -> NDArray[np.uint8]:
+    """Height as turbo class ids, the way the rerun bridge colors clouds."""
+    lo, hi = z_range
+    t = np.clip((points[:, 2] - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+    return (t * 255).astype(np.uint8)
+
+
+def _log_static(
+    mappers: dict[str, VoxelRayMapper],
+    seed_pts: NDArray[np.float32],
+    center: tuple[float, float],
+    radius: float,
+    z_range: tuple[float, float],
+    render_voxel: float,
+) -> None:
+    """The placed premap and every voxel outside the live cylinder, so the live part fits the hole."""
+    import rerun as rr
+
+    far = np.hypot(seed_pts[:, 0] - center[0], seed_pts[:, 1] - center[1]) > radius
+    rr.log(
+        "world/loaded_map",
+        rr.Points3D(seed_pts[far], class_ids=_turbo_ids(seed_pts[far], z_range), radii=0.008),
+    )
+    for name, mapper in mappers.items():
+        centers = mapper.global_map()
+        far = np.hypot(centers[:, 0] - center[0], centers[:, 1] - center[1]) > radius
+        rr.log(
+            f"world/maps/{name}/static",
+            rr.Points3D(
+                centers[far], class_ids=_turbo_ids(centers[far], z_range), radii=render_voxel / 2
+            ),
+        )
 
 
 def _z_gradient(centers: NDArray[np.float32], ramp: NDArray[np.float32]) -> NDArray[np.uint8]:
@@ -131,6 +154,13 @@ def main(
     ),
     max_range: float = typer.Option(30.0, "--max-range", help="Max ray cast distance (m)"),
     emit_every: int = typer.Option(1, "--emit-every", help="Log the maps every N frames"),
+    fine_radius: float = typer.Option(
+        5.0,
+        "--fine-radius",
+        help="Fine map radius (m). In a seeded run the static map is logged once with a "
+        "z-column of this radius carved out and the fine map fills it; the hole moves "
+        "(and the static map is re-logged) when the robot leaves its inner half",
+    ),
     render_voxel: float | None = typer.Option(
         None,
         "--render-voxel",
@@ -172,6 +202,7 @@ def main(
         rr.save(str(out))
     else:
         rr.spawn(memory_limit=viewer_memory)
+    register_colormap_annotation("turbo")
 
     rr.log(
         "world/robot/axes",
@@ -191,7 +222,7 @@ def main(
             min_health=0,
         ),
         "defaults": VoxelRayMapper(
-            voxel_size=voxel_size, max_range=max_range, fine_divisor=fine_divisor
+            voxel_size=voxel_size, max_range=max_range, fine_divisor=fine_divisor, emit_every=1
         ),
     }
 
@@ -210,6 +241,10 @@ def main(
             print(f"loaded_map at ts={loaded_map.ts:.3f}; seeding when reached")
 
         trajectory: list[tuple[float, float, float]] = []
+        seeded = False
+        z_range: tuple[float, float] | None = None
+        live_center = (0.0, 0.0)
+        seed_pts = np.empty((0, 3), np.float32)
         count = 0
         dropped = 0
         for obs in lidar:
@@ -239,31 +274,56 @@ def main(
                     )
                 seed_pts = loaded_map.data.transform(placement).points_f32()
                 created = {name: m.seed_points(seed_pts) for name, m in mappers.items()}
+                z_range = _z_range(seed_pts)
                 rr.set_time(TIMELINE, timestamp=obs.ts)
-                rr.log(
-                    "world/loaded_map",
-                    rr.Points3D(seed_pts, colors=[[130, 130, 130]], radii=0.008),
-                )
                 print(f"\nseeded {created} voxels from {len(seed_pts)} points")
                 loaded_map = None
+                # A seeded map is mostly far from the robot and never changes there:
+                # log that part once, then only the live cylinder per emit.
+                live_center = (x, y)
+                _log_static(mappers, seed_pts, live_center, fine_radius, z_range, render_voxel)
+                seeded = True
+
+            rr.set_time(TIMELINE, timestamp=obs.ts)
+            if z_range is None:
+                z_range = _z_range(mappers["defaults"].global_map())
+            # The fine map is what the robot reacts to, so it goes out every frame,
+            # over the region the live module would publish for this batch.
+            cx, cy, radius, z_lo, z_hi = mappers["defaults"].take_local_bounds()
+            radius = min(radius, fine_radius)
+            if seeded:
+                # The fine column is the hole in the static map, so it sits where the hole is.
+                if np.hypot(x - live_center[0], y - live_center[1]) > fine_radius / 2:
+                    live_center = (x, y)
+                    _log_static(mappers, seed_pts, live_center, fine_radius, z_range, render_voxel)
+                cx, cy, radius = live_center[0], live_center[1], fine_radius
+                z_lo, z_hi = z - Z_COLUMN_HALF_M, z + Z_COLUMN_HALF_M
+            if fine_divisor:
+                fine_centers = mappers["defaults"].local_map_fine((cx, cy, z), radius, z_lo, z_hi)
+                rr.log(
+                    "world/maps/fine",
+                    rr.Points3D(
+                        fine_centers,
+                        class_ids=_turbo_ids(fine_centers, z_range),
+                        radii=render_voxel / (2 * fine_divisor),
+                    ),
+                )
 
             if count % emit_every != 0:
                 continue
 
             # Both mappers register the same cloud, so any one's copy serves.
             pts = next(iter(mappers.values())).registered_points()
-
-            rr.set_time(TIMELINE, timestamp=obs.ts)
             robot = np.asarray([x, y, z], np.float32)
             for name, mapper in mappers.items():
+                if seeded:
+                    continue  # static once, fine every frame; nothing per emit
                 if name not in NORMAL_VARIANTS:
                     centers = mapper.global_map()
                     rr.log(
                         f"world/maps/{name}",
                         rr.Points3D(
-                            centers,
-                            colors=_height_colors(centers, COLORS[name]),
-                            radii=render_voxel / 2,
+                            centers, class_ids=_turbo_ids(centers, z_range), radii=render_voxel / 2
                         ),
                     )
                     continue
@@ -275,7 +335,9 @@ def main(
                 colors = _z_gradient(centers, COARSE_RAMP)
                 rr.log(
                     f"world/maps/{name}",
-                    rr.Points3D(centers, colors=colors, radii=render_voxel / 2),
+                    rr.Points3D(
+                        centers, class_ids=_turbo_ids(centers, z_range), radii=render_voxel / 2
+                    ),
                 )
                 keep = np.any(normals != 0.0, axis=1)
                 origins, vectors = centers[keep], normals[keep]
@@ -292,18 +354,6 @@ def main(
                         vectors=vectors * lengths[:, None],
                         colors=_normal_colors(colors[keep]),
                         radii=0.005,
-                    ),
-                )
-            if fine_divisor:
-                fine_centers = mappers["defaults"].local_map_fine(
-                    (x, y, z), max_range, z - FINE_Z_HALF_EXTENT_M, z + FINE_Z_HALF_EXTENT_M
-                )
-                rr.log(
-                    "world/maps/fine",
-                    rr.Points3D(
-                        fine_centers,
-                        colors=_z_gradient(fine_centers, FINE_RAMP),
-                        radii=render_voxel / (2 * fine_divisor),
                     ),
                 )
             rr.log("world/raw_points", rr.Points3D(pts, colors=[[90, 90, 90]], radii=0.01))

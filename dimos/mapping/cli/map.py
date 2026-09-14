@@ -328,7 +328,7 @@ def main(
     export: bool = typer.Option(
         False,
         "--export",
-        help="Export PGO map to ./<dataset>.pc2.lcm in cwd (implies --pgo)",
+        help="Export the map to ./<dataset>.pc2.lcm in cwd: the PGO map with --pgo, else the raw one",
     ),
     full_pgo: bool = typer.Option(
         False,
@@ -435,7 +435,7 @@ def main(
     store = open_store(db_path)
     if out is None:
         out = Path.cwd() / f"{db_path.stem}.rrd"
-    if export or full_pgo:
+    if full_pgo:
         pgo = True
 
     lidar = store.stream(lidar_stream, PointCloud2).from_time(seek or None).to_time(duration)
@@ -676,10 +676,11 @@ def main(
     else:
         subprocess.Popen(["rerun", str(out)])
 
-    if export and pgo_map is not None:
+    exported = pgo_map if pgo else global_map
+    if export and exported is not None:
         out_path = Path.cwd() / f"{db_path.stem}.pc2.lcm"
-        print(f"exporting PGO twopass map to {out_path}...")
-        out_path.write_bytes(pgo_map.lcm_encode())
+        print(f"exporting {'PGO twopass' if pgo else 'raw'} map to {out_path}...")
+        out_path.write_bytes(exported.lcm_encode())
         print(f"wrote {out_path}")
         print()
         print("load back with:")
