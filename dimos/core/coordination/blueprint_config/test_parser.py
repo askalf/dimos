@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -553,3 +554,30 @@ def test_split_run_arguments_requires_leading_blueprint_names() -> None:
     )
     with pytest.raises(BlueprintConfigError, match="must precede"):
         split_run_arguments(("--map-file", "map"))
+
+
+@dataclass
+class CallableRenderer:
+    path: str
+
+    def __call__(self, msg: Any) -> Any:
+        return msg
+
+
+class RendererConfig(ModuleConfig):
+    renderer: Callable[[Any], Any] | None = None
+
+
+class RendererModule(Module):
+    config: RendererConfig
+
+
+def test_callable_dataclass_values_survive_parsing() -> None:
+    """A dataclass with __call__ must reach the worker as the object, not as its fields."""
+    blueprint = RendererModule.blueprint(renderer=CallableRenderer(path="robot.urdf"))
+
+    parsed = BlueprintConfigParser(blueprint).parse([], environ={})
+
+    renderer = parsed.module_kwargs("renderermodule")["renderer"]
+    assert isinstance(renderer, CallableRenderer)
+    assert renderer.path == "robot.urdf"

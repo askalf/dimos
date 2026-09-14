@@ -101,6 +101,17 @@ def split_run_arguments(tokens: Sequence[str]) -> tuple[tuple[str, ...], tuple[s
     return blueprint_names, tuple(tokens[split_at:])
 
 
+def _explicit_values(value: Any) -> Any:
+    """Explicitly set fields as validated, leaving opaque objects like callables intact."""
+    if isinstance(value, BaseModel):
+        return {name: _explicit_values(getattr(value, name)) for name in value.model_fields_set}
+    if isinstance(value, dict):
+        return {key: _explicit_values(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_explicit_values(item) for item in value)
+    return value
+
+
 class BlueprintConfigParser:
     """Resolve all configuration sources for a blueprint."""
 
@@ -421,7 +432,7 @@ class BlueprintConfigParser:
                 raise BlueprintConfigError(
                     format_validation_error(module.atom.name, error)
                 ) from error
-            dumped = model.model_dump(mode="python", exclude_unset=True)
+            dumped = _explicit_values(model)
             dumped.pop("g", None)
             dumped.pop("instance_name", None)
             parsed[module.atom.name] = dumped
