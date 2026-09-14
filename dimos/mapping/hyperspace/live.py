@@ -45,7 +45,7 @@ from dimos.mapping.hyperspace.detect import (
     find,
     merge_duplicates,
 )
-from dimos.mapping.hyperspace.frames import TextTowers, member_streams, spec_of
+from dimos.mapping.hyperspace.frames import TextTowers, member_streams
 from dimos.mapping.hyperspace.msgs import FoundObject, FoundObjects
 from dimos.mapping.hyperspace.resident import ResidentIndex
 from dimos.utils.logging_config import setup_logger
@@ -134,40 +134,7 @@ class LiveQuery:
         at = time.monotonic()
         self.loaded["index"] = float(self.catch_up())
         self.loaded["index_s"] = time.monotonic() - at
-        self.loaded["first_pass_s"] = self._touch_the_index(specs)
         return dict(self.loaded)
-
-    def _touch_the_index(self, specs: Sequence[str]) -> float:
-        """Score one throwaway query, so the first real one is not the first pass.
-
-        Reading the index into arrays is not the same as having touched it. On a machine
-        where 19.2 GB of vectors sit beside everything else, the first pass faults them
-        in -- some of it back off swap -- and that cost lands on whoever asks first.
-        Measured on bike.db, the first query's search took 10.4 s, 15.5 s and 24.7 s
-        across three runs where every later one took 5.3 to 8.0.
-
-        Failures here are logged and swallowed: a warm-up that cannot run is a slower
-        first answer, not a reason to refuse the question.
-        """
-        at = time.monotonic()
-        try:
-            for tag, stream in self.members():
-                spec = spec_of(tag)
-                held = self.held.get(stream)
-                if held is None:
-                    continue
-                # A threshold nothing can reach: the pass has to read every vector, and
-                # nothing downstream should ever see this query's results.
-                held.hot(
-                    self.towers.query(spec, "a thing"),
-                    self.towers.background(spec),
-                    threshold=2.0,
-                    limit=1,
-                )
-        except Exception as error:
-            logger.warning(f"hyperspace could not warm the index: {error}")
-            return 0.0
-        return time.monotonic() - at
 
     def members(self) -> list[tuple[str, str]]:
         """(tag, stream) for every model this query may search."""

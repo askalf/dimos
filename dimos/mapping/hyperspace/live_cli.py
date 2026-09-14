@@ -190,7 +190,7 @@ def main(
     typer.echo(
         f"warm: detector {loaded['detector']:.1f}s, text towers {loaded['towers']:.1f}s, "
         f"recording {loaded['recording']:.1f}s, {int(loaded['index'])} patches in "
-        f"{loaded['index_s']:.1f}s, first pass {loaded.get('first_pass_s', 0):.1f}s"
+        f"{loaded['index_s']:.1f}s"
     )
 
     scene = scene_of(store, live.frames, world_frame)
