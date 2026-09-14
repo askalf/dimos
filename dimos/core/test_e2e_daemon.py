@@ -23,6 +23,7 @@ import time
 import pytest
 from typer.testing import CliRunner
 
+from dimos.cli.dimos import main
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
@@ -36,7 +37,6 @@ from dimos.core.run_registry import (
     list_runs,
 )
 from dimos.core.stream import Out
-from dimos.robot.cli.dimos import main
 
 
 class PingModule(Module):
@@ -106,7 +106,6 @@ def registry_entry():
     entry.remove()
 
 
-@pytest.mark.slow
 class TestDaemonE2E:
     """End-to-end daemon lifecycle with real workers."""
 
@@ -223,7 +222,6 @@ def live_blueprint():
     entry.remove()
 
 
-@pytest.mark.slow
 class TestCLIWithRealBlueprint:
     """Exercise dimos status and dimos stop against a live DimOS blueprint."""
 

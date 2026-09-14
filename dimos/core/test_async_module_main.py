@@ -23,7 +23,7 @@ import pytest
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.module import Module
 from dimos.core.stream import In, Out
-from dimos.core.transport import pLCMTransport
+from dimos.core.transport_factory import make_transport
 
 
 @pytest.fixture
@@ -222,7 +222,7 @@ class MainAndHandlerModule(Module):
 
 
 @pytest.fixture
-def start_main_handler_module():
+def start_main_handler_module(each_transport):
     blueprint = MainAndHandlerModule.blueprint()
     coordinator = ModuleCoordinator.build(blueprint)
     yield
@@ -230,22 +230,21 @@ def start_main_handler_module():
 
 
 @pytest.fixture
-def a_transport():
-    a_tr = pLCMTransport("/a")
+def a_transport(each_transport):
+    a_tr = make_transport("/a")
     a_tr.start()
     yield a_tr
     a_tr.stop()
 
 
 @pytest.fixture
-def out_transport():
-    out_tr = pLCMTransport("/out")
+def out_transport(each_transport):
+    out_tr = make_transport("/out")
     out_tr.start()
     yield out_tr
     out_tr.stop()
 
 
-@pytest.mark.slow
 def test_main_and_handle_together(start_main_handler_module, a_transport, out_transport):
     queue: Queue[int] = Queue()
     out_transport.subscribe(queue.put)

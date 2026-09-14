@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.perception.detection.type.detection2d.imageDetections2D import ImageDetections2D
 
 
+@pytest.mark.self_hosted
 def test_find_best_person_detects_person(security_module, yolo_detector, person_image):
     security_module._detector = yolo_detector
 
@@ -31,6 +34,7 @@ def test_find_best_person_detects_person(security_module, yolo_detector, person_
     assert result.bbox_2d_volume() > 0
 
 
+@pytest.mark.self_hosted
 def test_find_best_person_returns_none_for_empty_scene(security_module, yolo_detector, empty_image):
     security_module._detector = yolo_detector
 
@@ -53,10 +57,7 @@ def test_patrol_step_transitions_to_following_on_detection(
         image=person_image, detections=[det]
     )
     # patch to avoid cv2 dep issues
-    mocker.patch(
-        "dimos.experimental.security_demo.security_module.draw_bounding_box",
-        return_value=person_image.data.copy(),
-    )
+    mocker.patch.object(type(det), "draw_on", autospec=True)
 
     module._patrol_step()
 

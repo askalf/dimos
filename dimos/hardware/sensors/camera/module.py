@@ -18,9 +18,9 @@ import time
 from pydantic import Field
 import reactivex as rx
 
-from dimos.agents.annotation import skill
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.core import rpc
+from dimos.core.global_config import global_config
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import Out
 from dimos.hardware.sensors.camera.spec import CameraHardware
@@ -30,8 +30,9 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image, sharpness_barrier
+from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.spec import perception
-from dimos.visualization.rerun.bridge import RerunBridgeModule
+from dimos.visualization.vis_module import vis_module
 
 
 def default_transform() -> Transform:
@@ -54,9 +55,9 @@ class CameraModule(Module, perception.Camera):
     config: CameraModuleConfig
     color_image: Out[Image]
     camera_info: Out[CameraInfo]
+    tf: Out[TFMessage]
 
     hardware: CameraHardware
-    _latest_image: Image | None = None
 
     @rpc
     def start(self) -> None:
@@ -72,12 +73,8 @@ class CameraModule(Module, perception.Camera):
         if self.config.frequency > 0:
             stream = stream.pipe(sharpness_barrier(self.config.frequency))
 
-        def on_image(image: Image) -> None:
-            self.color_image.publish(image)
-            self._latest_image = image
-
         self.register_disposable(
-            stream.subscribe(on_image),
+            stream.subscribe(self.color_image.publish),
         )
 
         self.register_disposable(
@@ -102,14 +99,7 @@ class CameraModule(Module, perception.Camera):
             ts=camera_link.ts,
         )
 
-        self.tf.publish(camera_link, camera_optical)
-
-    @skill
-    def take_a_picture(self) -> Image:
-        """Grabs and returns the latest image from the camera."""
-        if self._latest_image is None:
-            raise RuntimeError("No image received from camera yet.")
-        return self._latest_image
+        self.tf.publish(TFMessage(camera_link, camera_optical))
 
     @rpc
     def stop(self) -> None:
@@ -120,5 +110,5 @@ class CameraModule(Module, perception.Camera):
 
 demo_camera = autoconnect(
     CameraModule.blueprint(),
-    RerunBridgeModule.blueprint(),
+    vis_module(viewer_backend=global_config.viewer),
 )

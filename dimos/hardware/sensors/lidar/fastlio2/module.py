@@ -14,31 +14,27 @@
 
 """Python NativeModule wrapper for the FAST-LIO2 + Livox Mid-360 binary.
 
-Binds Livox SDK2 directly into FAST-LIO-NON-ROS for real-time LiDAR SLAM.
-Outputs registered (world-frame) point clouds and odometry with covariance.
+Binds Livox SDK2 into FAST-LIO-NON-ROS for real-time LiDAR SLAM. Outputs
+sensor-frame point clouds and odometry with covariance. Consumers register
+the cloud via the odometry pose.
 
-Usage::
-
-    from dimos.hardware.sensors.lidar.fastlio2.module import FastLio2
-    from dimos.core.coordination.blueprints import autoconnect
-
-    from dimos.core.coordination.module_coordinator import ModuleCoordinator
-    ModuleCoordinator.build(autoconnect(
-        FastLio2.blueprint(host_ip="192.168.1.5"),
-        SomeConsumer.blueprint(),
-    )).loop()
+FAST-LIO tuning lives on FastLio2Config and is sent to the C++ binary as
+stdin JSON.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+import os
+import time
+from typing import TYPE_CHECKING
 
-from pydantic.experimental.pipeline import validate_as
+from pydantic import Field
+from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.stream import Out
+from dimos.hardware.sensors.lidar.livox.net import resolve_host_ip
 from dimos.hardware.sensors.lidar.livox.ports import (
     SDK_CMD_DATA_PORT,
     SDK_HOST_CMD_DATA_PORT,
@@ -51,28 +47,32 @@ from dimos.hardware.sensors.lidar.livox.ports import (
     SDK_POINT_DATA_PORT,
     SDK_PUSH_MSG_PORT,
 )
+from dimos.msgs.geometry_msgs.Quaternion import Quaternion
+from dimos.msgs.geometry_msgs.Transform import Transform
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
-from dimos.spec import mapping, perception
-
-_CONFIG_DIR = Path(__file__).parent / "config"
+from dimos.msgs.tf2_msgs.TFMessage import TFMessage
+from dimos.spec import perception
 
 
 class FastLio2Config(NativeModuleConfig):
-    """Config for the FAST-LIO2 + Livox Mid-360 native module."""
-
     cwd: str | None = "cpp"
     executable: str = "result/bin/fastlio2_native"
-    build_command: str | None = "nix build .#fastlio2_native"
-
-    # Livox SDK hardware config
-    host_ip: str = "192.168.1.5"
-    lidar_ip: str = "192.168.1.155"
+    build_command: str | None = "nix build -L .#fastlio2_native"
+    stdin_config: bool = True
+    base_fields: frozenset[str] = frozenset({"frame_id"})
+    # Livox SDK hardware config. lidar_ip required; host_ip optional (auto-derived
+    # from lidar_ip's subnet). Both fall back to DIMOS_FASTLIO_LIDAR_IP /
+    # DIMOS_FASTLIO_HOST_IP.
+    host_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_FASTLIO_HOST_IP"))
+    lidar_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_FASTLIO_LIDAR_IP"))
     frequency: float = 10.0
 
-    # Frame IDs for output messages
-    frame_id: str = "map"
-    child_frame_id: str = "body"
+    # Odometry is published as frame_id (fixed) -> sensor_frame_id (moving sensor),
+    # and also broadcast on TF. The point cloud is stamped with sensor_frame_id
+    frame_id: str = "odom"
+    sensor_frame_id: str = "mid360_link"
 
     # FAST-LIO internal processing rates
     msr_freq: float = 50.0
@@ -82,21 +82,35 @@ class FastLio2Config(NativeModuleConfig):
     pointcloud_freq: float = 10.0
     odom_freq: float = 30.0
 
-    # Point cloud filtering
-    voxel_size: float = 0.1
-    sor_mean_k: int = 50
-    sor_stddev: float = 1.0
+    debug: bool = False
 
-    # Global voxel map (disabled when map_freq <= 0)
-    map_freq: float = 0.0
-    map_voxel_size: float = 0.1
-    map_max_range: float = 100.0
-
-    # FAST-LIO YAML config (relative to config/ dir, or absolute path)
-    # C++ binary reads YAML directly via yaml-cpp
-    config: Annotated[
-        Path, validate_as(...).transform(lambda p: p if p.is_absolute() else _CONFIG_DIR / p)
-    ] = Path("mid360.yaml")
+    # FAST-LIO tuning (read in main.cpp).
+    # common
+    time_sync_en: bool = False
+    time_offset_lidar_to_imu: float = 0.0
+    # preprocess
+    scan_line: int = 4
+    scan_rate: int = 10
+    blind: float = 0.5  # spherical min range (m)
+    # mapping
+    # acc_cov down-weights the IMU accel prediction. 0.01 is high trust (fine for
+    # drones); 1.0 is low trust (good for robot dogs that go up/down stairs).
+    acc_cov: float = 1.0
+    gyr_cov: float = 0.1
+    b_acc_cov: float = 0.0001
+    b_gyr_cov: float = 0.0001
+    filter_size_surf: float = 0.1  # IESKF scan voxel leaf (m)
+    filter_size_map: float = 0.1  # ikd-tree map voxel leaf (m)
+    fov_degree: int = 360  # FAST-LIO reads this as an int
+    det_range: float = 100.0
+    extrinsic_est_en: bool = False  # online IMU-LiDAR extrinsic estimation
+    extrinsic_t: list[float] = Field(default_factory=lambda: [-0.011, -0.02329, 0.04412])
+    extrinsic_r: list[float] = Field(
+        default_factory=lambda: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    )
+    # publish behavior
+    scan_publish_en: bool = True  # false closes the lidar output
+    dense_publish_en: bool = True  # false voxel-downsamples the published cloud
 
     # SDK port configuration (see livox/ports.py for defaults)
     cmd_data_port: int = SDK_CMD_DATA_PORT
@@ -110,35 +124,49 @@ class FastLio2Config(NativeModuleConfig):
     host_imu_data_port: int = SDK_HOST_IMU_DATA_PORT
     host_log_data_port: int = SDK_HOST_LOG_DATA_PORT
 
-    # Resolved in __post_init__, passed as --config_path to the binary
-    config_path: str | None = None
 
-    # config is not a CLI arg (config_path is)
-    cli_exclude: frozenset[str] = frozenset({"config"})
-
-
-class FastLio2(NativeModule, perception.Lidar, perception.Odometry, mapping.GlobalPointcloud):
-    """FAST-LIO2 SLAM module with integrated Livox Mid-360 driver.
-
-    Ports:
-        lidar (Out[PointCloud2]): World-frame registered point cloud.
-        odometry (Out[Odometry]): Pose with covariance at LiDAR scan rate.
-        global_map (Out[PointCloud2]): Global voxel map (optional, enable via map_freq > 0).
-    """
-
+class FastLio2(NativeModule, perception.Lidar, perception.Odometry):
     config: FastLio2Config
 
     lidar: Out[PointCloud2]
     odometry: Out[Odometry]
-    global_map: Out[PointCloud2]
+    tf: Out[TFMessage]
 
     @rpc
     def start(self) -> None:
+        self._validate_network()
         super().start()
+        self.register_disposable(
+            Disposable(self.odometry.transport.subscribe(self._on_odom_for_tf, self.odometry))
+        )
+
+    def _on_odom_for_tf(self, msg: Odometry) -> None:
+        self.tf.publish(
+            TFMessage(
+                Transform(
+                    frame_id=self.frame_id,
+                    child_frame_id=self.config.sensor_frame_id,
+                    translation=Vector3(msg.pose.position),
+                    rotation=Quaternion(msg.pose.orientation),
+                    ts=msg.ts or time.time(),
+                )
+            )
+        )
 
     @rpc
     def stop(self) -> None:
         super().stop()
+
+    def _validate_network(self) -> None:
+        lidar_ip = self.config.lidar_ip
+        if not lidar_ip:
+            raise RuntimeError(
+                "FastLio2: lidar_ip not set — it's network-specific. Set it in the config "
+                "or via the DIMOS_FASTLIO_LIDAR_IP env var."
+            )
+        # host_ip optional: derive the local NIC on lidar_ip's /24 when unset or
+        # not one of our IPs (shared with the Mid360 driver).
+        self.config.host_ip = resolve_host_ip(lidar_ip, self.config.host_ip, label="FastLio2")
 
 
 # Verify protocol port compliance (mypy will flag missing ports)

@@ -23,7 +23,6 @@ import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, create_autospec, patch
 
-from dotenv import load_dotenv
 import numpy as np
 import pytest
 from reactivex import operators as ops
@@ -52,7 +51,6 @@ from dimos.utils.logging_config import setup_logger
 if TYPE_CHECKING:
     from pathlib import Path
 
-load_dotenv()
 
 logger = setup_logger()
 
@@ -556,7 +554,6 @@ class VideoReplayModule(Module):
 
 @pytest.mark.skipif_in_ci
 @pytest.mark.skipif_no_openai
-@pytest.mark.slow
 class TestTemporalMemoryIntegration:
     @pytest.fixture(scope="function")
     def dimos_cluster(self):

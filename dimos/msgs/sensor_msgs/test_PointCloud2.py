@@ -15,12 +15,14 @@
 
 
 import numpy as np
+import pytest
 
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.robot.unitree.type.lidar import pointcloud2_from_webrtc_lidar
 from dimos.utils.testing.replay import SensorReplay
 
 
+@pytest.mark.self_hosted
 def test_lcm_encode_decode() -> None:
     """Test LCM encode/decode preserves pointcloud data."""
     replay = SensorReplay("office_lidar", autocast=pointcloud2_from_webrtc_lidar)
@@ -33,8 +35,6 @@ def test_lcm_encode_decode() -> None:
     original_points, _ = lidar_msg.as_numpy()
     decoded_points, _ = decoded.as_numpy()
 
-    print(f"Original points: {len(original_points)}")
-    print(f"Decoded points: {len(decoded_points)}")
     assert len(original_points) == len(decoded_points), (
         f"Point count mismatch: {len(original_points)} vs {len(decoded_points)}"
     )
@@ -48,38 +48,112 @@ def test_lcm_encode_decode() -> None:
             atol=1e-6,
             err_msg="Point coordinates don't match between original and decoded",
         )
-        print(f"✓ All {len(original_points)} point coordinates match within tolerance")
 
     # 3. Check frame_id is preserved
     assert lidar_msg.frame_id == decoded.frame_id, (
         f"Frame ID mismatch: '{lidar_msg.frame_id}' vs '{decoded.frame_id}'"
     )
-    print(f"✓ Frame ID preserved: '{decoded.frame_id}'")
 
     # 4. Check timestamp is preserved (within reasonable tolerance for float precision)
     if lidar_msg.ts is not None and decoded.ts is not None:
         assert abs(lidar_msg.ts - decoded.ts) < 1e-6, (
             f"Timestamp mismatch: {lidar_msg.ts} vs {decoded.ts}"
         )
-        print(f"✓ Timestamp preserved: {decoded.ts}")
 
     # 5. Check pointcloud properties
     assert len(lidar_msg.pointcloud.points) == len(decoded.pointcloud.points), (
         "Open3D pointcloud size mismatch"
     )
 
-    # 6. Additional detailed checks
-    print("✓ Original pointcloud summary:")
-    print(f"  - Points: {len(original_points)}")
-    print(f"  - Bounds: {original_points.min(axis=0)} to {original_points.max(axis=0)}")
-    print(f"  - Mean: {original_points.mean(axis=0)}")
 
-    print("✓ Decoded pointcloud summary:")
-    print(f"  - Points: {len(decoded_points)}")
-    print(f"  - Bounds: {decoded_points.min(axis=0)} to {decoded_points.max(axis=0)}")
-    print(f"  - Mean: {decoded_points.mean(axis=0)}")
+def test_lcm_intensity_round_trip() -> None:
+    """Test that intensity values survive an lcm_encode → lcm_decode round trip."""
+    points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=np.float32)
+    intensities = np.array([0.25, 1.1, 0.0], dtype=np.float32)
 
-    print("✓ LCM encode/decode test passed - all properties preserved!")
+    original = PointCloud2.from_numpy(
+        points, frame_id="map", timestamp=42.0, intensities=intensities
+    )
+
+    # Verify getter before encoding
+    got = original.intensities_f32()
+    assert got is not None, "intensities_f32() returned None on source cloud"
+    np.testing.assert_allclose(got, intensities, atol=1e-6)
+
+    # Round-trip through LCM
+    binary = original.lcm_encode()
+    decoded = PointCloud2.lcm_decode(binary)
+
+    # Positions preserved
+    decoded_pts, _ = decoded.as_numpy()
+    np.testing.assert_allclose(decoded_pts.astype(np.float32), points, atol=1e-6)
+
+    # Intensities preserved
+    decoded_intensities = decoded.intensities_f32()
+    assert decoded_intensities is not None, "intensities lost after lcm_decode"
+    np.testing.assert_allclose(decoded_intensities, intensities, atol=1e-6)
+
+
+def test_lcm_no_intensity_round_trip() -> None:
+    """Clouds without intensity should round-trip without creating spurious intensities."""
+    points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    original = PointCloud2.from_numpy(points, frame_id="map", timestamp=1.0)
+
+    assert original.intensities_f32() is None
+
+    binary = original.lcm_encode()
+    decoded = PointCloud2.lcm_decode(binary)
+
+    # No intensities should appear (all-zero wire data is ignored)
+    assert decoded.intensities_f32() is None, "Spurious intensities created from zero wire data"
+
+    decoded_pts, _ = decoded.as_numpy()
+    np.testing.assert_allclose(decoded_pts.astype(np.float32), points, atol=1e-6)
+
+
+def test_lcm_per_point_timing_round_trip() -> None:
+    """offset_time/tag/line survive an lcm_encode → lcm_decode round trip."""
+    points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=np.float32)
+    intensities = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+    # First point offset 0 is meaningful and must survive (no nonzero filtering).
+    offset_times = np.array([0, 41_666, 83_332], dtype=np.uint32)
+    tags = np.array([0, 16, 32], dtype=np.uint8)
+    lines = np.array([0, 1, 3], dtype=np.uint8)
+
+    original = PointCloud2.from_numpy(
+        points,
+        frame_id="mid360_link",
+        timestamp=100.5,
+        intensities=intensities,
+        offset_times=offset_times,
+        tags=tags,
+        lines=lines,
+    )
+
+    got_offsets = original.offset_times_u32()
+    assert got_offsets is not None
+    np.testing.assert_array_equal(got_offsets, offset_times)
+
+    decoded = PointCloud2.lcm_decode(original.lcm_encode())
+
+    decoded_pts, _ = decoded.as_numpy()
+    np.testing.assert_allclose(decoded_pts.astype(np.float32), points, atol=1e-6)
+    decoded_intensities = decoded.intensities_f32()
+    assert decoded_intensities is not None
+    np.testing.assert_allclose(decoded_intensities, intensities, atol=1e-6)
+
+    decoded_offsets = decoded.offset_times_u32()
+    assert decoded_offsets is not None, "offset_time lost after lcm_decode"
+    assert decoded_offsets.dtype == np.uint32
+    np.testing.assert_array_equal(decoded_offsets, offset_times)
+
+    decoded_tags = decoded.tags_u8()
+    assert decoded_tags is not None, "tag lost after lcm_decode"
+    np.testing.assert_array_equal(decoded_tags, tags)
+
+    decoded_lines = decoded.lines_u8()
+    assert decoded_lines is not None, "line lost after lcm_decode"
+    np.testing.assert_array_equal(decoded_lines, lines)
 
 
 def test_bounding_box_intersects() -> None:
@@ -148,8 +222,36 @@ def test_bounding_box_intersects() -> None:
         result = pc_empty1.bounding_box_intersects(pc_empty2)
         # If no exception, verify behavior is consistent
         assert isinstance(result, bool)
-    except:
+    except Exception:
         # If it raises an exception, that's also acceptable for empty clouds
         pass
 
-    print("✓ All bounding box intersection tests passed!")
+
+def test_to_rerun_points_mode_is_screen_space() -> None:
+    """ "points" must be flat screen-space dots, not the world-space spheres branch."""
+    cloud = PointCloud2.from_numpy(np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]))
+
+    points = cloud.to_rerun(mode="points", voxel_size=0.05, ui_radius=1.5)
+    spheres = cloud.to_rerun(mode="spheres", voxel_size=0.05)
+
+    # Negative radii are UI points in rerun; positive ones are world-space.
+    assert points.radii.as_arrow_array().to_pylist() == pytest.approx([-1.5])
+    assert spheres.radii.as_arrow_array().to_pylist() == pytest.approx([0.025])
+
+
+def test_to_rerun_keeps_the_clouds_own_rgb() -> None:
+    """An RGBD cloud renders in its own colors; rgb=False falls back to the height ramp."""
+    import open3d as o3d
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]))
+    pcd.colors = o3d.utility.Vector3dVector(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]))
+    cloud = PointCloud2(pointcloud=pcd)
+
+    colored = cloud.to_rerun(mode="points")
+    assert colored.colors is not None
+    assert colored.class_ids is None
+
+    ramp = cloud.to_rerun(mode="points", rgb=False)
+    assert ramp.colors is None
+    assert ramp.class_ids is not None

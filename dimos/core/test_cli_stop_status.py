@@ -22,9 +22,9 @@ from typing import TYPE_CHECKING
 import pytest
 from typer.testing import CliRunner
 
+from dimos.cli.dimos import main
 from dimos.core import run_registry
 from dimos.core.run_registry import RunEntry
-from dimos.robot.cli.dimos import main
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -134,7 +134,6 @@ class TestStopCLI:
         result = CliRunner().invoke(main, ["stop"])
         assert result.exit_code == 1
 
-    @pytest.mark.slow
     def test_stop_default_most_recent(self, sleeper):
         proc = sleeper()
         entry = _entry("stop-default", proc.pid)
@@ -150,7 +149,6 @@ class TestStopCLI:
             time.sleep(0.1)
         assert not entry.registry_path.exists()
 
-    @pytest.mark.slow
     def test_stop_force_sends_sigkill(self, sleeper):
         proc = sleeper()
         _entry("force-kill", proc.pid)
@@ -164,7 +162,6 @@ class TestStopCLI:
             time.sleep(0.1)
         assert proc.poll() is not None
 
-    @pytest.mark.slow
     def test_stop_sigterm_kills_process(self, sleeper):
         """Verify SIGTERM actually terminates the target process."""
         proc = sleeper()

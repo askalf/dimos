@@ -12,40 +12,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
+import pickle
+import threading
 from types import MappingProxyType
-from typing import Protocol
+from typing import Any, Protocol
 
+from pydantic import BaseModel
 import pytest
 
 from dimos.core._test_future_annotations_helper import (
     FutureModuleIn,
     FutureModuleOut,
 )
+from dimos.core.coordination.blueprint_config.parser import BlueprintConfigParser
 from dimos.core.coordination.blueprints import (
+    Blueprint,
     DisabledModuleProxy,
     autoconnect,
 )
+from dimos.core.coordination.coordinator_rpc import CoordinatorRPC
 from dimos.core.coordination.module_coordinator import (
     ModuleCoordinator,
-    _all_name_types,
     _check_requirements,
+    _deploy_all_modules,
+    _materialize_transports,
     _verify_no_conflicts_with_existing,
     _verify_no_name_conflicts,
+    stream_name_types,
 )
 from dimos.core.coordination.worker_manager_python import WorkerManagerPython
 from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig
 from dimos.core.module import Module
-from dimos.core.stream import In, Out
+from dimos.core.stream import IO, In, Out, Stream
+from dimos.core.transport import CloudflareTransport, PubSubTransport
+from dimos.core.transport_factory import transport_topic
+from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.Image import Image
+from dimos.msgs.tf2_msgs.TFMessage import TFMessage
+import dimos.robot.get_all_blueprints as resolver
 from dimos.spec.utils import Spec
-
-# Disable Rerun for tests (prevents viewer spawn and gRPC flush errors)
-_BUILD_WITHOUT_RERUN = MappingProxyType(
-    {
-        "g": {"viewer": "none"},
-    }
-)
 
 
 class Data1:
@@ -91,6 +98,49 @@ class SourceModule(Module):
 
 class TargetModule(Module):
     remapped_data: In[Data1]
+
+
+class ExternalNameLoadModule(Module):
+    pass
+
+
+class TransportCredentials(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+class NestedTransportConfig(BaseModel):
+    credentials: TransportCredentials
+
+
+class NestedConfiguredTransport(PubSubTransport[bytes]):
+    _config_cls = NestedTransportConfig
+
+    def __init__(
+        self,
+        topic: str,
+        *,
+        config: NestedTransportConfig | None = None,
+        **config_kwargs: Any,
+    ) -> None:
+        super().__init__(topic)
+        self._config = config or self._config_cls(**config_kwargs)
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def broadcast(self, selfstream: Stream[bytes] | None, value: bytes) -> None:
+        pass
+
+    def subscribe(
+        self,
+        callback: Callable[[bytes], Any],
+        selfstream: Stream[bytes] | None = None,
+    ) -> Callable[[], None]:
+        return lambda: None
 
 
 # ModuleRef / RPC tests
@@ -141,7 +191,7 @@ class Mod1(Module):
 
     @rpc
     def start(self) -> None:
-        _ = self.calc.compute1
+        self.calc.compute1  # noqa: B018
 
     @rpc
     def stop(self) -> None: ...
@@ -154,17 +204,30 @@ class Mod2(Module):
 
     @rpc
     def start(self) -> None:
-        _ = self.calc.compute1
+        self.calc.compute1  # noqa: B018
 
     @rpc
     def stop(self) -> None: ...
 
 
-@pytest.mark.slow
+# How a deployment specializes a provider: extra I/O, same RPC surface.
+class Calculator1WithPort(Calculator1):
+    extra_in: In[Image]
+
+
+def _build_without_rerun(blueprint: Blueprint) -> ModuleCoordinator:
+    """Build with a parsed viewer override so tests never spawn Rerun."""
+    parsed = BlueprintConfigParser(blueprint).parse(
+        environ={},
+        overrides={"g": {"viewer": "none"}},
+    )
+    return ModuleCoordinator.build(blueprint, parsed)
+
+
 def test_build_happy_path() -> None:
     blueprint_set = autoconnect(ModuleA.blueprint(), ModuleB.blueprint(), ModuleC.blueprint())
 
-    coordinator = ModuleCoordinator.build(blueprint_set, _BUILD_WITHOUT_RERUN.copy())
+    coordinator = _build_without_rerun(blueprint_set)
 
     try:
         assert isinstance(coordinator, ModuleCoordinator)
@@ -192,6 +255,103 @@ def test_build_happy_path() -> None:
 
     finally:
         coordinator.stop()
+
+
+def test_build_does_not_mutate_parsed_config(mocker) -> None:
+    blueprint = ModuleA.blueprint()
+    parsed = BlueprintConfigParser(blueprint).parse(
+        environ={},
+        overrides={"g": {"viewer": "none"}},
+    )
+    module_values = parsed.module_kwargs(ModuleA.name)
+    global_values = parsed.global_config_values()
+
+    mocker.patch.object(ModuleCoordinator, "start")
+    deploy = mocker.patch("dimos.core.coordination.module_coordinator._deploy_all_modules")
+    mocker.patch.object(ModuleCoordinator, "_connect_streams")
+    mocker.patch("dimos.core.coordination.module_coordinator._connect_module_refs")
+    mocker.patch.object(ModuleCoordinator, "build_all_modules")
+    mocker.patch.object(ModuleCoordinator, "start_all_modules")
+    mocker.patch("dimos.core.coordination.module_coordinator._log_blueprint_graph")
+
+    coordinator = ModuleCoordinator.build(blueprint, parsed)
+
+    assert parsed.module_kwargs(ModuleA.name) == module_values
+    assert parsed.global_config_values() == global_values
+    assert coordinator._global_config.viewer == "none"
+    assert deploy.call_args.args[3] == {ModuleA.name: module_values}
+
+
+def test_build_stops_the_coordinator_when_deploy_fails(mocker) -> None:
+    blueprint = ModuleA.blueprint()
+    parsed = BlueprintConfigParser(blueprint).parse(
+        environ={},
+        overrides={"g": {"viewer": "none"}},
+    )
+    mocker.patch.object(ModuleCoordinator, "start")
+    stop = mocker.patch.object(ModuleCoordinator, "stop")
+    mocker.patch(
+        "dimos.core.coordination.module_coordinator._deploy_all_modules",
+        side_effect=RuntimeError("deploy failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="deploy failed"):
+        ModuleCoordinator.build(blueprint, parsed)
+
+    stop.assert_called_once()
+
+
+def test_build_rejects_config_parsed_for_another_blueprint() -> None:
+    source = ModuleA.blueprint()
+    parsed = BlueprintConfigParser(source).parse(environ={})
+
+    with pytest.raises(ValueError):
+        ModuleCoordinator.build(ModuleC.blueprint(), parsed)
+
+
+def test_build_rejects_raw_config_mapping() -> None:
+    with pytest.raises(TypeError, match="ParsedBlueprintConfig"):
+        ModuleCoordinator.build(  # type: ignore[arg-type]
+            ModuleA.blueprint(),
+            {"g": {"viewer": "none"}},
+        )
+
+
+def test_deploy_preserves_constructor_only_blueprint_kwargs(mocker) -> None:
+    class ConstructorOnlyModule(Module):
+        def __init__(self, resource_name: str, **kwargs: Any) -> None:
+            self.resource_name = resource_name
+            super().__init__(**kwargs)
+
+    blueprint = ConstructorOnlyModule.blueprint(resource_name="camera")
+    parsed = BlueprintConfigParser(blueprint).parse(environ={})
+    coordinator = ModuleCoordinator(g=GlobalConfig(viewer="none"))
+    deploy = mocker.patch.object(coordinator, "deploy_parallel", return_value=[])
+
+    _deploy_all_modules(
+        blueprint,
+        coordinator,
+        coordinator._global_config,
+        {atom.name: parsed.module_kwargs(atom.name) for atom in blueprint.active_blueprints},
+    )
+
+    assert deploy.call_args.args[0][0][2]["resource_name"] == "camera"
+
+
+def test_deploy_does_not_deepcopy_pinned_kwargs(mocker) -> None:
+    class LockHolderModule(Module):
+        def __init__(self, lock: Any, **kwargs: Any) -> None:
+            self.lock = lock
+            super().__init__(**kwargs)
+
+    lock = threading.Lock()
+    blueprint = LockHolderModule.blueprint(lock=lock)
+    coordinator = ModuleCoordinator(g=GlobalConfig(viewer="none"))
+    deploy = mocker.patch.object(coordinator, "deploy_parallel", return_value=[])
+
+    _deploy_all_modules(blueprint, coordinator, coordinator._global_config, {})
+
+    assert deploy.call_args.args[0][0][2]["lock"] is lock
 
 
 def test_name_conflicts_are_reported() -> None:
@@ -269,7 +429,6 @@ def test_that_remapping_can_resolve_conflicts() -> None:
     _verify_no_name_conflicts(blueprint_set_remapped)
 
 
-@pytest.mark.slow
 def test_remapping() -> None:
     """Test that remapping streams works correctly."""
 
@@ -283,18 +442,18 @@ def test_remapping() -> None:
         ]
     )
 
-    # Verify remappings are stored correctly
-    assert (SourceModule, "color_image") in blueprint_set.remapping_map
-    assert blueprint_set.remapping_map[(SourceModule, "color_image")] == "remapped_data"
+    # Verify remappings are stored correctly, keyed by instance name.
+    assert (SourceModule.name, "color_image") in blueprint_set.remapping_map
+    assert blueprint_set.remapping_map[(SourceModule.name, "color_image")] == "remapped_data"
 
     # Verify that remapped names are used in name resolution
-    all_names = _all_name_types(blueprint_set)
+    all_names = stream_name_types(blueprint_set)
     assert ("remapped_data", Data1) in all_names
     # The original name shouldn't be in the name types since it's remapped
     assert ("color_image", Data1) not in all_names
 
     # Build and verify streams work
-    coordinator = ModuleCoordinator.build(blueprint_set, _BUILD_WITHOUT_RERUN.copy())
+    coordinator = _build_without_rerun(blueprint_set)
 
     try:
         source_instance = coordinator.get_instance(SourceModule)
@@ -313,8 +472,8 @@ def test_remapping() -> None:
             == target_instance.remapped_data.transport.topic
         )
 
-        # The topic should be /remapped_data since that's the remapped name
-        assert target_instance.remapped_data.transport.topic == "/remapped_data"
+        # The topic should be the remapped name, spelled for the active backend.
+        assert target_instance.remapped_data.transport.topic == transport_topic("/remapped_data")
 
     finally:
         coordinator.stop()
@@ -325,7 +484,7 @@ def test_future_annotations_autoconnect() -> None:
 
     blueprint_set = autoconnect(FutureModuleOut.blueprint(), FutureModuleIn.blueprint())
 
-    coordinator = ModuleCoordinator.build(blueprint_set, _BUILD_WITHOUT_RERUN.copy())
+    coordinator = _build_without_rerun(blueprint_set)
 
     try:
         out_instance = coordinator.get_instance(FutureModuleOut)
@@ -345,14 +504,12 @@ def test_future_annotations_autoconnect() -> None:
         coordinator.stop()
 
 
-@pytest.mark.slow
 def test_module_ref_direct() -> None:
-    coordinator = ModuleCoordinator.build(
+    coordinator = _build_without_rerun(
         autoconnect(
             Calculator1.blueprint(),
             Mod1.blueprint(),
-        ),
-        _BUILD_WITHOUT_RERUN.copy(),
+        )
     )
 
     try:
@@ -364,14 +521,33 @@ def test_module_ref_direct() -> None:
         coordinator.stop()
 
 
-@pytest.mark.slow
+def test_module_ref_direct_accepts_a_subclass_provider() -> None:
+    # A deployment may swap in a subclass to add per-instance ports. Matching
+    # the ref by exact class identity would leave Mod1.calc set to None, with
+    # no error at wiring time and an AttributeError at first use.
+    coordinator = _build_without_rerun(
+        autoconnect(
+            Calculator1WithPort.blueprint(),
+            Mod1.blueprint(),
+        )
+    )
+
+    try:
+        mod1 = coordinator.get_instance(Mod1)
+        assert mod1 is not None
+        assert mod1.calc is not None
+        assert mod1.calc.compute1(2, 3) == 5
+        assert mod1.calc.compute2(1.5, 2.5) == 4.0
+    finally:
+        coordinator.stop()
+
+
 def test_module_ref_spec() -> None:
-    coordinator = ModuleCoordinator.build(
+    coordinator = _build_without_rerun(
         autoconnect(
             Calculator1.blueprint(),
             Mod2.blueprint(),
-        ),
-        _BUILD_WITHOUT_RERUN.copy(),
+        )
     )
 
     try:
@@ -383,13 +559,12 @@ def test_module_ref_spec() -> None:
         coordinator.stop()
 
 
-@pytest.mark.slow
 def test_disabled_modules_are_skipped_during_build() -> None:
     blueprint_set = autoconnect(
         ModuleA.blueprint(), ModuleB.blueprint(), ModuleC.blueprint()
     ).disabled_modules(ModuleC)
 
-    coordinator = ModuleCoordinator.build(blueprint_set, _BUILD_WITHOUT_RERUN.copy())
+    coordinator = _build_without_rerun(blueprint_set)
 
     try:
         assert coordinator.get_instance(ModuleA) is not None
@@ -400,14 +575,13 @@ def test_disabled_modules_are_skipped_during_build() -> None:
         coordinator.stop()
 
 
-@pytest.mark.slow
 def test_disabled_module_ref_gets_noop_proxy() -> None:
     blueprint_set = autoconnect(
         Calculator1.blueprint(),
         Mod2.blueprint(),
     ).disabled_modules(Calculator1)
 
-    coordinator = ModuleCoordinator.build(blueprint_set, _BUILD_WITHOUT_RERUN.copy())
+    coordinator = _build_without_rerun(blueprint_set)
 
     try:
         mod2 = coordinator.get_instance(Mod2)
@@ -420,9 +594,8 @@ def test_disabled_module_ref_gets_noop_proxy() -> None:
         coordinator.stop()
 
 
-@pytest.mark.slow
 def test_module_ref_remap_ambiguous() -> None:
-    coordinator = ModuleCoordinator.build(
+    coordinator = _build_without_rerun(
         autoconnect(
             Calculator1.blueprint(),
             Calculator2.blueprint(),
@@ -431,8 +604,7 @@ def test_module_ref_remap_ambiguous() -> None:
             [
                 (Mod2, "calc", Calculator1),
             ]
-        ),
-        _BUILD_WITHOUT_RERUN.copy(),
+        )
     )
 
     try:
@@ -444,7 +616,6 @@ def test_module_ref_remap_ambiguous() -> None:
         coordinator.stop()
 
 
-@pytest.mark.slow
 def test_load_blueprint_basic(dynamic_coordinator) -> None:
     """load_blueprint deploys, wires and starts modules the same way build() does."""
     bp = autoconnect(ModuleA.blueprint(), ModuleB.blueprint(), ModuleC.blueprint())
@@ -468,7 +639,6 @@ def test_load_blueprint_basic(dynamic_coordinator) -> None:
     assert b.what_is_as_name() == "A, Module A"
 
 
-@pytest.mark.slow
 def test_load_blueprint_twice(dynamic_coordinator) -> None:
     """Two sequential load_blueprint calls share transports for matching streams."""
     dynamic_coordinator.load_blueprint(ModuleA.blueprint())
@@ -488,7 +658,6 @@ def test_load_blueprint_twice(dynamic_coordinator) -> None:
     assert b.data3.transport.topic == c.data3.transport.topic
 
 
-@pytest.mark.slow
 def test_load_module_convenience(dynamic_coordinator) -> None:
     """load_module is a shorthand for load_blueprint(cls.blueprint())."""
     dynamic_coordinator.load_module(ModuleA)
@@ -496,7 +665,6 @@ def test_load_module_convenience(dynamic_coordinator) -> None:
     assert dynamic_coordinator.get_instance(ModuleA).data1.transport is not None
 
 
-@pytest.mark.slow
 def test_load_blueprint_module_ref_to_existing(dynamic_coordinator) -> None:
     """A module loaded in a second blueprint can reference one from the first."""
     dynamic_coordinator.load_blueprint(Calculator1.blueprint())
@@ -522,7 +690,6 @@ def test_load_blueprint_conflict_with_existing() -> None:
         _verify_no_conflicts_with_existing(bp, registry)
 
 
-@pytest.mark.slow
 def test_load_blueprint_duplicate_module_raises(dynamic_coordinator) -> None:
     """Loading a module that is already deployed raises ValueError."""
     dynamic_coordinator.load_blueprint(ModuleA.blueprint())
@@ -546,7 +713,7 @@ def build_coordinator():
     coordinators = []
 
     def _build(blueprint):
-        c = ModuleCoordinator.build(blueprint, _BUILD_WITHOUT_RERUN.copy())
+        c = _build_without_rerun(blueprint)
         coordinators.append(c)
         return c
 
@@ -564,7 +731,6 @@ def dynamic_coordinator():
     mc.stop()
 
 
-@pytest.mark.slow
 def test_optional_module_ref_with_provider(build_coordinator) -> None:
     """An optional ref resolves normally when a provider is present."""
     coordinator = build_coordinator(
@@ -579,7 +745,6 @@ def test_optional_module_ref_with_provider(build_coordinator) -> None:
     assert mod.calc.compute1(2, 3) == 5
 
 
-@pytest.mark.slow
 def test_optional_module_ref_without_provider(build_coordinator) -> None:
     """An optional ref is silently skipped when no provider is in the blueprint."""
     coordinator = build_coordinator(ModWithOptionalRef.blueprint())
@@ -588,7 +753,23 @@ def test_optional_module_ref_without_provider(build_coordinator) -> None:
     assert mod is not None
 
 
-@pytest.mark.slow
+def test_build_with_explicit_instance_name(build_coordinator) -> None:
+    """A blueprint-supplied instance_name is used for deployment and wiring."""
+    coordinator = build_coordinator(
+        autoconnect(
+            ModuleA.blueprint(instance_name="custom/modulea"),
+            ModuleB.blueprint(),
+        )
+    )
+
+    module_a = coordinator.get_instance("custom/modulea")
+    module_b = coordinator.get_instance(ModuleB)
+    assert module_a is not None
+    assert module_b is not None
+    assert module_a.data1.transport.topic == module_b.data1.transport.topic
+    assert module_b.what_is_as_name() == "A, Module A"
+
+
 def test_load_blueprint_auto_scales_empty_pool(dynamic_coordinator) -> None:
     """A coordinator with 0 initial workers auto-adds workers on load_blueprint."""
     dynamic_coordinator.load_blueprint(ModuleA.blueprint())
@@ -606,7 +787,6 @@ def test_check_requirements_failure(mocker) -> None:
         _check_requirements(bp)
 
 
-@pytest.mark.slow
 def test_restart_module_basic(dynamic_coordinator) -> None:
     """restart_module replaces the deployed proxy with a fresh one."""
     dynamic_coordinator.load_module(ModuleA)
@@ -621,7 +801,6 @@ def test_restart_module_basic(dynamic_coordinator) -> None:
     assert new_proxy.get_name() == "A, Module A"
 
 
-@pytest.mark.slow
 def test_restart_module_preserves_stream_wiring(dynamic_coordinator) -> None:
     """Streams stay on the same transport after restart so consumers keep receiving data."""
     dynamic_coordinator.load_blueprint(autoconnect(ModuleA.blueprint(), ModuleC.blueprint()))
@@ -643,7 +822,6 @@ def test_restart_module_preserves_stream_wiring(dynamic_coordinator) -> None:
     assert c_after.data3.transport.topic == topic_before
 
 
-@pytest.mark.slow
 def test_restart_module_rewires_module_refs(dynamic_coordinator) -> None:
     """After restart, modules that reference the restarted class see the new proxy."""
     dynamic_coordinator.load_blueprint(autoconnect(ModuleA.blueprint(), ModuleB.blueprint()))
@@ -657,7 +835,6 @@ def test_restart_module_rewires_module_refs(dynamic_coordinator) -> None:
     assert b.what_is_as_name() == "A, Module A"
 
 
-@pytest.mark.slow
 def test_restart_consumer_rewires_outbound_refs(dynamic_coordinator) -> None:
     """Restarting a consumer re-injects its refs to existing target modules."""
     dynamic_coordinator.load_blueprint(autoconnect(ModuleA.blueprint(), ModuleB.blueprint()))
@@ -670,7 +847,6 @@ def test_restart_consumer_rewires_outbound_refs(dynamic_coordinator) -> None:
     assert b_after.what_is_as_name() == "A, Module A"
 
 
-@pytest.mark.slow
 def test_restart_module_shuts_down_empty_worker(dynamic_coordinator) -> None:
     """Restart shuts down the old worker (when empty) and spawns a new one."""
 
@@ -688,7 +864,6 @@ def test_restart_module_shuts_down_empty_worker(dynamic_coordinator) -> None:
     assert new_worker_ids.isdisjoint(old_worker_ids)
 
 
-@pytest.mark.slow
 def test_restart_module_calls_importlib_reload(dynamic_coordinator, mocker) -> None:
     """reload_source=True invokes importlib.reload on the module's source file."""
     dynamic_coordinator.load_module(ModuleA)
@@ -722,7 +897,6 @@ def _mock_reload_producing_new_class(original_class):
     return side_effect, new_class
 
 
-@pytest.mark.slow
 def test_get_instance_after_reload_restart(dynamic_coordinator, mocker) -> None:
     """get_instance with the original class still works after a reload restart."""
     dynamic_coordinator.load_module(ModuleA)
@@ -738,7 +912,6 @@ def test_get_instance_after_reload_restart(dynamic_coordinator, mocker) -> None:
     assert dynamic_coordinator.get_instance(ModuleA) is new_proxy
 
 
-@pytest.mark.slow
 def test_double_restart_with_reload(dynamic_coordinator, mocker) -> None:
     """A second restart via the original class works after a reload restart."""
     dynamic_coordinator.load_module(ModuleA)
@@ -761,7 +934,6 @@ def test_double_restart_with_reload(dynamic_coordinator, mocker) -> None:
     assert dynamic_coordinator.get_instance(ModuleA) is proxy2
 
 
-@pytest.mark.slow
 def test_unload_after_reload_restart(dynamic_coordinator, mocker) -> None:
     """unload_module with the original class works after a reload restart."""
     dynamic_coordinator.load_module(ModuleA)
@@ -777,7 +949,6 @@ def test_unload_after_reload_restart(dynamic_coordinator, mocker) -> None:
     assert dynamic_coordinator.get_instance(ModuleA) is None
 
 
-@pytest.mark.slow
 def test_restart_preserves_remapped_streams(dynamic_coordinator) -> None:
     """Restart reconnects streams that were remapped during initial load."""
     bp = autoconnect(
@@ -800,12 +971,37 @@ def test_restart_preserves_remapped_streams(dynamic_coordinator) -> None:
     assert source_after.color_image.transport.topic == target.remapped_data.transport.topic
 
 
-def test_start_rpyc_service(dynamic_coordinator) -> None:
-    port = dynamic_coordinator.start_rpyc_service()
-    assert port > 0
+def test_start_rpc_service_responds_to_ping(dynamic_coordinator) -> None:
+    dynamic_coordinator.start_rpc_service()
+    client = CoordinatorRPC.connect(timeout=2.0)
+    try:
+        assert client.call("ping") == "pong"
+    finally:
+        client.stop()
 
 
-@pytest.mark.slow
+def test_start_rpc_service_is_idempotent(dynamic_coordinator) -> None:
+    dynamic_coordinator.start_rpc_service()
+    first_service = dynamic_coordinator._coordinator_rpc
+
+    dynamic_coordinator.start_rpc_service()
+
+    assert dynamic_coordinator._coordinator_rpc is first_service
+
+
+def test_loop_starts_rpc_service_and_stops_on_interrupt(dynamic_coordinator, mocker) -> None:
+    start_rpc = mocker.patch.object(dynamic_coordinator, "start_rpc_service")
+    stop = mocker.patch.object(dynamic_coordinator, "stop")
+    event = mocker.patch("dimos.core.coordination.module_coordinator.threading.Event")
+    event.return_value.wait.side_effect = KeyboardInterrupt
+
+    dynamic_coordinator.loop()
+
+    start_rpc.assert_called_once_with()
+    event.return_value.wait.assert_called_once_with()
+    stop.assert_called_once_with()
+
+
 def test_list_module_names(dynamic_coordinator) -> None:
     assert dynamic_coordinator.list_module_names() == []
     dynamic_coordinator.load_module(ModuleA)
@@ -813,15 +1009,186 @@ def test_list_module_names(dynamic_coordinator) -> None:
     assert set(dynamic_coordinator.list_module_names()) == {"ModuleA", "ModuleC"}
 
 
-@pytest.mark.slow
-def test_get_module_endpoint(dynamic_coordinator) -> None:
-    dynamic_coordinator.load_module(ModuleA)
-    host, port, module_id = dynamic_coordinator.get_module_endpoint("ModuleA")
-    assert host == "localhost"
-    assert port > 0
-    assert isinstance(module_id, int)
+def test_load_blueprint_by_name_uses_shared_resolver(
+    monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    expected_blueprint = ExternalNameLoadModule.blueprint()
+
+    def fake_get_by_name(name: str):
+        assert name == "my-test-stack.demo"
+        return expected_blueprint
+
+    coordinator = ModuleCoordinator()
+    load_blueprint = mocker.patch.object(ModuleCoordinator, "load_blueprint")
+    monkeypatch.setattr(resolver, "get_by_name", fake_get_by_name)
+
+    coordinator.load_blueprint_by_name("my-test-stack.demo")
+
+    load_blueprint.assert_called_once_with(expected_blueprint)
 
 
-def test_get_module_endpoint_unknown_raises(dynamic_coordinator) -> None:
-    with pytest.raises(KeyError):
-        dynamic_coordinator.get_module_endpoint("NoSuchModule")
+class NamedModule(Module):
+    @rpc
+    def whoami(self) -> str:
+        return self.config.instance_name or "default"
+
+
+def test_deploy_two_instances_of_same_class(dynamic_coordinator) -> None:
+    """Two instances of one class get separate RPC topics and coordinator entries."""
+    p0 = dynamic_coordinator.deploy(NamedModule, instance_name="robot0/namedmodule")
+    p1 = dynamic_coordinator.deploy(NamedModule, instance_name="robot1/namedmodule")
+
+    assert dynamic_coordinator.get_instance("robot0/namedmodule") is p0
+    assert dynamic_coordinator.get_instance("robot1/namedmodule") is p1
+    with pytest.raises(ValueError, match="Multiple instances"):
+        dynamic_coordinator.get_instance(NamedModule)
+
+    # Each proxy reaches its own instance over the instance-name RPC topic.
+    assert p0.remote_name == "robot0/namedmodule"
+    assert p0.whoami() == "robot0/namedmodule"
+    assert p1.whoami() == "robot1/namedmodule"
+
+    assert set(dynamic_coordinator.list_module_names()) == {
+        "robot0/namedmodule",
+        "robot1/namedmodule",
+    }
+    descriptors = {d.rpc_name: d for d in dynamic_coordinator.list_modules()}
+    assert descriptors["robot0/namedmodule"].class_name == "NamedModule"
+
+
+def test_rpc_client_pickle_preserves_remote_name(dynamic_coordinator) -> None:
+    """Proxies pickled into workers (set_module_ref) must keep the instance RPC name."""
+    proxy = dynamic_coordinator.deploy(NamedModule, instance_name="robot0/namedmodule")
+    restored = pickle.loads(pickle.dumps(proxy))
+    try:
+        assert restored.remote_name == "robot0/namedmodule"
+        assert restored.whoami() == "robot0/namedmodule"
+    finally:
+        restored.stop_rpc_client()
+
+
+def test_spec_config_kwarg_reaches_provider_config() -> None:
+    """A config-field kwarg pinned on a WebRTC spec (e.g. robot_type in a hosted
+    blueprint) must survive materialization. Regression: the coordinator builds a
+    provider config from CLI/env overrides and passes it as config=, which the
+    transport's `config or config_cls(**kwargs)` guard would otherwise let win
+    unconditionally — silently dropping the spec kwarg."""
+    spec = CloudflareTransport.spec("state_reliable", robot_type="go2")
+    bp = Blueprint(blueprints=(), transport_map=MappingProxyType({("s", bytes): spec}))
+    t = _materialize_transports(bp, {})[("s", bytes)]
+    assert t._config.robot_type == "go2"
+
+
+def test_materialize_transports_deep_merges_sparse_nested_overrides() -> None:
+    pinned_credentials = {
+        "client_id": "blueprint-client",
+        "client_secret": "blueprint-secret",
+    }
+    spec = NestedConfiguredTransport.spec("events", credentials=pinned_credentials)
+    bp = Blueprint(blueprints=(), transport_map=MappingProxyType({("s", bytes): spec}))
+    parsed = BlueprintConfigParser(bp).parse(
+        [
+            "--transports.nestedtransport.credentials.client-id",
+            "cli-client",
+        ],
+        environ={},
+    )
+    overrides = parsed.transport_overrides()
+
+    transport = _materialize_transports(bp, overrides)[("s", bytes)]
+
+    assert isinstance(transport, NestedConfiguredTransport)
+    assert transport._config == NestedTransportConfig(
+        credentials=TransportCredentials(
+            client_id="cli-client",
+            client_secret="blueprint-secret",
+        )
+    )
+    assert pinned_credentials == {
+        "client_id": "blueprint-client",
+        "client_secret": "blueprint-secret",
+    }
+    assert overrides == {
+        "nestedtransport": {
+            "credentials": {
+                "client_id": "cli-client",
+            }
+        }
+    }
+
+
+class IoTfPublisher(Module):
+    tf: Out[TFMessage]
+
+    @rpc
+    def send(self, child: str) -> None:
+        self.tf.publish(TFMessage(Transform(frame_id="world", child_frame_id=child)))
+
+
+class IoTfEcho(Module):
+    tf: IO[TFMessage]
+    _seen: list[str] | None = None
+
+    @rpc
+    def start(self) -> None:
+        self._seen = []
+        super().start()
+
+    async def handle_tf(self, msg: TFMessage) -> None:
+        assert self._seen is not None
+        self._seen.extend(t.child_frame_id for t in msg.transforms)
+
+    @rpc
+    def send(self, child: str) -> None:
+        self.tf.publish(TFMessage(Transform(frame_id="world", child_frame_id=child)))
+
+    @rpc
+    def seen(self) -> list[str]:
+        return list(self._seen or [])
+
+
+class IoTfConsumer(Module):
+    tf: In[TFMessage]
+    _seen: list[str] | None = None
+
+    @rpc
+    def start(self) -> None:
+        self._seen = []
+        super().start()
+
+    async def handle_tf(self, msg: TFMessage) -> None:
+        assert self._seen is not None
+        self._seen.extend(t.child_frame_id for t in msg.transforms)
+
+    @rpc
+    def seen(self) -> list[str]:
+        return list(self._seen or [])
+
+
+def test_io_port_autoconnects_and_flows_both_ways(wait_until) -> None:
+    """An IO port shares the topic with same-named In/Out ports: it hears the
+    publisher, its own publishes reach the consumer, and loopback feeds it back
+    its own messages."""
+    blueprint_set = autoconnect(
+        IoTfPublisher.blueprint(), IoTfEcho.blueprint(), IoTfConsumer.blueprint()
+    )
+
+    coordinator = _build_without_rerun(blueprint_set)
+    try:
+        publisher = coordinator.get_instance(IoTfPublisher)
+        echo = coordinator.get_instance(IoTfEcho)
+        consumer = coordinator.get_instance(IoTfConsumer)
+
+        assert publisher.tf.transport.topic == echo.tf.transport.topic
+        assert echo.tf.transport.topic == consumer.tf.transport.topic
+        assert "tf" in str(echo.tf.transport.topic)
+
+        publisher.send("from_pub")
+        wait_until(lambda: "from_pub" in echo.seen(), timeout=10.0)
+        wait_until(lambda: "from_pub" in consumer.seen(), timeout=10.0)
+
+        echo.send("from_echo")
+        wait_until(lambda: "from_echo" in consumer.seen(), timeout=10.0)
+        wait_until(lambda: "from_echo" in echo.seen(), timeout=10.0)
+    finally:
+        coordinator.stop()

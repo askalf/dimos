@@ -16,36 +16,10 @@
 from typing import Any
 
 from dimos.core.coordination.blueprints import autoconnect
-from dimos.protocol.pubsub.impl.lcmpubsub import LCM
+from dimos.core.global_config import global_config
 from dimos.robot.unitree.go2.blueprints.agentic.unitree_go2_agentic import unitree_go2_agentic
-from dimos.visualization.rerun.bridge import RerunBridgeModule, _resolve_viewer_mode
-
-
-def _convert_camera_info(camera_info: Any) -> Any:
-    return camera_info.to_rerun(
-        image_topic="/world/color_image",
-        optical_frame="camera_optical",
-    )
-
-
-def _convert_navigation_costmap(grid: Any) -> Any:
-    return grid.to_rerun(
-        colormap="Accent",
-        z_offset=0.015,
-        opacity=0.2,
-        background="#484981",
-    )
-
-
-def _static_base_link(rr: Any) -> list[Any]:
-    return [
-        rr.Boxes3D(
-            half_sizes=[0.35, 0.155, 0.2],
-            colors=[(0, 255, 127)],
-            fill_mode="wireframe",
-        ),
-        rr.Transform3D(parent_frame="tf#/base_link"),
-    ]
+from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
+from dimos.visualization.vis_module import vis_module
 
 
 def _go2_rerun_blueprint() -> Any:
@@ -71,21 +45,10 @@ def _go2_rerun_blueprint() -> Any:
     )
 
 
-rerun_config = {
-    "blueprint": _go2_rerun_blueprint,
-    "pubsubs": [LCM()],
-    "visual_override": {
-        "world/camera_info": _convert_camera_info,
-        "world/navigation_costmap": _convert_navigation_costmap,
-    },
-    "static": {
-        "world/tf/base_link": _static_base_link,
-    },
-}
-
 unitree_go2_security = autoconnect(
     unitree_go2_agentic,
-    RerunBridgeModule.blueprint(viewer_mode=_resolve_viewer_mode(), **rerun_config),
+    vis_module(
+        viewer_backend=global_config.viewer,
+        rerun_config={**rerun_config, "blueprint": _go2_rerun_blueprint},
+    ),
 )
-
-__all__ = ["unitree_go2_security"]

@@ -1,16 +1,16 @@
-# System Dependencies Install (Ubuntu 22.04 or 24.04)
+## System Dependencies Install (Ubuntu 22.04 or 24.04)
 
-```sh
+```sh skip
 sudo apt-get update
-sudo apt-get install -y curl g++ portaudio19-dev git-lfs libturbojpeg python3-dev pre-commit
+sudo apt-get install -y curl g++ portaudio19-dev git-lfs libturbojpeg ffmpeg python3-dev pre-commit
 
 # install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH="$HOME/.local/bin:$PATH"
 ```
 
-# Using DimOS as a library
+## Using dimOS as a library
 
-```sh
+```sh skip
 mkdir myproject && cd myproject
 
 uv venv --python 3.12
@@ -18,22 +18,24 @@ source .venv/bin/activate
 
 # install everything (depending on your use case you might not need all extras,
 # check your respective platform guides)
-uv pip install 'dimos[misc,sim,visualization,agents,web,perception,unitree,manipulation,cpu,dev]'
+uv pip install 'dimos[manipulation,misc,unitree]'
 ```
 
-# Developing on DimOS
+## Developing on dimOS
 
-```sh
+```sh skip
 # this allows getting large files on-demand (and not pulling all immediately)
 export GIT_LFS_SKIP_SMUDGE=1
-git clone -b dev https://github.com/dimensionalOS/dimos.git
+git clone https://github.com/dimensionalOS/dimos.git
 cd dimos
 
-uv sync --all-extras --no-extra dds
+# Install all dependency groups (tests, lint, …) so mypy + pytest are
+# both available. For self-hosted tests, see docs/development/testing.md.
+uv sync --all-groups
 
 # type check
 uv run mypy dimos
 
 # tests (around a minute to run)
-uv run pytest dimos
+uv run pytest --numprocesses=auto dimos
 ```

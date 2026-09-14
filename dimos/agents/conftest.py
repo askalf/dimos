@@ -16,25 +16,22 @@ import os
 from pathlib import Path
 from threading import Event
 
-from dotenv import load_dotenv
 from langchain_core.messages.base import BaseMessage
 import pytest
 
-from dimos.agents.agent_test_runner import AgentTestRunner
 from dimos.agents.mcp.mcp_client import McpClient
 from dimos.agents.mcp.mcp_server import McpServer
+from dimos.agents.testing.agent_test_runner import AgentTestRunner
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.global_config import global_config
 from dimos.core.transport import pLCMTransport
 
-load_dotenv()
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
-def agent_setup(request):
+def agent_setup(request, mcp_url: str, lcm_url: str):
     coordinator = None
     transports: list[pLCMTransport] = []
     unsubs: list = []
@@ -50,8 +47,8 @@ def agent_setup(request):
         history: list[BaseMessage] = []
         finished_event = Event()
 
-        agent_transport: pLCMTransport = pLCMTransport("/agent")
-        finished_transport: pLCMTransport = pLCMTransport("/finished")
+        agent_transport: pLCMTransport = pLCMTransport("/agent", url=lcm_url)
+        finished_transport: pLCMTransport = pLCMTransport("/finished", url=lcm_url)
         transports.extend([agent_transport, finished_transport])
 
         def on_message(msg: BaseMessage) -> None:
@@ -66,7 +63,10 @@ def agent_setup(request):
         else:
             fixture_path = FIXTURE_DIR / f"{request.node.name}.json"
 
-        agent_kwargs: dict = {"system_prompt": system_prompt}
+        agent_kwargs: dict = {
+            "system_prompt": system_prompt,
+            "mcp_server_url": mcp_url,
+        }
 
         if recording or fixture_path.exists():
             # RECORD=1: use real LLM, save responses to fixture file.
@@ -81,7 +81,7 @@ def agent_setup(request):
             AgentTestRunner.blueprint(messages=messages),
         )
 
-        global_config.update(viewer="none")
+        global_config.update(viewer="none", transport="lcm")  # fixture uses pLCMTransport sidecars
 
         nonlocal coordinator
         coordinator = ModuleCoordinator.build(blueprint)

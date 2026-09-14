@@ -26,7 +26,6 @@ import mujoco
 from mujoco import viewer
 import numpy as np
 from numpy.typing import NDArray
-import open3d as o3d  # type: ignore[import-untyped]
 
 from dimos.core.global_config import GlobalConfig
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
@@ -72,6 +71,8 @@ class MockController:
 
 
 def _run_simulation(config: GlobalConfig, shm: ShmReader) -> None:
+    import open3d as o3d  # type: ignore[import-untyped]
+
     robot_name = config.robot_model or "unitree_go1"
     if robot_name == "unitree_go2":
         robot_name = "unitree_go1"
@@ -90,9 +91,9 @@ def _run_simulation(config: GlobalConfig, shm: ShmReader) -> None:
         case _:
             z = 0
 
-    pos = config.mujoco_start_pos_float
+    start_pos = config.mujoco_start_pos_float
 
-    data.qpos[0:3] = [pos[0], pos[1], z]
+    data.qpos[0:3] = [start_pos[0], start_pos[1], z]
 
     mujoco.mj_forward(model, data)
 

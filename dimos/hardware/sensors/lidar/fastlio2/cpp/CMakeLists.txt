@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 project(fastlio2_native CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 
@@ -34,16 +34,9 @@ endif()
 # Fetch dependencies
 include(FetchContent)
 
-# FAST-LIO-NON-ROS (pass -DFASTLIO_DIR=<path> or auto-fetched from GitHub)
+# FAST-LIO-NON-ROS (pass -DFASTLIO_DIR=<path> or use local copy)
 if(NOT FASTLIO_DIR)
-  message(STATUS "FASTLIO_DIR not set, fetching FAST-LIO-NON-ROS from GitHub...")
-  FetchContent_Declare(fast_lio
-    GIT_REPOSITORY https://github.com/leshy/FAST-LIO-NON-ROS.git
-    GIT_TAG dimos-integration
-    GIT_SHALLOW TRUE
-  )
-  FetchContent_MakeAvailable(fast_lio)
-  set(FASTLIO_DIR ${fast_lio_SOURCE_DIR})
+  set(FASTLIO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/fast-lio-non-ros)
 endif()
 
 # dimos-lcm C++ message headers
@@ -54,6 +47,13 @@ FetchContent_Declare(dimos_lcm
 )
 FetchContent_MakeAvailable(dimos_lcm)
 
+# The header-only dimos native C++ SDK. Overridable so nix can point at the
+# flake input instead of the in-repo relative path.
+if(NOT DEFINED DIMOS_NATIVE_CPP_DIR)
+  set(DIMOS_NATIVE_CPP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../native/cpp)
+endif()
+add_subdirectory(${DIMOS_NATIVE_CPP_DIR} ${CMAKE_BINARY_DIR}/dimos_native)
+
 # LCM
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LCM REQUIRED lcm)
@@ -63,9 +63,6 @@ find_package(Eigen3 REQUIRED)
 
 # PCL (only components we need — avoid full PCL which drags in VTK via io)
 find_package(PCL 1.8 REQUIRED COMPONENTS common filters)
-
-# yaml-cpp (FAST-LIO config parsing — standard YAML format)
-find_package(yaml-cpp REQUIRED)
 
 # Livox SDK2 (from nix or /usr/local fallback)
 find_library(LIVOX_SDK livox_lidar_sdk_shared)
@@ -100,10 +97,10 @@ target_include_directories(fastlio2_native PRIVATE
 )
 
 target_link_libraries(fastlio2_native PRIVATE
+  dimos_native
   ${LCM_LIBRARIES}
   ${LIVOX_SDK}
   ${PCL_LIBRARIES}
-  yaml-cpp::yaml-cpp
 )
 
 if(OpenMP_CXX_FOUND)
