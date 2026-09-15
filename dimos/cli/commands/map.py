@@ -27,7 +27,6 @@ from dimos.mapping.hyperspace.embed_cli import main as _map_embed_main
 from dimos.mapping.hyperspace.fill_cli import main as _map_fill_depth_main
 from dimos.mapping.hyperspace.find_cli import main as _map_find_main
 from dimos.mapping.hyperspace.live_cli import main as _map_live_main
-from dimos.mapping.hyperspace.segments_cli import main as _map_segments_main
 
 map_app = typer.Typer(help="Voxel-map tools over recorded sqlite datasets")
 map_app.command("global")(_map_main)
@@ -41,4 +40,3 @@ map_app.command("find")(_map_find_main)
 map_app.command("fill-depth")(_map_fill_depth_main)
 map_app.command("embed")(_map_embed_main)
 map_app.command("live")(_map_live_main)
-map_app.command("segments")(_map_segments_main)

@@ -23,9 +23,6 @@ in numpy/scipy, with no model and no I/O:
 - ``gaussian``: blur the score field and re-threshold.
 - ``support``: keep voxels seen from enough keyframes and directions.
 - ``occupancy``: keep voxels next to depth-observed geometry.
-- ``structural``: drop voxels lying on floor, wall or ceiling surfaces (from
-  the segment records) unless the query is about those: a cone is not a
-  patch of floor, however cone-like the floor beside a cone looks to SigLIP.
 - ``prior``: common-sense size: a cluster larger than the thing asked for
   is split around its peaks and trimmed to a plausible thickness.
 - ``components``: label 26-connected clusters, rank them, cut the small
@@ -136,9 +133,6 @@ class RefineConfig:
     min_bins: int = 1
     # Occupancy: a voxel must be within this many voxels of observed depth.
     occupancy_radius: int = 1
-    # Structural: voxels within this many voxels of a floor/wall/ceiling
-    # surface go, unless the query names one of those.
-    structural_radius: int = 1
     # Components: clusters smaller than this, or scoring under min_ratio x
     # the best cluster, are dropped; top_k 0 keeps every survivor.
     min_cluster: int = 6
@@ -155,12 +149,9 @@ METHODS = (
     "gaussian",
     "support",
     "occupancy",
-    "structural",
     "prior",
     "components",
 )
-# Segment labels whose surfaces the ``structural`` step removes heat from.
-STRUCTURAL_LABELS = ("floor", "wall", "ceiling")
 
 
 class Grid:
@@ -206,7 +197,6 @@ def _with(heat: Heatmap, voxels: list[tuple[Index, float]]) -> Heatmap:
         voxel_size=heat.voxel_size,
         voxels=sorted(voxels, key=lambda item: (-item[1], item[0])),
         stats=dict(heat.stats),
-        channels={i: c for i, c in heat.channels.items() if i in kept},
         support={i: s for i, s in heat.support.items() if i in kept},
     )
 
@@ -275,26 +265,6 @@ def occupancy(heat: Heatmap, config: RefineConfig, scene: Iterable[Index]) -> He
     occupied[tuple(local[inside].T)] = True
     occupied = ndimage.binary_dilation(occupied, ball(config.occupancy_radius))
     return _with(heat, [(i, s) for i, s in hot if occupied[grid.local(i)]])
-
-
-def structural(
-    heat: Heatmap, config: RefineConfig, surfaces: Iterable[Index], text: str = ""
-) -> Heatmap:
-    """Drop voxels within ``structural_radius`` of a floor/wall/ceiling
-    surface, unless the query is about one of those."""
-    if any(label in text.lower() for label in STRUCTURAL_LABELS):
-        return _with(heat, _hot(heat, config.cutoff))
-    hot = _hot(heat, config.cutoff)
-    points = np.asarray(list(surfaces), dtype=int).reshape(-1, 3)
-    if not hot or not len(points):
-        return _with(heat, hot)
-    grid = Grid((i for i, _ in hot), pad=config.structural_radius + 2)
-    local = points - grid.lo
-    inside = np.all((local >= 0) & (local < np.asarray(grid.shape)), axis=1)
-    covered = np.zeros(grid.shape, dtype=bool)
-    covered[tuple(local[inside].T)] = True
-    covered = ndimage.binary_dilation(covered, ball(config.structural_radius))
-    return _with(heat, [(i, s) for i, s in hot if not covered[grid.local(i)]])
 
 
 def prior(heat: Heatmap, config: RefineConfig, size: SizePrior) -> Heatmap:
@@ -468,13 +438,11 @@ def refine(
     config: RefineConfig,
     *,
     scene: Iterable[Index] | None = None,
-    surfaces: Iterable[Index] | None = None,
     text: str = "",
 ) -> Heatmap:
     """Run ``config.methods`` in order, then label clusters. ``scene`` (the
-    depth-observed voxels) is needed by ``occupancy``, ``surfaces`` (the
-    floor/wall/ceiling voxels) by ``structural``; ``text`` picks the size
-    prior and exempts structural queries."""
+    depth-observed voxels) is needed by ``occupancy``; ``text`` picks the
+    size prior."""
     result = heat
     for name in config.methods:
         if name == "components":
@@ -489,8 +457,6 @@ def refine(
             result = support(result, config)
         elif name == "occupancy":
             result = occupancy(result, config, scene or [])
-        elif name == "structural":
-            result = structural(result, config, surfaces or [], text)
         elif name == "prior":
             result = prior(result, config, size_prior(text))
         else:

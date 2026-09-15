@@ -277,8 +277,8 @@ def test_transform_matrix_is_a_proper_pose() -> None:
 
 
 def test_one_photograph_counts_once_however_many_records_it_arrives_as() -> None:
-    """The segment channel mints a Keyframe per segment RECORD, so one frame can
-    arrive as a dozen. Evidence keys on (camera_frame, ts), so it still counts once."""
+    """One photograph can reach the pool as several Keyframes. Evidence keys on
+    (camera_frame, ts), so it still counts once."""
     config = QueryConfig()
     one = [(("cam", 10.0), 0.1, 0)]
     one_photo_twelve_records = one * 12
@@ -301,7 +301,7 @@ def test_keyframe_viewpoint_is_the_camera_and_the_moment_not_the_id() -> None:
             patch_depth=depth,
         )
 
-    # Two segment records of one photograph: different ids, same viewpoint.
+    # Two records of one photograph: different ids, same viewpoint.
     assert frame(-3).viewpoint == frame(-17).viewpoint
     assert frame(-3).id != frame(-17).id
 

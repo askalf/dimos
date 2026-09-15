@@ -334,12 +334,8 @@ class Keyframe:
     def viewpoint(self) -> tuple[str, float]:
         """The camera and the moment, which is what "seen from N frames" means.
 
-        Not ``id``: the segment channel mints one Keyframe per segment RECORD
-        (``HyperspaceQuery.segment_keyframe``), so a single photograph carries
-        many ids -- a median of 15 and a tail of 49 on sf_office_drive1. Keying
-        evidence on ``id`` counted one photograph as that many independent
-        views. Every keyframe and segment stamp is an exact stamp of the colour
-        stream it was cut from, so this pair names one real frame.
+        Not ``id``: a keyframe stamp is an exact stamp of the colour stream it
+        was cut from, so this pair names one real frame.
         """
         return (self.camera_frame, self.ts)
 
@@ -377,27 +373,10 @@ class QueryConfig:
         ]
     )
     background_synonym_cutoff: float = 0.85
-    # The segment channel, added on top of the patch channel. Text-text cosines
-    # sit in a narrow band (0.6-0.95, "a chair" vs chair 0.87, vs table 0.75),
-    # so a label is scored by how far its cosine to the query stands above the
-    # vocabulary's mean, in standard deviations: 0 at segment_min_z, 1 at
-    # twice that. A cell then scores word x segment confidence x coverage.
-    segment_weight: float = 1.0
-    segment_min_z: float = 2.0
-    max_hot_segments: int = 4000
     # Default refinement chain (comma separated refine.py methods; "" = raw
     # map). Chosen 2026-09-11 on sf_office: see refine.py and the SacredLocust
-    # report; with structural_gate it is what makes the answers object-shaped.
+    # report.
     refine: str = "occupancy,support,prior"
-    # Drop hot patches whose grid cell the segmenter labelled floor, wall or
-    # ceiling (in the nearest segment frame within structural_gate_dt
-    # seconds), unless the query names one of those. SigLIP patches carry
-    # image-wide context: the floor beside a cone scores like a cone.
-    structural_gate: bool = True
-    structural_gate_dt: float = 0.3
-    # A cell counts as floor/wall/ceiling only when almost all of it is: a far
-    # cone fills a tenth of its cell and must not be gated with the floor.
-    structural_gate_coverage: float = 0.98
 
 
 @dataclass
@@ -505,9 +484,6 @@ class Heatmap:
     # (index, score) best first
     voxels: list[tuple[tuple[int, int, int], float]]
     stats: dict[str, Any]
-    # Per voxel (patch score, segment score), each normalized on its own, when
-    # the map is the sum of both channels; empty for a single-channel map.
-    channels: dict[tuple[int, int, int], tuple[float, float]] = field(default_factory=dict)
     # Per voxel (distinct frames, distinct yaw bins) that put evidence on it.
     support: dict[tuple[int, int, int], tuple[int, int]] = field(default_factory=dict)
     # Voxel -> cluster rank (0 = best) once refined; see refine.py.
@@ -587,40 +563,6 @@ def normalize(
         top = max(float(values[rank]), 1e-9)
         scored = [(index, min(max(s / top, 0.0), 1.0)) for index, s in scored]
     return sorted(scored, key=lambda item: (-item[1], item[0]))
-
-
-def combine(patches: Heatmap, segments: Heatmap, config: QueryConfig) -> Heatmap:
-    """The two channels added: patch score + ``segment_weight`` x segment
-    score per voxel, renormalized, so voxels both channels light up rank
-    first. Keeps each channel's own score in ``channels``."""
-    channels: dict[tuple[int, int, int], tuple[float, float]] = {
-        index: (score, 0.0) for index, score in patches.voxels
-    }
-    for index, score in segments.voxels:
-        channels[index] = (channels.get(index, (0.0, 0.0))[0], score)
-    summed = [(index, e + config.segment_weight * s) for index, (e, s) in channels.items()]
-    stats = dict(patches.stats)
-    stats.update({f"segment_{k}": v for k, v in segments.stats.items()})
-    stats["voxels_in_both"] = sum(1 for e, s in channels.values() if e > 0 and s > 0)
-    # Frame counts are unioned, not added: a photograph that supports a voxel in
-    # both channels is one frame, and the channels do share viewpoints (22 of
-    # sf_office_drive1's 755 segment stamps are also keyframe stamps). Taking the
-    # larger is a lower bound on that union -- it can only drop a voxel the
-    # filter would have kept, where the sum admits ones it exists to remove. The
-    # exact union needs viewpoint sets carried through here, which is computable
-    # (every stamp names one real colour frame) but not what anything needs yet.
-    support = dict(patches.support)
-    for index, (frames, bins) in segments.support.items():
-        had = support.get(index, (0, 0))
-        support[index] = (max(had[0], frames), max(had[1], bins))
-    return Heatmap(
-        frame=patches.frame,
-        voxel_size=patches.voxel_size,
-        voxels=normalize(summed, config),
-        stats=stats,
-        channels=channels,
-        support=support,
-    )
 
 
 def transform_matrix(

@@ -135,14 +135,6 @@ def test_refine_runs_the_chain_and_reports_it() -> None:
     assert rf.refine_config_of("default", "") is None
 
 
-def test_structural_drops_floor_voxels_unless_the_query_is_about_the_floor() -> None:
-    heat = heatmap([((0, 0, 0), 1.0), ((5, 5, 5), 1.0)])
-    floor = [(0, 0, 1)]  # right under the first voxel
-    config = rf.RefineConfig(structural_radius=1)
-    assert indices(rf.structural(heat, config, floor, "a cone")) == {(5, 5, 5)}
-    assert indices(rf.structural(heat, config, floor, "the floor")) == {(0, 0, 0), (5, 5, 5)}
-
-
 def test_components_merge_the_same_object_placed_twice() -> None:
     near = block((0, 0, 0), (1, 1, 1), 1.0)  # 0.1 m cubes 0.3 m apart: one object
     twin = block((4, 0, 0), (5, 1, 1), 0.8)

@@ -345,9 +345,6 @@ class HyperspaceConfig(MemoryModuleConfig):
     cap_far: float = 1.01
     # Comma separated; empty uses the indoor defaults.
     background_prompts: str = ""
-    # The segment channel (HyperspaceSegments records) added on top; 0 = off.
-    segment_weight: float = 1.0
-    segment_min_z: float = 2.0
     # Refinement chain (see refine.py); "default" = QueryConfig.refine, "none" = raw map.
     refine: str = "default"
     # Keyframes a voxel must be seen from (the chain's "support" step). 2 was
@@ -643,8 +640,6 @@ class Hyperspace(MemoryModule):
             max_hot_patches=self.config.max_hot_patches,
             cap_near=self.config.cap_near,
             cap_far=self.config.cap_far,
-            segment_weight=self.config.segment_weight,
-            segment_min_z=self.config.segment_min_z,
         )
         prompts = [p.strip() for p in self.config.background_prompts.split(",") if p.strip()]
         if prompts:

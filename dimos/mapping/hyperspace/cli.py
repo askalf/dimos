@@ -353,15 +353,6 @@ def heat_colors(scores: NDArray[np.float64]) -> NDArray[np.uint8]:
     return (ramp[low] * (1 - blend) + ramp[high] * blend).astype(np.uint8)
 
 
-def channel_colors(patch: NDArray[np.float64], segment: NDArray[np.float64]) -> NDArray[np.uint8]:
-    """Blue for the patch channel, red for the segment channel, purple where
-    both are hot; brightness follows the score."""
-    red = 60 + 195 * np.clip(segment, 0.0, 1.0)
-    blue = 60 + 195 * np.clip(patch, 0.0, 1.0)
-    green = 30 + 40 * np.minimum(patch, segment)
-    return np.column_stack([red, green, blue]).astype(np.uint8)
-
-
 def send_blueprint(scene_centres: NDArray[np.float64], queries: dict[str, str]) -> None:
     """One top-down 3D view per query (its voxels over the scene), in a grid,
     the eye fixed above the scene so every view opens on the whole map."""
@@ -470,12 +461,7 @@ def write_rrd(
             continue
         centres, scores = centres[keep], scores[keep]
         sizes = np.repeat(half * (0.55 + 0.45 * scores)[:, None], 3, axis=1)
-        if result.channels:
-            kept = [index for (index, _), k in zip(result.voxels, keep, strict=True) if k]
-            per_channel = np.asarray([result.channels[index] for index in kept], dtype=np.float64)
-            colors = channel_colors(per_channel[:, 0], per_channel[:, 1])
-        else:
-            colors = heat_colors(scores)
+        colors = heat_colors(scores)
         rr.log(
             entity,
             rr.Boxes3D(

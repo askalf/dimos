@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 import typer
 
-from dimos.mapping.hyperspace import cli, patches as hs, segmenter as seg
+from dimos.mapping.hyperspace import cli, patches as hs
 from dimos.mapping.hyperspace.ingest import (
     COMPLETE_STREAM,
     KEYFRAME_STREAM,
@@ -36,9 +36,7 @@ from dimos.mapping.hyperspace.ingest import (
     PatchIngestor,
 )
 from dimos.mapping.hyperspace.query import HyperspaceQuery
-from dimos.mapping.hyperspace.segments import SEGMENT_STREAM
 from dimos.memory.store.sqlite import SqliteStore
-from dimos.models.embedding.base import Embedding
 from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
@@ -315,80 +313,6 @@ def test_without_depth_nothing_is_placed(store: SqliteStore) -> None:
     assert answer["stats"]["hot_patches_without_depth"] == answer["stats"]["hot_patches"] == 3
 
 
-def add_segment(store: SqliteStore, pose: np.ndarray, ts: float, name: str, cell: int) -> None:
-    """One segment record covering ``cell`` of the grid at the object's depth."""
-    depth = float((np.linalg.inv(pose) @ np.append(OBJECT, 1.0))[2])
-    segment = seg.Segment(
-        label=1,
-        name=name,
-        confidence=0.8,
-        area=48,
-        bbox=(0, 0, 8, 6),
-        depth_fraction=1.0,
-        flat_fraction=0.0,
-        rle=[],
-    )
-    camera = hs.Intrinsics(width=WIDTH, height=HEIGHT, fx=48.0, fy=48.0, cx=32.0, cy=24.0)
-    store.stream(SEGMENT_STREAM, dict).append(
-        seg.segment_record(
-            segment,
-            camera_frame=CAMERA,
-            ts=ts,
-            width=WIDTH,
-            height=HEIGHT,
-            cells=[[cell, 1.0, depth]],
-            grid=(SIDE, SIDE),
-            intrinsics=camera.__dict__,
-        ),
-        ts=ts,
-        tags={"camera_frame": CAMERA, "name": name},
-        embedding=Embedding(vector=StubModel.embed_text(name)),
-    )
-
-
-def test_segments_add_a_red_channel_on_top_of_the_patches(store: SqliteStore) -> None:
-    poses = ring(3, 2.5)
-    ingestor = fill(store, poses)
-    for index, pose in enumerate(poses):
-        local = np.linalg.inv(pose) @ np.append(OBJECT, 1.0)
-        u, v = local[0] / local[2] * 48.0 + 32.0, local[1] / local[2] * 48.0 + 24.0
-        cell = int(v * SIDE / HEIGHT) * SIDE + int(u * SIDE / WIDTH)
-        add_segment(store, pose, 10.0 + index, "object", cell)  # the object's own cell
-        add_segment(store, pose, 10.0 + index, "other", (cell + 3) % (SIDE * SIDE))
-    # One stray "object" segment on a cell no patch lit: a segment-only region.
-    add_segment(store, poses[0], 10.0, "object", (cell + 1) % (SIDE * SIDE))
-    # Two labels only, so z-scores are +-1: the floor has to sit below that.
-    config = hs.QueryConfig(hot_threshold=0.3, background_prompts=["background"], segment_min_z=0.5)
-    engine = HyperspaceQuery(store, StubModel.embed_text, config, world_frame=WORLD)
-    answer = engine.answer("object", 1)
-    stats = answer["stats"]
-    # "other" embeds along axis 1: cosine 0 with the query, so only the four
-    # "object" segments (one cell each) are read and become hot.
-    assert stats["segment_labels"] == ["object"]
-    assert stats["segment_hot_patches"] == 4
-    assert stats["segment_read"] == 4
-    assert stats["voxels_in_both"] > 0
-    result: hs.Heatmap = answer["heatmap"]
-    best_index, best_score = result.voxels[0]
-    assert best_score == 1.0
-    assert np.abs(np.asarray(answer["best"][0]["xyz"]) - OBJECT).max() <= 0.5
-    # The winner is lit by both channels; the stray segment's voxels rank below it.
-    patch_score, segment_score = result.channels[best_index]
-    assert patch_score > 0 and segment_score > 0
-    single = [s for e, s in result.channels.values() if e == 0]
-    assert single and max(single) < best_score
-    # Turning the channel off gives the patch-only answer back.
-    off = HyperspaceQuery(
-        store,
-        StubModel.embed_text,
-        hs.QueryConfig(hot_threshold=0.3, background_prompts=["background"], segment_weight=0),
-        world_frame=WORLD,
-    ).answer("object", 2)
-    assert "segment_hot_patches" not in off["stats"]
-    assert not off["heatmap"].channels
-    del ingestor
-
-
 class StubEnsemble:
     """Two stub members on different grids. Member A (8x8) sees the object;
     member B (4x4) sees it too but also hallucinates a hot cell in the top-left
@@ -507,9 +431,7 @@ def test_ensemble_keyframes_carry_every_member_and_pool_with_a_minimum(store: Sq
     assert store.stream(f"{PATCH_STREAM}__m_stub_a", dict).count() == 3 * 8 * 8
     assert store.stream(f"{PATCH_STREAM}__m_stub_b_16", dict).count() == 3 * 4 * 4
 
-    config = hs.QueryConfig(
-        structural_gate=False, segment_weight=0.0, pool="min", pooled_hot_threshold=0.005
-    )
+    config = hs.QueryConfig(pool="min", pooled_hot_threshold=0.005)
     engine = HyperspaceQuery(store, StubEnsemble.embed_text, config, world_frame=WORLD)
     assert engine.members() == ["stub-a", "stub-b-16"]
     result = engine.heatmap("object")
@@ -1301,9 +1223,8 @@ def test_every_module_can_say_no_to_metal_in_its_config() -> None:
         HyperspacePatchesConfig,
         pick_device,
     )
-    from dimos.mapping.hyperspace.segments_module import HyperspaceSegmentsConfig
 
-    for config in [HyperspaceConfig, HyperspacePatchesConfig, HyperspaceSegmentsConfig]:
+    for config in [HyperspaceConfig, HyperspacePatchesConfig]:
         assert config.model_fields["allow_mps"].default is True, config.__name__
 
     if not torch.backends.mps.is_available() or torch.cuda.is_available():
