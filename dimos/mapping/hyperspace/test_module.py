@@ -1553,28 +1553,73 @@ def test_the_towers_get_the_card_before_the_index_does(store: SqliteStore) -> No
     )
 
 
-def test_metal_refuses_an_index_bigger_than_its_ndarray_limit() -> None:
-    """A member this big is kept off Metal, and the reason is not the one it looks like.
+def test_a_device_index_is_split_so_no_view_ever_carries_a_large_offset() -> None:
+    """The whole reason `DevicePieces` exists, and it is not tidiness.
 
-    Measured, one shape per process: an 8 GB fp16 tensor multiplied WHOLE survives on
-    MPS; the same tensor multiplied over a SLICE aborts, from row 1,664,135 onwards. So
-    the trigger is a view with a large storage offset, and `scores` slices constantly --
-    which is why grocery died in the real query path and never in an isolated test.
+    MEASURED, one shape per process because the failure is an abort: an 8 GB fp16 tensor
+    on MPS multiplied WHOLE survives, and so do 2.15 through 4.0 billion elements; the
+    same tensor multiplied over a SLICE aborts, from row 1,664,135 onward. So the trigger
+    is a view with a large storage offset, and `scores` slices constantly because that is
+    what `rank_with` narrowing asks for.
 
-    The proper fix is to hold a member as several smaller pieces (measured to survive);
-    until that exists this keeps the process alive at the cost of the GPU on grocery and
-    bike. CUDA is unaffected. The docstring says all this because the first version of
-    this test asserted a confident wrong reason.
+    Pieces make a large offset unrepresentable: a block is a view of a PIECE. This checks
+    the blocks cover exactly the rows asked for, never straddle a piece, and come back in
+    order -- because a block landing on the wrong rows would put patches on wrong frames,
+    silently.
     """
-    from dimos.mapping.hyperspace.resident import MPS_MAX_ELEMENTS, place_on
+    import torch
 
-    assert MPS_MAX_ELEMENTS == 2**31 - 1
+    from dimos.mapping.hyperspace import resident as resident_module
+    from dimos.mapping.hyperspace.resident import DevicePieces
 
-    class Oversized:
-        # Only the shape is read before the refusal, so nothing has to be allocated to
-        # ask the question -- which is the point: allocating it is the crash.
-        shape = (3_489_696, 1152)
+    rows, width = 1000, 8
+    was = resident_module.PIECE_ELEMENTS
+    try:
+        # Three pieces of 30 rows each plus a short one, so the seams are everywhere.
+        resident_module.PIECE_ELEMENTS = 30 * width
+        # Values that survive `DEVICE_AS` exactly -- half precision holds integers up to
+        # 2048 and this test is about which rows come back, not about rounding.
+        vectors = (np.arange(rows * width) % 2000).astype(np.float32).reshape(rows, width)
+        held = DevicePieces.of(vectors, "cpu")
+    finally:
+        resident_module.PIECE_ELEMENTS = was
 
-    huge = Oversized()
-    stayed, spent = place_on(huge, "mps", budget=10**12)
-    assert stayed is huge and spent == 0, "grocery's so400m must not reach Metal"
+    assert held.shape == (rows, width)
+    assert len(held.pieces) == 34, "1000 rows in 30s is 33 full pieces and a remainder"
+    assert max(len(piece) for piece in held.pieces) == 30
+
+    for first, last in [(0, 1000), (0, 1), (29, 31), (30, 60), (455, 802), (999, 1000)]:
+        blocks = list(held.blocks(first, last))
+        assert sum(len(block) for block in blocks) == last - first, (first, last)
+        rebuilt = torch.cat(blocks).numpy()
+        assert np.array_equal(rebuilt, vectors[first:last]), (first, last)
+
+
+def test_a_device_index_takes_new_rows_as_further_pieces() -> None:
+    """A live index is appended to several times a second.
+
+    Copying a seven gigabyte index on each arrival is quadratic, which is what the CPU
+    path's doubling `_reserve` exists to avoid; pieces get it for nothing by gaining a
+    piece instead of growing.
+    """
+    import torch
+
+    from dimos.mapping.hyperspace import resident as resident_module
+    from dimos.mapping.hyperspace.resident import DevicePieces
+
+    width = 4
+    was = resident_module.PIECE_ELEMENTS
+    try:
+        resident_module.PIECE_ELEMENTS = 10 * width
+        first = (np.arange(40 * width) % 500).astype(np.float32).reshape(40, width)
+        held = DevicePieces.of(first, "cpu")
+        before = len(held.pieces)
+        more = (np.arange(25 * width) % 500).astype(np.float32).reshape(25, width) + 1000
+        held.append(more)
+    finally:
+        resident_module.PIECE_ELEMENTS = was
+
+    assert held.rows == 65
+    assert len(held.pieces) == before + 3, "25 rows in 10s is three more pieces"
+    whole = torch.cat(list(held.blocks(0, 65))).numpy()
+    assert np.array_equal(whole, np.concatenate([first, more]))

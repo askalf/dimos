@@ -27,7 +27,7 @@ as a recording is ingested, which is the trade this module exists to make.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 import time
 from typing import TYPE_CHECKING, Any
@@ -49,9 +49,6 @@ READ_CHUNK = 50_000
 # multiply is worth starting, small enough that the promotion is half a gigabyte.
 SCORE_CHUNK = 100_000
 
-# The same, on a device. Larger because there is no promotion to pay for -- this only
-# bounds the `(chunk x texts)` intermediate, which is a few floats a row.
-DEVICE_CHUNK = 1_000_000
 
 # What the vectors are held as ON THE CPU. Single precision, because that is what the
 # machine multiplies: half precision halves the index -- grocery's three models are 29 GB
@@ -96,29 +93,29 @@ TOWER_ROOM_BYTES = 3_000_000_000
 # of it, and the detector OOM'd exactly as it had before any of this was touched.
 DETECTOR_HEADROOM_BYTES = 1_200_000_000
 
-# How large a tensor may get on Metal before this refuses to put one there. A STOPGAP,
-# and the comment says so because the first version of it claimed a reason that turned
-# out to be wrong.
+# Elements in one piece of a device-held index. The index is SPLIT rather than held as
+# a single tensor, and that is not tidiness -- it is the only thing that makes a large
+# index usable on Metal at all.
 #
-# WHAT ACTUALLY HAPPENS, measured one shape per process because the failure is an abort:
+# MEASURED, one shape per process because the failure is an abort rather than an
+# exception:
 #
-#   an 8 GB fp16 tensor on mps, matmul over the WHOLE thing          survived
-#   the same tensor, matmul over a SLICE from row 1,664,135          ABORTED
-#   the same tensor, slice from row 1,865,135 / near the end         ABORTED
+#   an 8 GB fp16 tensor on mps, matmul over the WHOLE thing        survived
+#   2.15 / 2.7 / 3.0 / 3.5 / 4.0 billion elements, whole           all survived
+#   built device-and-dtype together, or cast first                 survived either way
+#   the same 8 GB tensor, matmul over a SLICE from row 1,664,135   ABORTED
+#   the same tensor, slice from row 1,865,135, and near the end    ABORTED
 #
-# So it is not the size. It is SLICING: a view with a large storage offset is what Metal
-# cannot build, and `scores` slices constantly because that is what `rank_with` narrowing
-# does -- which is why grocery only ever died in the real query path and never in an
-# isolated test of the same tensor. The error it dies with, `MPSNDArray ... NDArray
-# dimension length > INT_MAX`, is about the view, not the array.
+# So the trigger is a VIEW WITH A LARGE STORAGE OFFSET, not the size of the thing it is
+# a view of -- and `scores` slices constantly, because that is exactly what `rank_with`
+# narrowing asks for. Which is why grocery died in the real query path and never once in
+# an isolated test of the same tensor. Also measured: `narrow().clone()` and
+# `index_select` survive, and `.contiguous()` on the slice does NOT.
 #
-# THE REAL FIX is to hold a member as several pieces small enough that no offset is ever
-# large -- measured to survive, along with `narrow().clone()` and `index_select`, while
-# `.contiguous()` on the slice does NOT. Until that exists, a member over this size stays
-# on the cpu, which costs the win on grocery and bike and keeps the process alive.
-#
-# CUDA is unaffected either way.
-MPS_MAX_ELEMENTS = 2**31 - 1
+# Half a billion is well inside what was measured to work and still leaves few enough
+# pieces to be uninteresting -- grocery's largest member becomes eight of them. CUDA
+# needs none of this and pays only a handful of extra kernel launches for it.
+PIECE_ELEMENTS = 512_000_000
 
 
 @dataclass
@@ -151,7 +148,16 @@ class ResidentPatches:
         return int(self.vectors.shape[0]) if self.count < 0 else self.count
 
     @property
+    def held_as_pieces(self) -> bool:
+        """True when the vectors live on a device, split. Neither numpy nor a tensor."""
+        return isinstance(self.vectors, DevicePieces)
+
+    @property
     def capacity(self) -> int:
+        # Pieces are appended rather than over-allocated, so the sidecars are what has
+        # spare room; asking the vectors would say "full" after every single arrival.
+        if self.held_as_pieces:
+            return int(self.ts.shape[0])
         return int(self.vectors.shape[0])
 
     def extend(self, block: ResidentPatches) -> int:
@@ -182,11 +188,7 @@ class ResidentPatches:
         if isinstance(self.vectors, np.ndarray):
             self.vectors[self.count : end] = block.vectors[:added]
         else:
-            import torch
-
-            self.vectors[self.count : end] = torch.as_tensor(block.vectors[:added]).to(
-                device=self.vectors.device, dtype=self.vectors.dtype
-            )
+            self.vectors.append(np.asarray(block.vectors[:added]))
         self.frame_of[self.count : end] = [mapping[int(v)] for v in block.frame_of[:added]]
         self.ts[self.count : end] = block.ts[:added]
         self.cell[self.count : end] = block.cell[:added]
@@ -200,16 +202,15 @@ class ResidentPatches:
     def _reserve(self, capacity: int) -> None:
         def grown(array: Any) -> Any:
             shape = (capacity, *array.shape[1:])
-            if isinstance(array, np.ndarray):
-                out = np.empty(shape, dtype=array.dtype)
-            else:
-                import torch
-
-                out = torch.empty(shape, dtype=array.dtype, device=array.device)
+            out = np.empty(shape, dtype=array.dtype)
             out[: self.count] = array[: self.count]
             return out
 
-        self.vectors = grown(self.vectors)
+        # The vectors grow by gaining a piece, not by being copied into a bigger array,
+        # which is the doubling this method exists to avoid -- so on a device there is
+        # nothing to do here and only the sidecars are reserved.
+        if not self.held_as_pieces:
+            self.vectors = grown(self.vectors)
         self.frame_of = grown(self.frame_of)
         self.ts = grown(self.ts)
         self.cell = grown(self.cell)
@@ -225,6 +226,10 @@ class ResidentPatches:
     def on_device(self) -> str:
         """Where the vectors are: "cpu" for a numpy array, else the torch device."""
         return "cpu" if isinstance(self.vectors, np.ndarray) else str(self.vectors.device)
+
+    @property
+    def megabytes_on_device(self) -> float:
+        return 0.0 if not self.held_as_pieces else self.megabytes
 
     @property
     def megabytes(self) -> float:
@@ -314,9 +319,10 @@ class ResidentPatches:
         held = torch.as_tensor(texts).to(device=device, dtype=self.vectors.dtype)
         pieces: list[Any] = []
         for first, last in _spans(rows, self.rows):
-            for start in range(first, last, DEVICE_CHUNK):
-                stop = min(start + DEVICE_CHUNK, last)
-                against = self.vectors[start:stop] @ held.T
+            # `blocks` rather than a slice of the whole index: a view with a large
+            # storage offset is what Metal cannot build, and a block never has one.
+            for block in self.vectors.blocks(first, last):
+                against = block @ held.T
                 taken = against[:, 0] - against[:, 1:].amax(dim=1) if backgrounds else against[:, 0]
                 pieces.append(taken.to(torch.float32))
         if not pieces:
@@ -387,6 +393,86 @@ def detector_can_still_breathe(device: str) -> bool:
     return True
 
 
+class DevicePieces:
+    """One model's vectors on a device, split so no view ever carries a large offset.
+
+    Presents just enough of a tensor's surface for `ResidentPatches` to treat it like
+    one -- `shape`, `dtype`, `device`, a byte count -- and hands out blocks by row range
+    instead of being sliced. That is the whole point: a slice of a large tensor is what
+    Metal refuses to build, and a block that comes from a piece never has a large offset
+    behind it. See `PIECE_ELEMENTS` for the measurements.
+    """
+
+    def __init__(self, pieces: list[Any], rows: int, width: int) -> None:
+        self.pieces = pieces
+        self.rows = rows
+        self.width = width
+
+    @classmethod
+    def of(cls, vectors: NDArray[Any], device: str) -> DevicePieces:
+        """Copy a numpy index onto *device* as pieces, at `DEVICE_AS`."""
+        import torch
+
+        rows, width = int(vectors.shape[0]), int(vectors.shape[1])
+        per_piece = max(1, PIECE_ELEMENTS // max(1, width))
+        dtype = getattr(torch, DEVICE_AS)
+        pieces = [
+            torch.as_tensor(vectors[at : at + per_piece]).to(device=device, dtype=dtype)
+            for at in range(0, rows, per_piece)
+        ]
+        return cls(pieces, rows, width)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (self.rows, self.width)
+
+    @property
+    def device(self) -> Any:
+        return self.pieces[0].device
+
+    @property
+    def dtype(self) -> Any:
+        return self.pieces[0].dtype
+
+    def element_size(self) -> int:
+        return int(self.pieces[0].element_size())
+
+    def nelement(self) -> int:
+        return self.rows * self.width
+
+    def blocks(self, first: int, last: int) -> Iterator[Any]:
+        """The rows in ``[first, last)``, piece by piece, never crossing one.
+
+        A block is a view of a PIECE, so its offset is bounded by the piece rather than
+        by the whole index -- which is the entire reason this class exists.
+        """
+        at = 0
+        for piece in self.pieces:
+            held = len(piece)
+            start, stop = max(first, at), min(last, at + held)
+            if start < stop:
+                yield piece[start - at : stop - at]
+            at += held
+            if at >= last:
+                return
+
+    def append(self, block: NDArray[Any]) -> None:
+        """Take in rows a live ingest has written, as further pieces.
+
+        Appending rather than growing is what the CPU path's doubling `_reserve` was for
+        -- copying a seven gigabyte index on every arrival is quadratic -- and pieces
+        give it for nothing.
+        """
+        import torch
+
+        per_piece = max(1, PIECE_ELEMENTS // max(1, self.width))
+        for at in range(0, len(block), per_piece):
+            self.pieces.append(
+                torch.as_tensor(block[at : at + per_piece]).to(device=self.device, dtype=self.dtype)
+            )
+        self.rows += len(block)
+
+
 def room_on(device: str) -> int:
     """Bytes an index may take on *device* right now, or 0 for "hold it in RAM".
 
@@ -427,18 +513,12 @@ def place_on(vectors: NDArray[Any], device: str, budget: int) -> tuple[Any, int]
     """
     import torch
 
-    elements = int(vectors.shape[0]) * int(vectors.shape[1])
-    wanted = elements * torch.empty(0, dtype=getattr(torch, DEVICE_AS)).element_size()
+    rows, width = int(vectors.shape[0]), int(vectors.shape[1])
+    wanted = rows * width * torch.empty(0, dtype=getattr(torch, DEVICE_AS)).element_size()
     if not device or device == "cpu" or wanted > budget:
         return vectors, 0
-    if device == "mps" and elements > MPS_MAX_ELEMENTS:
-        logger.warning(
-            f"hyperspace: {elements / 1e9:.1f} billion elements is past Metal's "
-            f"{MPS_MAX_ELEMENTS / 1e9:.1f} billion per tensor; holding this one in RAM"
-        )
-        return vectors, 0
     try:
-        held = torch.as_tensor(vectors).to(device=device, dtype=getattr(torch, DEVICE_AS))
+        held = DevicePieces.of(vectors, device)
     except Exception as error:
         # Out of memory mid-copy, a device that went away, a dtype it will not take:
         # all of them mean "hold it in RAM", and none of them mean "fail the query".
