@@ -33,6 +33,20 @@ BOLD = "\033[1m"
 TYPE_WIDTH = 12
 
 
+def message_text(content: object) -> str:
+    """The readable text of a message whose content may be a list of typed blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [
+            str(block["text"])
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and block.get("text")
+        ]
+        return "\n".join(texts).strip()
+    return str(content) if content else ""
+
+
 def pretty_print_langchain_message(msg: BaseMessage) -> None:
     d = msg.__dict__
     msg_type = d.get("type", "unknown")
@@ -51,7 +65,7 @@ def pretty_print_langchain_message(msg: BaseMessage) -> None:
     time_str = f"{GRAY}{timestamp}{RESET}  "
     type_str = f"{type_color}{msg_type:<{TYPE_WIDTH}}{RESET}"
 
-    content = _try_to_remove_url_data(d.get("content", ""))
+    content = message_text(_try_to_remove_url_data(d.get("content", "")))
     tool_calls = d.get("tool_calls", [])
 
     # 12 chars for timestamp + 1 space + TYPE_WIDTH + 1 space
@@ -67,9 +81,9 @@ def pretty_print_langchain_message(msg: BaseMessage) -> None:
             print(f"{indent}{text}")
 
     if content:
-        content_str = repr(content)
+        content_str = content if msg_type in ("ai", "human") else repr(content)
         if len(content_str) > 2000:
-            content_str = content_str[:5000] + "... [truncated]"
+            content_str = content_str[:2000] + "... [truncated]"
         print_line(f"{BOLD}{type_color}{content_str}{RESET}")
 
     if tool_calls:

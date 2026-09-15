@@ -103,6 +103,8 @@ HOT_PATCH_RATIO = 0.75
 # Frames scored per matmul. The index stays fp16 in memory (5 fps of 848x480
 # for four minutes is ~2 GB); each chunk is widened to fp32 for the product.
 SCORE_CHUNK_FRAMES = 64
+# Patch grids are pooled by this factor per axis for the in-memory index.
+POOL_FACTOR = 2
 
 
 @dataclass(frozen=True)
@@ -394,9 +396,11 @@ class VisualMemoryIndex:
         model_name: str = SIGLIP2_MODEL_NAME,
         device: str | None = None,
         dtype: torch.dtype = torch.float16,
+        pool: int = POOL_FACTOR,
     ) -> None:
         """*pose_of* maps an image observation to its camera's optical pose in
-        the world as a 4x4 matrix, or None to skip the frame."""
+        the world as a 4x4 matrix, or None to skip the frame. *pool* is the
+        per-axis factor the resident grids are averaged down by."""
         self.store = store
         self.pose_of = pose_of
         self.image_stream_name = image_stream_name
@@ -404,6 +408,7 @@ class VisualMemoryIndex:
         self.model_name = model_name
         self._device = device
         self._dtype = dtype
+        self._pool = pool
         self._model: SigLIPModel | None = None
         self._index_stream: Any = None
         self._loaded: _LoadedIndex | None = None
@@ -504,31 +509,71 @@ class VisualMemoryIndex:
         self._loaded = None
         return added
 
+    def warm(self) -> None:
+        """Pull the index into memory now, so the first search does not pay for it."""
+        self._load()
+
     def _load(self) -> _LoadedIndex:
-        """Pull the whole index into memory once, as stored (fp16)."""
-        if self._loaded is None:
-            observations = [obs for obs in self.index_stream if obs.pose_tuple is not None]
-            if not observations:
-                raise LookupError(f"index stream {self.index_stream_name!r} is empty")
-            grid = observations[0].data
-            self._loaded = _LoadedIndex(
-                patches=torch.from_numpy(np.stack([obs.data.patches for obs in observations])),
-                rows=grid.rows,
-                cols=grid.cols,
-                source_ids=[obs.data.source_id for obs in observations],
-                timestamps=[float(obs.ts) for obs in observations],
-                positions=[
-                    (float(obs.pose_tuple[0]), float(obs.pose_tuple[1]), float(obs.pose_tuple[2]))
-                    for obs in observations
-                ],
-                orientations=[
-                    tuple(float(value) for value in obs.pose_tuple[3:7])  # type: ignore[misc]
-                    if len(obs.pose_tuple) >= 7
-                    else (0.0, 0.0, 0.0, 1.0)
-                    for obs in observations
-                ],
+        """Pooled grids for every posed frame, filled one frame at a time."""
+        if self._loaded is not None:
+            return self._loaded
+        patches: torch.Tensor | None = None
+        rows = cols = 0
+        count = 0
+        source_ids: list[int] = []
+        timestamps: list[float] = []
+        positions: list[tuple[float, float, float]] = []
+        orientations: list[tuple[float, float, float, float]] = []
+        for obs in self.index_stream:
+            if obs.pose_tuple is None:
+                continue
+            grid = obs.data
+            pooled, rows, cols = pool_grid(grid.patches, grid.rows, grid.cols, self._pool)
+            if patches is None:
+                patches = torch.empty(
+                    (self.index_stream.count(), *pooled.shape), dtype=torch.float16
+                )
+            patches[count] = torch.from_numpy(pooled)
+            count += 1
+            source_ids.append(grid.source_id)
+            timestamps.append(float(obs.ts))
+            positions.append(
+                (float(obs.pose_tuple[0]), float(obs.pose_tuple[1]), float(obs.pose_tuple[2]))
             )
+            orientations.append(
+                tuple(float(value) for value in obs.pose_tuple[3:7])  # type: ignore[arg-type]
+                if len(obs.pose_tuple) >= 7
+                else (0.0, 0.0, 0.0, 1.0)
+            )
+        if patches is None:
+            raise LookupError(f"index stream {self.index_stream_name!r} is empty")
+        self._loaded = _LoadedIndex(
+            patches=patches[:count],
+            rows=rows,
+            cols=cols,
+            source_ids=source_ids,
+            timestamps=timestamps,
+            positions=positions,
+            orientations=orientations,
+        )
+        logger.info(
+            "visual index resident: %d frames as %dx%d grids, %.2f GB",
+            count,
+            rows,
+            cols,
+            self._loaded.patches.numel() * 2 / 1e9,
+        )
         return self._loaded
+
+    def _full_grid(self, frame: int) -> PatchGrid:
+        """The stored, unpooled grid of a resident frame."""
+        loaded = self._load()
+        wanted = loaded.source_ids[frame]
+        for obs in self.index_stream.at(loaded.timestamps[frame], tolerance=1e-3):
+            if obs.data.source_id == wanted:
+                grid: PatchGrid = obs.data
+                return grid
+        raise LookupError(f"index row for frame {wanted} is gone")
 
     def _embed(self, text: str) -> torch.Tensor:
         return self.model.embed_text(text).to_torch("cpu").to(torch.float32)
@@ -540,23 +585,34 @@ class VisualMemoryIndex:
         return self._background[keep]
 
     def frame_patches(self, text: str, k: int = 12) -> list[FramePatches]:
-        """The *k* best frames for *text* with their full patch score grids."""
+        """The *k* best frames for *text* with their full patch score grids.
+
+        Frames are ranked on the resident pooled grids, then only the winners'
+        stored grids are read back for the full-resolution score maps.
+        """
         loaded = self._load()
         query = self._embed(text)
-        similarity = patch_similarity(loaded.patches, query, self._background_for(query))
-        top = torch.topk(similarity.amax(dim=-1), k=min(k, similarity.shape[0]))
-        return [
-            FramePatches(
-                source_id=loaded.source_ids[frame],
-                ts=loaded.timestamps[frame],
-                position=loaded.positions[frame],
-                orientation=loaded.orientations[frame],
-                similarity=similarity[frame],
-                rows=loaded.rows,
-                cols=loaded.cols,
+        background = self._background_for(query)
+        scores, _ = score_frames(loaded.patches, query, background)
+        top = torch.topk(scores, k=min(k, scores.shape[0]))
+        frames = []
+        for frame in top.indices.tolist():
+            grid = self._full_grid(frame)
+            similarity = patch_similarity(torch.from_numpy(grid.patches)[None], query, background)[
+                0
+            ]
+            frames.append(
+                FramePatches(
+                    source_id=loaded.source_ids[frame],
+                    ts=loaded.timestamps[frame],
+                    position=loaded.positions[frame],
+                    orientation=loaded.orientations[frame],
+                    similarity=similarity,
+                    rows=grid.rows,
+                    cols=grid.cols,
+                )
             )
-            for frame in top.indices.tolist()
-        ]
+        return frames
 
     def search(self, text: str, k: int = 200) -> list[Place]:
         """Rank indexed frames by similarity to *text*, most similar first."""
@@ -589,13 +645,30 @@ class VisualMemoryIndex:
 
 @dataclass(frozen=True)
 class _LoadedIndex:
-    patches: torch.Tensor  # frames, patches, dims (float16, as stored)
-    rows: int
+    patches: torch.Tensor  # frames, pooled patches, dims (float16)
+    rows: int  # pooled grid
     cols: int
     source_ids: list[int]
     timestamps: list[float]
     positions: list[tuple[float, float, float]]
     orientations: list[tuple[float, float, float, float]]
+
+
+def pool_grid(
+    patches: np.ndarray, rows: int, cols: int, factor: int
+) -> tuple[np.ndarray, int, int]:
+    """Average *factor* x *factor* blocks of a patch grid and renormalize. Returns (grid, rows, cols)."""
+    if factor < 1 or rows % factor or cols % factor:
+        raise ValueError(f"a {rows}x{cols} grid cannot be pooled by {factor}")
+    if factor == 1:
+        return np.asarray(patches, dtype=np.float16), rows, cols
+    blocks = np.asarray(patches, dtype=np.float32).reshape(
+        rows // factor, factor, cols // factor, factor, -1
+    )
+    pooled = blocks.mean(axis=(1, 3)).reshape(-1, blocks.shape[-1])
+    norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+    pooled /= np.where(norms > 0, norms, 1.0)
+    return pooled.astype(np.float16), rows // factor, cols // factor
 
 
 def _batched(iterator: Iterable[Any], size: int) -> Iterator[list[Any]]:

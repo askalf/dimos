@@ -36,6 +36,7 @@ from textual.strip import Strip
 from textual.widgets import Input, RichLog, Static
 
 from dimos.agents.mcp import tool_stream
+from dimos.agents.utils import message_text
 from dimos.cli import theme
 from dimos.core.transport_factory import apply_transport_arg, make_transport
 from dimos.utils.generic import truncate_display_string
@@ -65,6 +66,8 @@ TOOL_MSG_PREFIX = "[tool:"
 # Markers pairing a tool call with its result in the scrollback.
 TOOL_CALL_MARKER = "▶"
 TOOL_RESULT_MARKER = "↳"
+# Longest argument text shown on a tool call row.
+TOOL_ARGS_CHARS = 240
 # Backstop: finalize a stopped tool's box this long after the stop if no agent
 # activity follows to trigger an idle transition.
 STOP_FINALIZE_DELAY = 1.0
@@ -73,6 +76,22 @@ STOP_FINALIZE_DELAY = 1.0
 def _format_elapsed(delta: timedelta) -> str:
     total = int(delta.total_seconds())
     return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _summarize_tool_result(content: Any) -> str:
+    """A skill's result as its message line; anything else as it came."""
+    if not isinstance(content, str):
+        return str(content)
+    try:
+        result = json.loads(content)
+    except ValueError:
+        return content
+    if not isinstance(result, dict) or "message" not in result:
+        return content
+    message = str(result["message"])
+    if result.get("success") is False:
+        return f"{result.get('error_code') or 'failed'}: {message}"
+    return message
 
 
 def _split_tool_message(content: Any) -> tuple[str, str] | None:
@@ -360,7 +379,7 @@ class HumanCLIApp(App):  # type: ignore[type-arg]
                     theme.YELLOW,
                 )
             elif isinstance(msg, AIMessage):
-                content = msg.content or ""
+                content = message_text(msg.content)
                 tool_calls = getattr(msg, "tool_calls", None) or msg.additional_kwargs.get(
                     "tool_calls", []
                 )
@@ -491,11 +510,11 @@ class HumanCLIApp(App):  # type: ignore[type-arg]
             self._thinking.reattach()
 
     def _format_tool_call(self, tool_call: ToolCall) -> str:
-        """Format a tool call for display."""
+        """Format a tool call for display, arguments kept to one line."""
         name = tool_call.get("name", "unknown")
         args = tool_call.get("args", {})
         args_str = json.dumps(args, separators=(",", ":"))
-        return f"{TOOL_CALL_MARKER} {name}({args_str})"
+        return f"{TOOL_CALL_MARKER} {name}({truncate_display_string(args_str, TOOL_ARGS_CHARS)})"
 
     def _write_tool_call(self, timestamp: str, tool_info: str, call_id: str | None) -> None:
         strips = self._add_message(timestamp, "tool", tool_info, theme.TOOL)
@@ -503,7 +522,7 @@ class HumanCLIApp(App):  # type: ignore[type-arg]
             self._tool_call_anchors[call_id] = strips
 
     def _write_tool_result(self, timestamp: str, content: str, call_id: str | None) -> None:
-        text = f"{TOOL_RESULT_MARKER} {content}"
+        text = f"{TOOL_RESULT_MARKER} {_summarize_tool_result(content)}"
         anchor = self._tool_call_anchors.pop(call_id, None) if call_id else None
         if anchor is None:
             # No matching call on screen (e.g. a lookout continuation) -> append.

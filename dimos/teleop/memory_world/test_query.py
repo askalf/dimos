@@ -25,7 +25,7 @@ import pytest_mock
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.teleop.memory_world.module import MemoryWorldModule
-from dimos.teleop.memory_world.query import MemoryQueryResult
+from dimos.teleop.memory_world.query import HighlightPath, MemoryQueryResult
 
 
 def _empty_store(path: Path) -> None:
@@ -196,11 +196,12 @@ def test_sample_pose_path_uses_documented_stream_api(tmp_path: Path) -> None:
         )
     store.stop()
     module = MemoryWorldModule(store_path=str(db_path))
+    module._last_route = HighlightPath(points=[(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)])
     try:
         outcome = module.analyze_memory(
             "path = sample_pose_path('odom', max_points=3)\n"
             "result = {'answer': 'Path sampled', "
-            "'evidence_paths': [{'points': path}]}\n",
+            "'evidence_paths': [{'points': path}, {'points': route}]}\n",
             timeout=10,
         )
 
@@ -210,6 +211,10 @@ def test_sample_pose_path_uses_documented_stream_api(tmp_path: Path) -> None:
             [0.0, 0.0, 0.0],
             [4.0, 8.0, 0.0],
             [8.0, 16.0, 0.0],
+        ]
+        assert module._active_query_result["evidence_paths"][1]["points"] == [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
         ]
     finally:
         module.stop()
@@ -324,7 +329,9 @@ def test_mapper_snapshots_become_the_timeline(memory_world: MemoryWorldModule) -
     memory_world.config.replay_keyframe_interval_s = 1.0
 
     memory_world._on_global_map(_map([[0, 0, 0], [1, 0, 0]], 10.0))
+    memory_world._fold_snapshot()
     memory_world._on_global_map(_map([[0, 0, 0], [2, 0, 0]], 11.5))
+    memory_world._fold_snapshot()
 
     index = memory_world._replay_index_json()
     assert index["scans"] == [10.0, 11.5]
@@ -346,7 +353,9 @@ def test_a_timeline_covering_the_recording_is_kept_across_starts(tmp_path: Path)
     first = MemoryWorldModule(store_path=str(db_path))
     try:
         first._on_global_map(_map([[0, 0, 0]], 10.0))
+        first._fold_snapshot()
         first._on_global_map(_map([[0, 0, 0], [1, 0, 0]], 11.0))
+        first._fold_snapshot()
         assert first._replay_index_json()["complete"] is True
     finally:
         first.stop()
@@ -356,6 +365,7 @@ def test_a_timeline_covering_the_recording_is_kept_across_starts(tmp_path: Path)
         second._open_replay()
         assert second._replay_progress == "ready"
         second._on_global_map(_map([[5, 5, 5]], 10.0))
+        second._fold_snapshot()
         assert second._recorder is None
         assert second._replay_index_json()["scans"] == [10.0, 11.0]
     finally:

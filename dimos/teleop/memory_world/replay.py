@@ -53,6 +53,8 @@ KEYFRAME_STREAM = "voxel_keyframe"
 TAG_ADDED = 1
 TAG_REMOVED = 2
 FORMAT_VERSION = 3
+# Segments served to viewers kept ready, newest requests last.
+SEGMENT_CACHE = 6
 
 
 def _pack(points: np.ndarray, voxel_size: float) -> np.ndarray:
@@ -360,6 +362,8 @@ class VoxelReplay:
             ]
         )
         self._segments[number] = (header, payload)
+        while len(self._segments) > SEGMENT_CACHE:
+            self._segments.pop(next(iter(self._segments)))
         return header, payload
 
     def encoded_segment(self, number: int) -> tuple[bytes, bytes]:
@@ -369,6 +373,8 @@ class VoxelReplay:
             raw = self.encode_segment(*self.segment(number))
             cached = (raw, gzip.compress(raw, compresslevel=6))
             self._encoded[number] = cached
+            while len(self._encoded) > SEGMENT_CACHE:
+                self._encoded.pop(next(iter(self._encoded)))
         return cached
 
     def _diffs_between(self, start: int, end: int) -> Iterable[Any]:

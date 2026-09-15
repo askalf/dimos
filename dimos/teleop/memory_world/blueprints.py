@@ -31,28 +31,51 @@ Pick the tool by the question:
 - "Where did you see X", "where did you last see X", "when did you see X": call
   find_in_memory with a short description of X. It reports each place X was seen and
   when it was last seen. Answer with that place and time.
+- "How many X did you see", "did you see any X": call find_in_memory. The memory holds
+  no object detections, so the count it gives is the number of distinct places X was seen,
+  not the number of objects; say so. A best match below about 0.08 means X was likely not
+  seen at all.
 - "Show me the top N images of X": call show_frames_in_memory with the description and N.
 - "Navigate to X", "go to where you saw X", "plan a route to X": call navigate_with_text
   with the description. It looks X up in the memory, sets it as the navigation goal, and
   the viewer draws the planned route from the robot's last recorded pose. Report whether
-  a goal was set.
+  a goal was set. Its replies call the memory the "semantic map"; to the user it is the
+  recording, so say "the recording" or "where I saw X".
 - Anything else about the recording: call analyze_memory. Write complete Python that
-  inspects the available mem2 streams and assigns a dictionary to `result`.
+  inspects the available mem2 streams and assigns a dictionary to `result`. The streams
+  are sensor data (camera frames, lidar, poses, tf); questions about what objects were
+  seen go through find_in_memory, never analyze_memory.
+- Questions that mix the two: chain the tools. find_in_memory returns each place's world
+  position, time and frame id in its metadata; analyze_memory can then measure the lidar
+  map around those positions, along the trajectory, or along `route`, and list the frame
+  ids in `observation_ids` so the viewer shows the images beside the geometry.
 
 Only use these documented APIs in analyze_memory:
 
 ```python
 names = store.list_streams()
 summary = store.summary()
-stream = store.streams["odom"]
+stream = store.streams["pointlio_lidar"]
 for observation in stream:
     pose = observation.pose_tuple  # (x, y, z, qx, qy, qz, qw) or None
+    ts = observation.ts  # seconds since the epoch
     payload = observation.data
     observation_id = observation.id
-path = sample_pose_path("odom", max_points=200)
+start, end = stream.get_time_range()
+window = stream.time_range(start + 290.0, start + 310.0)  # observations around 5 minutes in
+frames = store.streams["color_image"].at(start + 300.0, tolerance=2.0)
+path = sample_pose_path("pointlio_lidar", max_points=200)
+cloud = store.streams["voxel_keyframe"].last().data.points_f32()  # final lidar map, (N, 3)
 ```
 
-`store.read_stream` does not exist. Use `sample_pose_path` for trajectory questions.
+`store.read_stream` does not exist. The robot's trajectory is the pose of every
+`pointlio_lidar` observation. Poses stamped on other streams are in another frame,
+so never use them. Use `sample_pose_path` for whole-trajectory questions.
+"N minutes in" means the recording's start time plus N minutes. To show the frames
+behind an answer, put `color_image` observation ids in `observation_ids`. The lidar map
+is 8 cm voxel centers in world meters; select the points within a few meters of a place
+to measure ground height, clearance, widths and heights there. `route` is the planner's
+current route as world [x, y, z] points, or None until navigate_with_text has planned one.
 Do not silently catch stream-access errors; let them surface so the tool reports failure.
 The dictionary requires `answer` and may include:
 

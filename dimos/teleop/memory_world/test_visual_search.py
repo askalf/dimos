@@ -39,6 +39,7 @@ from dimos.teleop.memory_world.visual_search import (
     hot_patches,
     index_stream_name_of,
     patch_world_position,
+    pool_grid,
     score_frames,
     search_phrase,
 )
@@ -221,7 +222,7 @@ def test_search_returns_the_frame_and_patch_that_matched(sqlite_store: SqliteSto
     cold = np.array([[0, 1]] * 4, dtype=np.float16)
     _seed_index(sqlite_store, GIANT, patches=cold, ts=1.0, position=(0.0, 0.0, 0.0), source_id=1)
     _seed_index(sqlite_store, GIANT, patches=hot, ts=2.0, position=(5.0, 0.0, 0.0), source_id=2)
-    index = VisualMemoryIndex(sqlite_store, pose_of=lambda obs: None, model_name=GIANT)
+    index = VisualMemoryIndex(sqlite_store, pose_of=lambda obs: None, model_name=GIANT, pool=1)
     index._embed = lambda text: unit(1.0, 0.0)  # type: ignore[method-assign]
     index._background = torch.zeros(0, 2)
 
@@ -231,6 +232,38 @@ def test_search_returns_the_frame_and_patch_that_matched(sqlite_store: SqliteSto
     assert places[0].position == (5.0, 0.0, 0.0)
     assert places[0].similarity == pytest.approx(1.0)
     assert places[0].image_uv == (0.25, 0.75)
+
+
+def test_pooled_index_ranks_frames_and_reads_full_grids_for_the_winners(
+    sqlite_store: SqliteStore,
+) -> None:
+    hot = np.array([[0, 1], [0, 1], [1, 0], [0, 1]], dtype=np.float16)
+    cold = np.array([[0, 1]] * 4, dtype=np.float16)
+    _seed_index(sqlite_store, GIANT, patches=cold, ts=1.0, position=(0.0, 0.0, 0.0), source_id=1)
+    _seed_index(sqlite_store, GIANT, patches=hot, ts=2.0, position=(5.0, 0.0, 0.0), source_id=2)
+    index = VisualMemoryIndex(sqlite_store, pose_of=lambda obs: None, model_name=GIANT, pool=2)
+    index._embed = lambda text: unit(1.0, 0.0)  # type: ignore[method-assign]
+    index._background = torch.zeros(0, 2)
+
+    places = index.search("a cone", k=5)
+    assert [place.source_id for place in places] == [2, 1]
+    assert index._load().patches.shape == (2, 1, 2)
+    assert places[0].similarity == pytest.approx(0.25 / np.hypot(0.25, 0.75), abs=1e-3)
+    assert places[0].image_uv == (0.5, 0.5)
+
+    frames = index.frame_patches("a cone", k=1)
+    assert frames[0].source_id == 2 and (frames[0].rows, frames[0].cols) == (2, 2)
+    assert int(frames[0].similarity.argmax()) == 2
+
+
+def test_pool_grid_averages_blocks_and_renormalizes() -> None:
+    grid = np.array([[1, 0], [0, 1], [0, 1], [1, 0]], dtype=np.float16)
+    pooled, rows, cols = pool_grid(grid, 2, 2, 2)
+    assert (rows, cols) == (1, 1)
+    assert pooled.shape == (1, 2)
+    assert np.linalg.norm(pooled[0].astype(np.float32)) == pytest.approx(1.0, abs=1e-3)
+    with pytest.raises(ValueError):
+        pool_grid(grid, 2, 2, 3)
 
 
 def test_index_built_with_body_poses_is_refused(sqlite_store: SqliteStore) -> None:

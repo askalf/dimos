@@ -81,8 +81,9 @@ from dimos.memory.store.sqlite import SqliteStore
 store = SqliteStore(path=sys.argv[1], must_exist=True)
 store.start()
 viewer_position = json.loads(sys.argv[2])
+route = json.loads(sys.argv[3])
 
-def sample_pose_path(stream_name="odom", max_points=200):
+def sample_pose_path(stream_name="pointlio_lidar", max_points=200):
     # Return a bounded world-frame xyz path from a pose-bearing stream.
     if not isinstance(max_points, int) or not 2 <= max_points <= 2000:
         raise ValueError("max_points must be an integer from 2 through 2000")
@@ -100,6 +101,7 @@ namespace = {{
     "np": np,
     "store": store,
     "viewer_position": viewer_position,
+    "route": route,
     "sample_pose_path": sample_pose_path,
 }}
 try:

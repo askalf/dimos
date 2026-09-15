@@ -327,6 +327,7 @@ class MemoryWorldModule(Module):
         self._replay: VoxelReplay | None = None
         self._recorder: ReplayRecorder | None = None
         self._replay_complete = False
+        self._replay_opened = False
         self._replay_floor = 0.0
         self._replay_frames_json: list[float] | None = None
         self._replay_lock = threading.Lock()
@@ -344,6 +345,12 @@ class MemoryWorldModule(Module):
         self._map_push_lock = threading.Lock()
         self._map_push_timer: threading.Timer | None = None
         self._latest_map: np.ndarray | None = None
+        # The mapper can publish faster than a snapshot folds in. Only the newest
+        # waits; the worker below folds it into the map push and the timeline.
+        self._snapshot_pending: tuple[np.ndarray, float] | None = None
+        self._snapshot_wakeup = threading.Event()
+        self._snapshot_thread: threading.Thread | None = None
+        self._stopping = False
         self._last_map_push = float("-inf")
         self._tagged_locations: dict[str, RobotLocation] = {}
         self._recording_start_ts: float | None = None
@@ -601,10 +608,26 @@ class MemoryWorldModule(Module):
         if xyz is None or xyz.size == 0:
             return
         with self._map_push_lock:
-            self._latest_map = np.asarray(xyz, dtype=np.float32)
+            self._snapshot_pending = (np.asarray(xyz, dtype=np.float32), float(cloud.ts))
+        self._snapshot_wakeup.set()
+
+    def _snapshot_worker(self) -> None:
+        while not self._stopping:
+            self._snapshot_wakeup.wait()
+            self._snapshot_wakeup.clear()
+            self._fold_snapshot()
+
+    def _fold_snapshot(self) -> None:
+        """Fold the newest mapper snapshot into the map push and the timeline."""
+        with self._map_push_lock:
+            pending, self._snapshot_pending = self._snapshot_pending, None
+            if pending is not None:
+                self._latest_map = pending[0]
+        if pending is None:
+            return
         self._schedule_map_push()
         try:
-            self._record_snapshot(self._latest_map, float(cloud.ts))
+            self._record_snapshot(*pending)
         except Exception:
             logger.exception("recording the mapper snapshot into the timeline failed")
 
@@ -875,7 +898,8 @@ class MemoryWorldModule(Module):
         """Analyze the recorded memory and display validated spatial results in VR.
 
         Run complete Python code in a fresh process with ``store`` (the mem2
-        SqliteStore), ``np`` (NumPy), and ``viewer_position`` available. Inspect
+        SqliteStore), ``np`` (NumPy), ``viewer_position`` and ``route`` (the
+        planner's current route as world xyz points, or None) available. Inspect
         streams with ``store.list_streams()``, ``store.summary()``, and
         ``store.streams[name]``. Observations expose ``pose_tuple``, ``data``,
         and ``id``. ``store.read_stream`` does not exist. For a bounded xyz
@@ -893,6 +917,7 @@ class MemoryWorldModule(Module):
         started = time.monotonic()
         with self._clients_lock:
             viewer_position = self._viewer_position
+            route = [list(p) for p in self._last_route.points] if self._last_route else None
         try:
             completed = subprocess.run(
                 [
@@ -901,6 +926,7 @@ class MemoryWorldModule(Module):
                     MEMORY_ANALYSIS_BOOTSTRAP,
                     self.config.store_path,
                     json.dumps(viewer_position),
+                    json.dumps(route),
                 ],
                 input=code,
                 capture_output=True,
@@ -996,8 +1022,10 @@ class MemoryWorldModule(Module):
                 return
             self._index_progress = f"ready ({index.count()} frames)"
             logger.info("visual index ready: %d frames (+%d new)", index.count(), added)
-        # Warm both model loads here, off the request path: cold they add ~18s
-        # to whichever query comes first, which is the one being demoed.
+        # Warm the index and both model loads here, off the request path: cold
+        # they add half a minute to whichever query comes first, the demoed one.
+        with self._search_lock:
+            index.warm()
         index.model.embed_text("warmup")
         _ = self.whisper
         logger.info("voice query path warm")
@@ -1335,8 +1363,9 @@ class MemoryWorldModule(Module):
         """Keep the timeline of an earlier run when it covers the whole recording."""
         store = self._ensure_store()
         with self._replay_lock:
-            if self._replay is not None:
+            if self._replay_opened:
                 return
+            self._replay_opened = True
             self._replay_progress = "waiting for the mapper"
             if not VoxelReplay.matches(
                 store,
@@ -1355,6 +1384,7 @@ class MemoryWorldModule(Module):
 
     def _record_snapshot(self, xyz: np.ndarray, ts: float) -> None:
         """Fold a mapper snapshot into the timeline, unless a complete one is on disk."""
+        self._open_replay()
         with self._replay_lock:
             if self._replay_complete:
                 return
@@ -1654,6 +1684,10 @@ class MemoryWorldModule(Module):
         )
         self._setup_routes()
         if self.global_map.transport is not None:
+            self._snapshot_thread = threading.Thread(
+                target=self._snapshot_worker, daemon=True, name="MemoryWorldSnapshots"
+            )
+            self._snapshot_thread.start()
             self.register_disposable(Disposable(self.global_map.subscribe(self._on_global_map)))
         if self.path.transport is not None:
             self.register_disposable(Disposable(self.path.subscribe(self._on_path)))
@@ -1695,6 +1729,11 @@ class MemoryWorldModule(Module):
 
     @rpc
     def stop(self) -> None:
+        self._stopping = True
+        self._snapshot_wakeup.set()
+        if self._snapshot_thread is not None:
+            self._snapshot_thread.join(timeout=5)
+            self._snapshot_thread = None
         with self._map_push_lock:
             if self._map_push_timer is not None:
                 self._map_push_timer.cancel()

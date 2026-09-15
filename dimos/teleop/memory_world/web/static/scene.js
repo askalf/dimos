@@ -63,7 +63,7 @@ const CAMERA_FRUSTUM_M = 0.5;         // how far the drawn frustum reaches from 
 // Image-thumbnail quads at capture poses.
 const IMAGE_QUAD_W = 0.60;
 const IMAGE_QUAD_H = 0.34;            // 16:9-ish
-const IMAGE_QUAD_HEIGHT = 0.9;        // robot z (metres) — chest height in VR
+const IMAGE_QUAD_LIFT = 0.7;          // metres above the camera that took the image
 // Only poses within this radius of the viewer get a decoded thumbnail, and at
 // most this many exist at once. A recording has hundreds of poses; without a
 // budget every one becomes its own texture, material and draw call.
@@ -1201,7 +1201,7 @@ export class WorldScene {
             if (!this._thumbnailBytes.has(i)) continue;
             const dx = meta.rx - eye.x;
             const dy = meta.ry - eye.y;
-            const dz = IMAGE_QUAD_HEIGHT - eye.z;
+            const dz = meta.rz + IMAGE_QUAD_LIFT - eye.z;
             const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
             if (dist > maxDist) continue;
             candidates.push([dist, i]);
@@ -1241,7 +1241,7 @@ export class WorldScene {
                 this._imageQuadGeom,
                 new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }),
             );
-            quad.position.set(meta.rx, meta.ry, IMAGE_QUAD_HEIGHT);
+            quad.position.set(meta.rx, meta.ry, meta.rz + IMAGE_QUAD_LIFT);
             quad.quaternion.copy(meta.quadQuat);
             this._imageQuadGroup.add(quad);
             this._imageQuadsByIndex.set(index, quad);
