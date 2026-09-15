@@ -130,9 +130,12 @@ An answer is WHERE THE THING IS. This is the important difference from the older
 world, which could only say where a thing had been seen FROM. Here a box is a measurement
 of the object itself, so you may tell the person the thing is at those coordinates. Two
 limits: a heatmap or area answer has no size, because nothing measured one, so do not
-describe its extent; and how far a thing was from the camera that saw it is its own fact,
-worth saying when it is large, because a box eight metres out is worth less than the same
-box at one metre.
+describe its extent; and the distance an answer carries is how far the thing was FROM THE
+CAMERA THAT PHOTOGRAPHED IT, which is not how far it is from the person asking. Never say
+a thing is "a metre away" on the strength of it -- they are somewhere else entirely, and
+the route length is the only number that says how far they must walk. Say "seen from about
+a metre" if you say it at all; it is worth saying when it is large, because a box eight
+metres out is worth less than the same box at one metre.
 
 How sure a thing is means different things across the three. An item answer carries the
 detector's own score for a box it drew. A heatmap or area answer carries the score of a
@@ -179,6 +182,28 @@ memory_world_hyperspace = (
             # when it was a whole light leaving and a different duplicate arriving. 0 is the
             # whole index, and this demo is about what it can find, not how fast.
             rank_frames=0,
+            # OWLv2 runs on CPU on Apple silicon by construction (`allow_mps=False`,
+            # because MPS dies there without a traceback), and the detector's cost is
+            # max_episodes x detect_attempts forward passes. At the defaults (12 x 3) a
+            # grocery.db item query measured 138-274 s on this Mac, which no amount of
+            # timeout makes demoable. At 6 x 1 it is 24.7-26.6 s.
+            #
+            # MEASURED FREE on three queries, comparing the PLACES and not just the
+            # count -- the count is exactly what hid hyperspace's own traffic-light
+            # regression:
+            #   a shopping basket   3 places -> the SAME 3, same scores, same radii
+            #   a fire extinguisher 1 place  -> the SAME 1, centre identical to 2 dp
+            #   a person            0 places -> 0 either way (the detector refuses)
+            # Three queries on one recording is not a proof. An object whose only good
+            # look is in the 7th-ranked episode WOULD be lost, and nothing here says so.
+            detect_attempts=1,
+            max_episodes=6,
+            # The MCP server reaches this module over RPC and
+            # `ModuleConfig.default_rpc_timeout` caps it -- the 120 s default killed every
+            # item query before the cut, and would again on a slower box or a harder word.
+            # Not a fix for slowness; a margin so a failure is the query's, not the
+            # transport's.
+            default_rpc_timeout=600.0,
         ),
         McpServer.blueprint(),
         McpClient.blueprint(system_prompt=MEMORY_WORLD_HYPERSPACE_PROMPT),
