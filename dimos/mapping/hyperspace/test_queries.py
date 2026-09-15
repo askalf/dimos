@@ -459,3 +459,26 @@ def test_the_patch_path_answers_end_to_end_over_a_fake_search() -> None:
     assert best.views >= 1 and best.score > 0
     assert best.kind == "area"
     assert query.timings.get("search") is not None
+
+
+def test_the_query_module_passes_its_ranking_knobs_to_the_search() -> None:
+    """A knob the module declares and never hands on is a knob that does nothing.
+
+    `rank_with` and `rank_frames` live on `DetectConfig`, which the module builds -- so
+    declaring them on `HyperspaceConfig` is only half the wiring, and the missing half
+    fails silently at the worst possible moment: the setting appears to be accepted and
+    the search ignores it. Same family as `detect_models`, which was read as a member tag
+    in one place and a Hugging Face checkpoint in another and died on a 404.
+    """
+    from pathlib import Path
+
+    from dimos.mapping.hyperspace.module import HyperspaceConfig
+
+    for name in ("rank_with", "rank_frames"):
+        assert name in HyperspaceConfig.model_fields, f"the module cannot configure {name}"
+
+    source = Path(__file__).with_name("module.py").read_text()
+    for name in ("rank_with", "rank_frames"):
+        assert f"{name}=self.config.{name}" in source, (
+            f"{name} is declared on the config and never reaches DetectConfig"
+        )

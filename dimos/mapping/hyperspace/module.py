@@ -338,6 +338,11 @@ class HyperspaceConfig(MemoryModuleConfig):
     # "base_patch16_224"), NOT Hugging Face checkpoint names. Empty searches every model
     # the recording holds, which is what the cross-model agreement wants.
     detect_models: list[str] = []
+    # Search this member over the whole index and score the others only on the frames it
+    # liked; "auto" picks the cheapest member. See `DetectConfig.rank_with` for the
+    # measurements and `rank_frames` for the cut that makes it worth anything.
+    rank_with: str = ""
+    rank_frames: int = 400
     # Episodes to spend a detector call on, frames of each to try, and frames per
     # forward pass. The detector is ~90% of a query, so these are the cost.
     max_episodes: int = 12
@@ -462,6 +467,8 @@ class Hyperspace(MemoryModule):
                     max_depth_m=self.config.max_depth_m,
                     world_frame=self.config.world_frame,
                     contrast=self.config.contrast,
+                    rank_with=self.config.rank_with,
+                    rank_frames=self.config.rank_frames,
                 ),
                 models=list(self.config.detect_models),
                 merge_m=self.config.merge_m,

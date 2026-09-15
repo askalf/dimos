@@ -135,6 +135,10 @@ class DetectConfig:
     # have hits on the frames that matter. Empty = every model over everything.
     # The trade, stated because it is real: a frame only the expensive members would
     # have found is never seen, since nothing looks there.
+    #
+    # "auto" picks the member with the fewest numbers in it -- rows x width, not the
+    # smallest-sounding name. Off by default: it measured well on three queries of one
+    # recording, and that is not enough to change what everyone gets.
     rank_with: str = ""
     # How many of the ranking member's best frames the others confirm. MEASURED on
     # bike.db: leaving this at "all of them" saves NOTHING and costs a little -- the cheap

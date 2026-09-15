@@ -274,6 +274,14 @@ def hot_frames(
     # multi-model search's time for a set of frames the cheap member already liked.
     # It is a real trade and not a free one: a frame only the expensive members would
     # have found is now never seen, because nothing looks there.
+    if rank_with == "auto" and len(members) > 1:
+        # The cheapest member to search is the one with the fewest numbers in it, which
+        # is rows x width and not the smallest-sounding name -- bike.db's two naflex
+        # members have the same row count and differ 768 against 1152 in width.
+        rank_with = min(
+            (tag for tag, _ in members),
+            key=lambda tag: _search_cost(held_by, store, tag, dict(members)[tag]),
+        )
     if rank_with and len(members) > 1 and any(tag == rank_with for tag, _ in members):
         members.sort(key=lambda member: member[0] != rank_with)
     else:
@@ -341,6 +349,12 @@ def hot_frames(
         if owned:
             towers.close()
     return sorted(frames.values(), key=lambda frame: frame.ts)
+
+
+def _search_cost(held_by: Any, store: Any, tag: str, stream: str) -> int:
+    """Numbers a full search of this member reads. Rows times width, not rows alone."""
+    held = held_by.of(store, tag, stream)
+    return int(held.rows) * int(held.width)
 
 
 def _rows_on(held: Any, allowed: set[tuple[str, float]]) -> NDArray[np.intp]:
