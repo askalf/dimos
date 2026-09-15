@@ -38,7 +38,6 @@ import numpy as np
 import typer
 
 from dimos.mapping.hyperspace import patches as hs
-from dimos.mapping.hyperspace.embedder import DEFAULT_MEMBERS, PatchEnsemble
 from dimos.mapping.hyperspace.ingest import (
     COMPLETE_STREAM,
     KEYFRAME_STREAM,
@@ -55,6 +54,7 @@ from dimos.mapping.hyperspace.ingest import (
 from dimos.mapping.hyperspace.module import depth2depth_model_of, pick_device
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import METHODS, refine_config_of
+from dimos.mapping.hyperspace.siglip_embedder import DEFAULT_MEMBERS, PatchEnsemble
 from dimos.memory.tf import StreamTF
 
 if TYPE_CHECKING:

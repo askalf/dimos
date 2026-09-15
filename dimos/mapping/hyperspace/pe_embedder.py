@@ -14,7 +14,7 @@
 
 """Meta's Perception Encoder, with a text-aligned embedding per patch.
 
-The same shape as :mod:`embedder`, for a different family of weights, so a
+The same shape as :mod:`siglip_embedder`, for a different family of weights, so a
 `PatchEnsemble` can hold one of each and the rest of hyperspace cannot tell the
 difference. Name one with a ``pe:`` prefix -- ``pe:PE-Core-B-16``.
 

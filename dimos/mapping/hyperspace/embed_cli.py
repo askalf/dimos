@@ -52,13 +52,13 @@ from dimos.mapping.hyperspace.cli import (
     refuse_unless_readable,
     wal_bytes,
 )
-from dimos.mapping.hyperspace.embedder import DEFAULT_TRIO, PatchEnsemble
 from dimos.mapping.hyperspace.ingest import (
     IngestConfig,
     index_slug,
     stream_names,
 )
 from dimos.mapping.hyperspace.module import depth2depth_model_of
+from dimos.mapping.hyperspace.siglip_embedder import DEFAULT_TRIO, PatchEnsemble
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()

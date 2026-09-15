@@ -48,8 +48,8 @@ from dimos.constants import RECORDINGS_DIR
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
-from dimos.mapping.hyperspace.embedder import DEFAULT_TRIO
 from dimos.mapping.hyperspace.module import Hyperspace, HyperspacePatches
+from dimos.mapping.hyperspace.siglip_embedder import DEFAULT_TRIO
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM
 from dimos.robot.diy.alfred.config import ALFRED
 from dimos.robot.diy.alfred.effector_high_level import AlfredHighLevel

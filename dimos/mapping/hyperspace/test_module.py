@@ -454,7 +454,7 @@ def test_ensemble_keyframes_carry_every_member_and_pool_with_a_minimum(store: Sq
 
 
 def test_member_specs_and_tags() -> None:
-    from dimos.mapping.hyperspace.embedder import member_tag, parse_member
+    from dimos.mapping.hyperspace.siglip_embedder import member_tag, parse_member
 
     assert parse_member("google/siglip2-base-patch16-naflex@576") == (
         "google/siglip2-base-patch16-naflex",
@@ -482,7 +482,7 @@ def test_tiles_cover_the_frame_exactly_and_stitch_back() -> None:
     import numpy as np
     from PIL import Image as PILImage
 
-    from dimos.mapping.hyperspace.embedder import stitch_tiles, tile_image
+    from dimos.mapping.hyperspace.siglip_embedder import stitch_tiles, tile_image
 
     frame = PILImage.fromarray(np.arange(480 * 848 * 3, dtype=np.uint8).reshape(480, 848, 3))
     crops = tile_image(frame, 2, 3)
@@ -1119,9 +1119,9 @@ def test_a_stream_says_which_family_of_model_wrote_it() -> None:
     Perception Encoder vectors would compare two different spaces and answer
     confidently with noise. The tag has to round-trip, both ways, for both.
     """
-    from dimos.mapping.hyperspace.embedder import member_tag
     from dimos.mapping.hyperspace.frames import spec_of
     from dimos.mapping.hyperspace.ingest import sql_safe
+    from dimos.mapping.hyperspace.siglip_embedder import member_tag
 
     for spec in (
         "pe:PE-Core-B-16",

@@ -38,11 +38,6 @@ from dimos.agents.skill_result import SkillResult
 from dimos.core.core import rpc
 from dimos.core.stream import In, Out
 from dimos.mapping.hyperspace import patches as hs
-from dimos.mapping.hyperspace.embedder import (
-    DEFAULT_MEMBERS,
-    SIGLIP2_MODEL_NAME,
-    PatchEnsemble,
-)
 from dimos.mapping.hyperspace.FoundObject import FoundObject
 from dimos.mapping.hyperspace.FoundObjects import FoundObjects
 from dimos.mapping.hyperspace.frames import spec_of
@@ -57,6 +52,11 @@ from dimos.mapping.hyperspace.queries import (
 )
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import refine_config_of
+from dimos.mapping.hyperspace.siglip_embedder import (
+    DEFAULT_MEMBERS,
+    SIGLIP2_MODEL_NAME,
+    PatchEnsemble,
+)
 from dimos.memory.module import MemoryModule, MemoryModuleConfig
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
 from dimos.msgs.sensor_msgs.Image import Image
@@ -125,7 +125,7 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
     # The checkpoints that embed every keyframe, Hugging Face ids or local
     # directories, NaFlex ones optionally with "@<patch budget>". More than
     # one makes an ensemble whose scores are pooled per cell at query time
-    # (embedder.PatchEnsemble); the default pair is what the size sweep
+    # (siglip_embedder.PatchEnsemble); the default pair is what the size sweep
     # picked. ["google/siglip2-so400m-patch16-384"] is the original single model.
     models: list[str] = DEFAULT_MEMBERS
     # Kept for callers that predate `models`; used only when `models` is empty.

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
-    from dimos.mapping.hyperspace.embedder import SigLIP2Patches
+    from dimos.mapping.hyperspace.siglip_embedder import SigLIP2Patches
     from dimos.memory.store.base import Store
     from dimos.memory.stream import Stream
 
@@ -76,7 +76,7 @@ def index_slug(specs: Sequence[str]) -> str:
     because the slug ends up in a stream name and those are SQL identifiers -- the
     hyphens and the ``@``/``#`` of a member spec would be rejected.
     """
-    from dimos.mapping.hyperspace.embedder import member_tag
+    from dimos.mapping.hyperspace.siglip_embedder import member_tag
 
     return "__".join(sql_safe(member_tag(spec)) for spec in specs)
 

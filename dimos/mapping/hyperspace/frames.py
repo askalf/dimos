@@ -210,7 +210,7 @@ class TextTowers:
         self.device = device
 
     def _tower(self, spec: str) -> Any:
-        from dimos.mapping.hyperspace.embedder import PatchEnsemble
+        from dimos.mapping.hyperspace.siglip_embedder import PatchEnsemble
 
         tower = self._towers.get(spec)
         if tower is None:
