@@ -267,7 +267,10 @@ class MemoryWorldConfig(ModuleConfig):
     # Sharp frames are far larger than the scrub frames, so they get their OWN small LRU
     # rather than sharing the 600-entry one -- a walk past two dozen markers would
     # otherwise evict the whole scrub cache, and 600 sharp frames is most of a gigabyte.
-    marker_sharp_cache_size: int = PydanticField(default=48, gt=0)
+    # Several times the client's sharp budget on purpose: at a budget of 15 a cache of 15
+    # holds exactly what is on screen, so stepping back to a photo just left re-encodes it.
+    # ~145 KB a frame here, so 96 is ~14 MB.
+    marker_sharp_cache_size: int = PydanticField(default=96, gt=0)
 
 
 class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, Module):

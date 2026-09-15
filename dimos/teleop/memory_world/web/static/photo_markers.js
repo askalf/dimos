@@ -19,9 +19,12 @@ export const IMAGE_SHARP_DISTANCE_M = 7.0;
 // Hysteresis: upgrade at 7 m, drop back at 10. Equal thresholds make a viewer standing on
 // the boundary fetch and release the same photo every LOD tick.
 export const IMAGE_SHARP_RELEASE_M = 10.0;
-// Far smaller than IMAGE_QUAD_BUDGET on purpose. Each sharp texture is ~45x the pixels of
-// a thumbnail, so this is what bounds GPU memory, not the quad budget.
-export const IMAGE_SHARP_BUDGET = 6;
+// What actually bounds GPU memory, since a sharp texture is ~45x the pixels of a
+// thumbnail: 15 of them decoded at 1280x720 RGBA is ~55 MB, against ~1.2 MB for the same
+// count of thumbnails. The quad budget does NOT bound it -- that counts quads, and a quad
+// costs what its texture costs. `_updateSharpTier` also clamps this to the quality level's
+// own `quad_budget`, so a headset dropping frames sheds sharp photos before anything else.
+export const IMAGE_SHARP_BUDGET = 15;
 export const MARKER_SHARP_SIZE_PX = 1280;    // the server clamps this to its own ceiling
 
 export const photoMarkerMethods = {
