@@ -188,6 +188,14 @@ memory_world_hyperspace = (
             # grocery.db item query measured 138-274 s on this Mac, which no amount of
             # timeout makes demoable. At 6 x 1 it is 24.7-26.6 s.
             #
+            # The speedup is not the main argument; the TAIL is. At 12 x 3 the same
+            # query measured 162 s and then 217 s, and across queries 138-274 s, because
+            # the cost is episodes x attempts and a REFUSAL spends all of its attempts --
+            # so the queries the detector mostly turns down are the expensive ones, which
+            # is backwards from what anyone would guess. At 6 x 1 every query here landed
+            # in 24.7-26.6 s. A demo dies on the worst case, and the long config's worst
+            # case is the part that is unbounded.
+            #
             # MEASURED FREE on three queries, comparing the PLACES and not just the
             # count -- the count is exactly what hid hyperspace's own traffic-light
             # regression:
