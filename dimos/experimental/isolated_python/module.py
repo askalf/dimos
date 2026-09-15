@@ -119,17 +119,11 @@ class IsolatedPythonModule(NativeModule):
             )
         return project
 
-    def _uv_command(self, *args: str) -> list[str]:
-        command = ["uv", *args]
-        if (self.runtime_project / "pixi.toml").is_file():
-            return ["pixi", "run", "--executable", *command]
-        return command
-
     def _prepare_command(self) -> list[str]:
-        args = ["sync"]
-        if (self.runtime_project / "uv.lock").is_file():
-            args.append("--frozen")
-        return self._uv_command(*args)
+        # `uv run` syncs the declared project and builds the cached overlay that
+        # holds the shared checkout’s dimOS with its dependencies. Doing it here keeps the
+        # first install, which can take minutes, out of the startup timeout.
+        return isolated_python_run_command(self.runtime_project, "python", "-c", "pass")
 
     def _launch_command(self, handshake_fd: int) -> list[str]:
         return isolated_python_run_command(
@@ -165,25 +159,19 @@ class IsolatedPythonModule(NativeModule):
         return env
 
     def _run_prepare(self) -> None:
-        # Resolve the DimOS overlay too, before the runtime's readiness deadline.
-        commands = [
+        result = subprocess.run(
             self._prepare_command(),
-            isolated_python_run_command(self.runtime_project, "python", "-c", "pass"),
-        ]
-        for command in commands:
-            result = subprocess.run(
-                command,
-                cwd=self.runtime_project,
-                env=self._runtime_env(),
-                capture_output=True,
-                text=True,
+            cwd=self.runtime_project,
+            env=self._runtime_env(),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            output = (result.stdout + "\n" + result.stderr).strip()
+            raise RuntimeError(
+                f"Isolated Python environment preparation failed (exit {result.returncode}): "
+                f"{output[-self.config.output_limit :]}"
             )
-            if result.returncode:
-                output = (result.stdout + "\n" + result.stderr).strip()
-                raise RuntimeError(
-                    f"Isolated Python environment preparation failed (exit {result.returncode}): "
-                    f"{output[-self.config.output_limit :]}"
-                )
 
     def _spawn_runtime(self) -> None:
         parent_read, child_write = os.pipe()

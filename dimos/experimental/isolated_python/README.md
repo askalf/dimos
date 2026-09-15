@@ -65,9 +65,11 @@ a contract stub or changes its signature or classification.
 
 ## Runtime behavior
 
-During `build()`, dimOS runs `uv sync` in the declared project. If `pixi.toml`
-exists, Pixi supplies `uv`. If `uv.lock` exists, dimOS uses `--frozen` and treats
-the lockfile as the source of truth.
+During `build()`, dimOS uses `uv run` to sync the declared project and prepare a
+cached overlay containing dimOS from the shared checkout and its dependencies.
+The first build can take minutes to download; later builds reuse the cache.
+If `pixi.toml` exists, Pixi supplies `uv`. If `uv.lock` exists, dimOS uses
+`--frozen` and treats the lockfile as the source of truth.
 
 The runtime project and child dimOS come from `get_project_root()`, the shared
 LFS checkout helper. Development uses the current checkout, including local edits.

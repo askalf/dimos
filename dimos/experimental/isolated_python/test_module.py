@@ -105,7 +105,16 @@ def test_runtime_uses_shared_checkout(tmp_path, monkeypatch, installed):
 def test_uv_lock_enables_frozen_commands(project):
     module = Contract()
     try:
-        assert module._prepare_command() == ["uv", "sync", "--frozen"]
+        assert module._prepare_command() == [
+            "uv",
+            "run",
+            "--frozen",
+            "--with-editable",
+            str(project.parents[2]),
+            "python",
+            "-c",
+            "pass",
+        ]
         assert module._launch_command(7)[:5] == [
             "uv",
             "run",
@@ -126,10 +135,16 @@ def test_pixi_supplies_uv_when_manifest_exists(project):
             "run",
             "--executable",
             "uv",
-            "sync",
+            "run",
             "--frozen",
+            "--with-editable",
+            str(project.parents[2]),
+            "python",
+            "-c",
+            "pass",
         ]
         assert module._launch_command(7)[:4] == ["pixi", "run", "--executable", "uv"]
+
     finally:
         module.stop()
 
@@ -200,7 +215,6 @@ def test_preparation_warms_the_launch_environment(project: Path, mocker: MockerF
         module._run_prepare()
 
         assert [call.args[0] for call in run.call_args_list] == [
-            module._prepare_command(),
             isolated_python_run_command(project, "python", "-c", "pass"),
         ]
         assert module._launch_command(7)[:5] == run.call_args.args[0][:5]
@@ -211,14 +225,10 @@ def test_preparation_warms_the_launch_environment(project: Path, mocker: MockerF
         module.stop()
 
 
-@pytest.mark.parametrize("failure_stage", [0, 1])
-def test_preparation_failure_prevents_launch(
-    project: Path, mocker: MockerFixture, failure_stage: int
-) -> None:
+def test_preparation_failure_prevents_launch(project: Path, mocker: MockerFixture) -> None:
     mocker.patch(
         "dimos.experimental.isolated_python.module.subprocess.run",
-        side_effect=[subprocess.CompletedProcess([], 0, "", "")] * failure_stage
-        + [subprocess.CompletedProcess([], 1, "", "dependency unavailable")],
+        return_value=subprocess.CompletedProcess([], 1, "", "dependency unavailable"),
     )
     module = Contract()
     spawn = mocker.patch.object(module, "_spawn_runtime")
