@@ -107,7 +107,9 @@ def test_governor_creeps_in_tight_room() -> None:
     path = _straight_path()
     tight = np.full(len(path), 0.06)  # barely above the precision floor
     tw = PursuitController().update(_pose(0.0, 0.0), path, 0.0, clearance=tight)
-    assert math.hypot(tw.linear.x, tw.linear.y) <= GO2.min_speed + 0.02
+    # within the bottom twentieth of the governor's band, whatever the ceiling is
+    creep = GO2.min_speed + 0.05 * (GO2.max_speed - GO2.min_speed)
+    assert math.hypot(tw.linear.x, tw.linear.y) <= creep
 
 
 def test_governor_full_speed_in_open_room() -> None:
