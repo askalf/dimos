@@ -237,6 +237,7 @@ def hot_frames(
     device: str = "cpu",
     resident: Any = None,
     contrast: bool = True,
+    background_prompts: Sequence[str] | None = None,
 ) -> list[Frame]:
     """Frames that matched *text*, in time order.
 
@@ -246,6 +247,8 @@ def hot_frames(
     gone; the index is loaded once, at startup or as a recording is ingested.
 
     *models* names the member tags to search; the default is every model in the store.
+
+    *background_prompts* replaces what the contrast subtracts, for this call only.
 
     *contrast* subtracts the best of a handful of generic prompts -- floor, wall,
     ceiling, shelf, a room -- from the score, which is what stops a wall from answering
@@ -266,9 +269,14 @@ def hot_frames(
                 continue
             spec = spec_of(tag)
             query = towers.query(spec, text)
-            background = (
-                towers.background(spec) if contrast else np.empty((0, len(query)), np.float32)
-            )
+            if not contrast:
+                background = np.empty((0, len(query)), np.float32)
+            elif background_prompts is None:
+                background = towers.background(spec)
+            else:
+                # An area query is contrasted against objects rather than against the
+                # room, so that asking for a room does not subtract the room.
+                background = np.stack([towers.query(spec, prompt) for prompt in background_prompts])
 
             held = held_by.of(store, tag, name)
             picked, scored = held.hot(query, background, threshold=threshold, limit=top_k)
