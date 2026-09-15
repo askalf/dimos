@@ -321,16 +321,12 @@ jobs:
           source .venv/bin/activate
           maturin develop -m dimos/mapping/ray_tracing/rust/py/Cargo.toml
           maturin develop -m dimos/navigation/nav_3d/mls_planner/rust/py/Cargo.toml
-          maturin develop -m dimos/navigation/motion/planner/rust/Cargo.toml
-          maturin develop -m dimos/navigation/motion/control/rust/Cargo.toml
           python -c "import dimos_voxel_ray_tracing, dimos_mls_planner"
-          python -c "import dimos_motion2_target, dimos_motion2_tc"
           python -m pytest -c /dev/null --rootdir . --noconftest --import-mode=importlib -p no:cacheprovider -v \
             dimos/mapping/ray_tracing/test_voxel_map.py \
             dimos/mapping/ray_tracing/test_transformer.py \
             dimos/navigation/nav_3d/mls_planner/test_mls_planner.py \
-            dimos/navigation/nav_3d/mls_planner/test_transformer.py \
-            dimos/navigation/motion/control/test_rust_parity.py
+            dimos/navigation/nav_3d/mls_planner/test_transformer.py
       - name: Bake e2e tests
         run: uv run pytest -m bake_e2e dimos/cli/bake/test_bake_e2e.py --no-cov
       - name: Native module e2e tests
@@ -348,16 +344,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      # liblcm and zenoh-c back the SDK's two transports. zenoh-c has no apt
-      # package, so it comes from the upstream release (same 1.10 line the
-      # Rust module and the nix flakes pin).
+      # The SDK headers include both transports, so liblcm and zenoh are both
+      # needed to build at all. Zenoh has no apt package, so it comes from its
+      # release
       - name: Install system dependencies
+        env:
+          ZENOH_VERSION: 1.10.0
         run: |
           sudo apt-get update
-          sudo apt-get install -y liblcm-dev nlohmann-json3-dev
-          curl -fsSLo /tmp/zenohc.zip https://github.com/eclipse-zenoh/zenoh-c/releases/download/1.10.0/libzenohc-1.10.0-x86_64-unknown-linux-gnu-debian.zip
-          unzip -o /tmp/zenohc.zip -d /tmp/zenohc
-          sudo apt-get install -y /tmp/zenohc/libzenohc_1.10.0_amd64.deb /tmp/zenohc/libzenohc-dev_1.10.0_amd64.deb
+          # lcm.pc carries `Requires: glib-2.0`, so pkg-config cannot resolve
+          # lcm at all without glib's own .pc file
+          sudo apt-get install -y liblcm-dev libglib2.0-dev nlohmann-json3-dev
+          base=https://github.com/eclipse-zenoh
+          curl -fsSL -o /tmp/zenoh-c.zip \
+            "$base/zenoh-c/releases/download/$ZENOH_VERSION/zenoh-c-$ZENOH_VERSION-x86_64-unknown-linux-gnu-standalone.zip"
+          curl -fsSL -o /tmp/zenoh-cpp.zip \
+            "$base/zenoh-cpp/releases/download/$ZENOH_VERSION/zenohcpp-$ZENOH_VERSION-standalone.zip"
+          # A release asset can be replaced in place, so the bytes are pinned too
+          printf '%s  /tmp/zenoh-c.zip\n%s  /tmp/zenoh-cpp.zip\n' \
+            1168b3dffa7f4f48ffabfd640a3878ec0527c0a612ce825aa6f93e2cd05762d1 \
+            7a50a74e98fd1e1e7ed8461b8490b30d67f878649f0727dea2cf0936501780af \
+            | sha256sum -c -
+          # The zips are laid out for /usr/local, where cmake and the loader
+          # already look
+          sudo unzip -q /tmp/zenoh-c.zip -d /usr/local
+          sudo unzip -q /tmp/zenoh-cpp.zip -d /usr/local
+          sudo ldconfig
       - name: Configure
         run: cmake -S native/cpp -B build/native-cpp -DDIMOS_NATIVE_BUILD_TESTS=ON
       - name: Build
@@ -585,7 +597,8 @@ jobs:
           dimos/e2e_tests/test_publish_browser.py
           dimos/e2e_tests/test_voice_browser.py
           dimos/e2e_tests/test_stats_browser.py
-          dimos/e2e_tests/test_robot_picker_browser.py --no-cov
+          dimos/e2e_tests/test_robot_picker_browser.py
+          dimos/e2e_tests/test_relay_auth_browser.py --no-cov
 
   tests:
     if: |

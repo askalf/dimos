@@ -10,9 +10,13 @@
 
 using namespace dimos::native;
 
-TEST_CASE("lcm and zenoh are supported transports") {
-    require_supported_transport("lcm");
-    require_supported_transport("zenoh");
+TEST_CASE("lcm is a supported transport") {
+    require_supported_transport("lcm");  // must not throw
+    CHECK(true);
+}
+
+TEST_CASE("zenoh is a supported transport") {
+    require_supported_transport("zenoh");  // must not throw
     CHECK(true);
 }
 

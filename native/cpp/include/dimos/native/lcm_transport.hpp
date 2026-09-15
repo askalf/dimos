@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -72,6 +73,24 @@ public:
         ensure_recv_thread();
     }
 
+    /// LCM has no per-topic publisher settings and no notion of a session-local
+    /// publisher, so a baked host cannot hide an internal hop on this transport.
+    void set_publisher_qos(const nlohmann::json& qos) override {
+        if (!qos.is_object()) {
+            return;
+        }
+        std::string suppressed;
+        for (const auto& entry : qos.items()) {
+            if (entry.value().is_object() && entry.value().contains("locality")) {
+                suppressed += suppressed.empty() ? entry.key() : ", " + entry.key();
+            }
+        }
+        if (!suppressed.empty()) {
+            log::warn("LCM cannot suppress a topic; these stay visible on the multicast bus",
+                      {log::Field("channels", suppressed)});
+        }
+    }
+
 private:
     void on_lcm_message(const lcm::ReceiveBuffer* rbuf, const std::string& channel) {
         std::shared_ptr<const std::vector<Dispatch>> handlers;
@@ -94,7 +113,7 @@ private:
         if (running_.compare_exchange_strong(expected, true)) {
             recv_thread_ = std::thread([this] {
                 while (running_.load(std::memory_order_relaxed)) {
-                    int rc = lcm_.handleTimeout(kHandleTimeoutMs);
+                    int rc = lcm_.handleTimeout(HANDLE_TIMEOUT_MS);
                     if (rc < 0) {
                         DIMOS_ERROR_THROTTLED(log::from_secs(1), "lcm handleTimeout error",
                                               log::Field("rc", static_cast<std::int64_t>(rc)));
@@ -104,7 +123,7 @@ private:
         }
     }
 
-    static constexpr int kHandleTimeoutMs = 100;
+    static constexpr int HANDLE_TIMEOUT_MS = 100;
 
     lcm::LCM lcm_;
     std::mutex routes_mu_;
@@ -112,6 +131,5 @@ private:
     std::atomic<bool> running_{false};
     std::thread recv_thread_;
 };
-
 
 }  // namespace dimos::native

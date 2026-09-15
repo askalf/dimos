@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Transport selection. The coordinator sets DIMOS_TRANSPORT for every native
-// process; this SDK implements LCM and zenoh.
+// process.
 
 #pragma once
 
@@ -11,7 +11,7 @@
 
 namespace dimos::native {
 
-/// Throw unless `name` is a transport this SDK implements.
+/// Throw unless `name` is a transport the SDK implements.
 inline void require_supported_transport(const std::string& name) {
     if (name == "lcm" || name == "zenoh") {
         return;

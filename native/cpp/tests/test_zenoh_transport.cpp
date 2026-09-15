@@ -1,138 +1,246 @@
 // Copyright 2026 Dimensional Inc.
 // SPDX-License-Identifier: Apache-2.0
-//
-// ZenohTransport: session settings and QoS parsing against the goldens the
-// Rust module and Python share, plus an in-process round trip on a session
-// with discovery off, so it needs no network beyond loopback.
 
 #include <doctest/doctest.h>
 
 #include <chrono>
-#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
-#include <map>
 #include <mutex>
+#include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "dimos/native/zenoh_transport.hpp"
 
 using namespace dimos::native;
-using nlohmann::json;
+using zenoh_detail::parse_channel_qos;
+using zenoh_detail::settings_from_launch;
 
-namespace {
-
-json golden(const char* name) {
-    std::ifstream file(std::string(DIMOS_RUST_FIXTURES_DIR) + "/" + name);
-    REQUIRE(file.good());
-    return json::parse(file);
-}
-
-std::map<std::string, std::string> inserts(const json& session) {
-    std::map<std::string, std::string> out;
-    for (const auto& [key, value] : zenoh_config_inserts(session)) {
-        out[key] = value;
+// The launch line python sends for a client-mode session. The golden is the
+// one the rust and python suites read, so a field any side renames fails here.
+nlohmann::json client_launch() {
+    const std::string path = std::string(DIMOS_NATIVE_GOLDENS_DIR) + "/session_wire_client.json";
+    std::ifstream golden(path);
+    if (!golden.is_open()) {
+        throw std::runtime_error("cannot read golden: " + path);
     }
-    return out;
+    return nlohmann::json{{"session", nlohmann::json::parse(golden)}};
 }
 
-// A session only reachable from this process: discovery off, no endpoints.
-json local_session() {
-    return {{"mode", "peer"},        {"connect", json::array()}, {"listen", json::array()},
-            {"multicast", false},    {"scout_addr", ""},         {"gossip", false},
-            {"interface", "lo"},     {"connect_timeout_ms", 0}};
-}
-
-}  // namespace
-
-TEST_CASE("zenoh_key strips the leading slash") {
-    CHECK(zenoh_key("/cmd_vel/geometry_msgs.Twist") == "cmd_vel/geometry_msgs.Twist");
-    CHECK(zenoh_key("dimos/cmd_vel/geometry_msgs.Twist") == "dimos/cmd_vel/geometry_msgs.Twist");
+TEST_CASE("a dimos topic becomes a zenoh key by losing its leading slash") {
+    CHECK(zenoh_key("/robot/cmd_vel") == "robot/cmd_vel");
+    CHECK(zenoh_key("robot/cmd_vel") == "robot/cmd_vel");
+    CHECK(zenoh_key("/") == "");
     CHECK(zenoh_key("") == "");
+    // Only the leading slash goes. An inner or trailing one is part of the key.
+    CHECK(zenoh_key("//double") == "/double");
+    CHECK(zenoh_key("/trailing/") == "trailing/");
 }
 
-TEST_CASE("the client golden maps to the session config the Rust module builds") {
-    auto out = inserts(golden("session_wire_client.json"));
-    CHECK(out.at("mode") == R"("client")");
-    CHECK(out.at("connect/endpoints") == R"(["tcp/192.0.2.10:7447"])");
-    CHECK(out.count("listen/endpoints") == 0);
-    CHECK(out.at("scouting/multicast/enabled") == "true");
-    CHECK(out.count("scouting/multicast/address") == 0);
-    CHECK(out.at("scouting/gossip/enabled") == "false");
-    CHECK(out.at("scouting/multicast/interface") == R"("lo")");
-    CHECK(out.at("connect/timeout_ms") == "2000");
+TEST_CASE("a launch with no session block keeps zenoh's defaults") {
+    CHECK_FALSE(settings_from_launch(nlohmann::json::parse(R"({"topics":{}})")).has_value());
+    CHECK_FALSE(settings_from_launch(nlohmann::json::parse(R"({"session":null})")).has_value());
+    CHECK_FALSE(settings_from_launch(nlohmann::json::object()).has_value());
 }
 
-TEST_CASE("the router golden keeps zenoh's defaults for empty lists and a zero timeout") {
-    auto out = inserts(golden("session_wire_router.json"));
-    CHECK(out.at("mode") == R"("router")");
-    CHECK(out.at("listen/endpoints") == R"(["tcp/127.0.0.1:7447"])");
-    CHECK(out.count("connect/endpoints") == 0);
-    CHECK(out.count("connect/timeout_ms") == 0);
-    CHECK(out.at("scouting/multicast/enabled") == "false");
-    CHECK(out.at("scouting/gossip/enabled") == "true");
+TEST_CASE("a session block missing a field is rejected and names it") {
+    // Python resolves them all, so an absent one is a setting lost.
+    try {
+        settings_from_launch(nlohmann::json::parse(R"({"session":{"mode":"peer"}})"));
+        FAIL("expected a session block missing fields to throw");
+    } catch (const std::runtime_error& e) {
+        CHECK(std::string(e.what()).find("connect") != std::string::npos);
+    }
 }
 
-TEST_CASE("a moved scout group reaches the session config") {
-    json session = local_session();
-    session["scout_addr"] = "224.0.0.224:17700";
-    CHECK(inserts(session).at("scouting/multicast/address") == R"("224.0.0.224:17700")");
+TEST_CASE("a session block with an unknown field is rejected and names it") {
+    nlohmann::json launch = client_launch();
+    launch["session"]["bogus"] = 1;
+    try {
+        settings_from_launch(launch);
+        FAIL("expected an unknown session field to throw");
+    } catch (const std::runtime_error& e) {
+        CHECK(std::string(e.what()).find("bogus") != std::string::npos);
+    }
 }
 
-TEST_CASE("a missing or unknown setting is an error, not a default") {
-    CHECK_THROWS_AS(zenoh_config_inserts(json{{"mode", "peer"}}), std::runtime_error);
-    json session = local_session();
-    session["reliability"] = "reliable";
-    CHECK_THROWS_AS(zenoh_config_inserts(session), std::runtime_error);
-    CHECK_THROWS_AS(zenoh_config_inserts(json::array()), std::runtime_error);
+TEST_CASE("a negative connect timeout is rejected rather than wrapped") {
+    // Cast instead of rejected it is a wait of a few hundred million years,
+    // so opening the session would look like a hang.
+    nlohmann::json launch = client_launch();
+    launch["session"]["connect_timeout_ms"] = -1;
+    try {
+        settings_from_launch(launch);
+        FAIL("expected a negative connect timeout to throw");
+    } catch (const std::runtime_error& e) {
+        CHECK(std::string(e.what()).find("connect_timeout_ms") != std::string::npos);
+    }
 }
 
-TEST_CASE("parse_channel_qos reads the coordinator's qos block") {
-    auto qos = parse_channel_qos(json::parse(
-        R"({"a":{"reliability":"reliable","congestion_control":"block","locality":"session_local"},
-            "b":{"reliability":"best_effort","congestion_control":"drop","locality":"remote"},
-            "c":{"reliability":"bogus"},
-            "d":7})"));
-    CHECK(qos.at("a").reliability == Z_RELIABILITY_RELIABLE);
-    CHECK(qos.at("a").congestion_control == Z_CONGESTION_CONTROL_BLOCK);
-    CHECK(qos.at("a").locality == Z_LOCALITY_SESSION_LOCAL);
-    CHECK(qos.at("b").reliability == Z_RELIABILITY_BEST_EFFORT);
-    CHECK(qos.at("b").congestion_control == Z_CONGESTION_CONTROL_DROP);
-    CHECK(qos.at("b").locality == Z_LOCALITY_REMOTE);
-    CHECK_FALSE(qos.at("c").reliability.has_value());
-    CHECK(qos.count("d") == 0);
-    CHECK(parse_channel_qos(json()).empty());
+TEST_CASE("the session settings become a zenoh config") {
+    auto settings = settings_from_launch(client_launch());
+    REQUIRE(settings.has_value());
+    ::zenoh::Config config = zenoh_detail::zenoh_config(*settings);
+    CHECK(config.get("mode") == R"("client")");
+    CHECK(config.get("connect/endpoints") == R"(["tcp/192.0.2.10:7447"])");
+    CHECK(config.get("connect/timeout_ms") == "2000");
+    CHECK(config.get("scouting/multicast/enabled") == "true");
+    CHECK(config.get("scouting/multicast/interface") == R"("lo")");
+    CHECK(config.get("scouting/gossip/enabled") == "false");
 }
 
-TEST_CASE("ZenohTransport implements the Transport interface") {
-    CHECK(std::is_base_of<Transport, ZenohTransport>::value);
+TEST_CASE("publisher qos is read per channel, and unset fields keep defaults") {
+    auto qos = parse_channel_qos(nlohmann::json::parse(R"({
+      "/a": {"congestion_control": "block", "locality": "session_local",
+             "reliability": "reliable"},
+      "/b": {"congestion_control": "drop", "locality": "remote",
+             "reliability": "best_effort"},
+      "/c": {}
+    })"));
+    REQUIRE(qos.count("/a") == 1);
+    CHECK(qos.at("/a").congestion_control == Z_CONGESTION_CONTROL_BLOCK);
+    CHECK(qos.at("/a").locality == Z_LOCALITY_SESSION_LOCAL);
+    CHECK(qos.at("/a").reliability == Z_RELIABILITY_RELIABLE);
+    CHECK(qos.at("/b").congestion_control == Z_CONGESTION_CONTROL_DROP);
+    CHECK(qos.at("/b").locality == Z_LOCALITY_REMOTE);
+    CHECK(qos.at("/b").reliability == Z_RELIABILITY_BEST_EFFORT);
+    CHECK_FALSE(qos.at("/c").congestion_control.has_value());
+    CHECK_FALSE(qos.at("/c").locality.has_value());
+    CHECK_FALSE(qos.at("/c").reliability.has_value());
 }
 
-TEST_CASE("a message published on a channel reaches that channel's subscriber") {
-    json launch = {{"session", local_session()},
-                   {"qos", {{"/t/x", {{"reliability", "reliable"}, {"congestion_control", "block"}}}}}};
-    ZenohTransport transport(launch);
+TEST_CASE("a qos field of the wrong type keeps the default rather than throwing") {
+    // Rust reads these with as_str, so a wrong type is ignored there. Thrown
+    // here it would kill the module before a single subscriber was wired.
+    auto qos = parse_channel_qos(nlohmann::json::parse(R"({
+      "/a": {"reliability": null, "congestion_control": 7, "locality": ["any"]}
+    })"));
+    REQUIRE(qos.count("/a") == 1);
+    CHECK_FALSE(qos.at("/a").congestion_control.has_value());
+    CHECK_FALSE(qos.at("/a").locality.has_value());
+    CHECK_FALSE(qos.at("/a").reliability.has_value());
+}
 
-    std::mutex mu;
-    std::condition_variable cv;
-    std::vector<std::vector<uint8_t>> got;
-    transport.subscribe("/t/x", [&](const uint8_t* data, std::size_t len) {
-        std::lock_guard<std::mutex> lock(mu);
-        got.emplace_back(data, data + len);
-        cv.notify_all();
+TEST_CASE("a locator keeps only the address a link reports") {
+    CHECK(zenoh_detail::locator_address("tcp/192.0.2.10:7447") == "192.0.2.10:7447");
+    // A link reports the address alone, so the metadata and config have to go.
+    CHECK(zenoh_detail::locator_address("tcp/192.0.2.10:7447?iface=eth0") == "192.0.2.10:7447");
+    CHECK(zenoh_detail::locator_address("tcp/192.0.2.10:7447#user=a") == "192.0.2.10:7447");
+    // The path is the address, so splitting at the last slash would lose most.
+    CHECK(zenoh_detail::locator_address("unixsock-stream//tmp/zenoh.sock") == "/tmp/zenoh.sock");
+}
+
+TEST_CASE("an endpoint dialed by name also matches the address a link reports") {
+    // A link reports a numeric address, so a name never matches unresolved.
+    auto addresses = zenoh_detail::endpoint_addresses("tcp/localhost:7447");
+    CHECK(addresses.count("localhost:7447") == 1);
+    CHECK(addresses.count("127.0.0.1:7447") == 1);
+    // Nothing to resolve, so a portless endpoint is left as it is.
+    CHECK(zenoh_detail::endpoint_addresses("tcp/localhost") ==
+          std::unordered_set<std::string>{"localhost"});
+}
+
+TEST_CASE("an ipv6 endpoint keeps the brackets a link reports it with") {
+    // getaddrinfo rejects a bracketed host and getnameinfo hands back a bare
+    // one, so the brackets have to come off and go back on.
+    auto addresses = zenoh_detail::endpoint_addresses("tcp/[0:0:0:0:0:0:0:1]:7447");
+    CHECK(addresses.count("[::1]:7447") == 1);
+    CHECK(addresses.count("::1:7447") == 0);
+}
+
+// A session that neither scouts nor dials, so opening it touches no network.
+constexpr const char* ISOLATED_LAUNCH = R"({
+  "session": {
+    "mode": "peer",
+    "connect": [],
+    "listen": [],
+    "multicast": false,
+    "scout_addr": "",
+    "gossip": false,
+    "interface": "lo",
+    "connect_timeout_ms": 0
+  }
+})";
+
+TEST_CASE("an empty setting leaves zenoh's own default in place") {
+    auto settings = settings_from_launch(nlohmann::json::parse(ISOLATED_LAUNCH));
+    REQUIRE(settings.has_value());
+    ::zenoh::Config config = zenoh_detail::zenoh_config(*settings);
+    // Written through, these would be an empty multicast group and a dial that
+    // never retries.
+    CHECK(config.get("scouting/multicast/address") == "null");
+    CHECK(config.get("connect/timeout_ms") == "null");
+}
+
+TEST_CASE("waiting on an endpoint that never links gives up at the timeout") {
+    // Nothing listens there, so the wait can only end at the deadline.
+    ::zenoh::Session session =
+        ::zenoh::Session::open(zenoh_detail::zenoh_config(*settings_from_launch(
+            nlohmann::json::parse(ISOLATED_LAUNCH))));
+    const auto started = std::chrono::steady_clock::now();
+    zenoh_detail::await_connect(session, {"tcp/127.0.0.1:1"}, "peer",
+                                std::chrono::milliseconds(200));
+    const auto waited = std::chrono::steady_clock::now() - started;
+    CHECK(waited >= std::chrono::milliseconds(200));
+    CHECK(waited < std::chrono::seconds(5));
+}
+
+TEST_CASE("a published payload reaches its own channel's subscriber unchanged") {
+    std::unique_ptr<Transport> transport =
+        ZenohTransport::from_launch(nlohmann::json::parse(ISOLATED_LAUNCH));
+    // The publisher is declared with this qos, so a value zenoh rejects fails here.
+    transport->set_publisher_qos(nlohmann::json::parse(R"({
+      "/dimos_test/round_trip": {"reliability": "reliable", "congestion_control": "block"}
+    })"));
+
+    std::mutex received_mu;
+    std::vector<uint8_t> received;
+    bool other_channel_hit = false;
+    transport->subscribe("/dimos_test/round_trip",
+                         [&](const uint8_t* data, std::size_t len) {
+                             std::lock_guard<std::mutex> lock(received_mu);
+                             received.assign(data, data + len);
+                         });
+    transport->subscribe("/dimos_test/other", [&](const uint8_t*, std::size_t) {
+        std::lock_guard<std::mutex> lock(received_mu);
+        other_channel_hit = true;
     });
-    transport.subscribe("/t/other", [&](const uint8_t*, std::size_t) {
-        std::lock_guard<std::mutex> lock(mu);
-        got.emplace_back(std::vector<uint8_t>{0xFF});
-        cv.notify_all();
-    });
 
-    transport.publish("/t/x", {1, 2, 3});
-    transport.publish("/t/x", {4});
+    // Declaring a subscriber is not immediate, so republish until it lands.
+    const std::vector<uint8_t> payload = {0, 1, 2, 250, 251, 252};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    std::vector<uint8_t> got;
+    while (got.empty() && std::chrono::steady_clock::now() < deadline) {
+        transport->publish("/dimos_test/round_trip", payload);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lock(received_mu);
+        got = received;
+    }
+    CHECK(got == payload);
+    std::lock_guard<std::mutex> lock(received_mu);
+    CHECK_FALSE(other_channel_hit);
+}
 
-    std::unique_lock<std::mutex> lock(mu);
-    REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&] { return got.size() >= 2; }));
-    CHECK(got[0] == std::vector<uint8_t>{1, 2, 3});
-    CHECK(got[1] == std::vector<uint8_t>{4});
+TEST_CASE("a publish zenoh rejects is logged rather than thrown") {
+    // Publishing runs on a worker thread with no catch of its own.
+    std::unique_ptr<Transport> transport =
+        ZenohTransport::from_launch(nlohmann::json::parse(ISOLATED_LAUNCH));
+    // '?' cannot appear in a key expression, so declaring the publisher fails.
+    CHECK_NOTHROW(transport->publish("/bad?key", std::vector<uint8_t>{1, 2, 3}));
+}
+
+// Never called: a client-mode session dials an endpoint and scouts the network.
+// Compiled so every inline body is typechecked against zenoh-cpp.
+[[maybe_unused]] static void zenoh_transport_compile_check() {
+    std::unique_ptr<Transport> transport =
+        ZenohTransport::from_launch(client_launch());
+    transport->set_publisher_qos(nlohmann::json::object());
+    transport->publish("/c", std::vector<uint8_t>{1, 2, 3});
+    transport->subscribe("/c", [](const uint8_t*, std::size_t) {});
 }

@@ -2,10 +2,7 @@
   description = "Point-LIO + Livox Mid-360 native module";
 
   inputs = {
-    # zenoh-c for the SDK's ZenohTransport, from a nixpkgs that carries the 1.10
-    # line the Rust module pins. Separate from `nixpkgs` so this module's other
-    # deps keep their binary-cache hits.
-    nixpkgs-zenoh.url = "github:NixOS/nixpkgs/d5dfd8e6716dde34398bc14bc87c10dece9c8c68";
+    zenoh.url = "github:jeff-hykin/zenoh_flake";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     livox-sdk.url = "path:../../livox/cpp";
@@ -32,7 +29,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, nixpkgs-zenoh, flake-utils, livox-sdk, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
+  outputs = { self, nixpkgs, zenoh, flake-utils, livox-sdk, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         # Overlay fixes for darwin-broken nixpkgs recipes in our transitive
@@ -72,7 +69,8 @@
         };
         livox-sdk2 = livox-sdk.packages.${system}.livox-sdk2;
         lcm = lcm-extended.packages.${system}.lcm;
-        zenohc = nixpkgs-zenoh.legacyPackages.${system}.zenoh-c;
+        zenohc = zenoh.packages.${system}.zenoh-c;
+        zenohcpp = zenoh.packages.${system}.zenoh-cpp;
 
         livox-common = ../../common;
 
@@ -96,7 +94,6 @@
           buildInputs = [
             livox-sdk2
             lcm
-            zenohc
             pkgs.glib
             pkgs.eigen
             pkgs.pcl
@@ -104,6 +101,8 @@
             pkgs.boost
             pkgs.llvmPackages.openmp
             pkgs.nlohmann_json
+            zenohc
+            zenohcpp
           ];
 
           cmakeFlags = [
