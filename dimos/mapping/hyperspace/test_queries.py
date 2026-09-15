@@ -214,3 +214,29 @@ def test_a_query_without_a_radius_never_looks_for_the_robot() -> None:
     assert "self._where_the_robot_is(at_time) if within_m else None" in source, (
         "the robot's pose is only needed when a radius was asked for"
     )
+
+
+def test_starting_the_module_does_not_build_the_dense_voxel_path() -> None:
+    """The three query skills never touch the dense engine, so start() must not build it.
+
+    It used to: every module paid a so400m text tower and its GPU memory at boot, which
+    on an 8 GB card beside OWLv2 and the patch index is most of what there is -- and it
+    is the slowest thing in the startup for a path most callers never use.
+    """
+    from pathlib import Path
+
+    source = Path(__file__).with_name("module.py").read_text()
+    body = source[source.index("    def start(self) -> None:\n        # What every question") :]
+    body = body[: body.index("    @property")]
+    assert "PatchEnsemble(" not in body, "start() is building the dense path's text towers"
+    assert "HyperspaceQuery(" not in body, "start() is building the dense engine"
+    # And a transform arriving must not build it either.
+    # BOTH modules define handle_tf; this is about the query module's.
+    query_module = source[source.index("class Hyperspace(MemoryModule)") :]
+    tf_handler = query_module[query_module.index("async def handle_tf") :]
+    tf_handler = tf_handler[: tf_handler.index("async def handle_query")]
+    # Code only: the comment there explains why it must not, and says the name to do it.
+    code = "\n".join(line for line in tf_handler.splitlines() if not line.strip().startswith("#"))
+    assert "self.engine" not in code, (
+        "touching self.engine in handle_tf builds the dense path on the first transform"
+    )

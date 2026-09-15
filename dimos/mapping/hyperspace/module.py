@@ -392,41 +392,13 @@ class Hyperspace(MemoryModule):
 
     @rpc
     def start(self) -> None:
-        # Module.start runs main() up to its first yield, so the engine must
-        # exist first.
-        # No MPS here: two workers bringing up torch on Metal at the same time
-        # lose one of them silently on macOS, and HyperspacePatches needs the
-        # GPU more. The text tower is fast enough on the CPU.
-        device = pick_device(self.config.device, allow_mps=False)
+        # What every question needs: the store, and which checkpoints this recording was
+        # embedded with. The dense voxel path is NOT built here -- see the `engine`
+        # property for why, and for what it costs when it is.
         logger.info(f"hyperspace query: opening {self.config.db_path}")
         open_store_with_retry(self)
         specs = self.config.models or store_members(self.store) or [self.config.model_name]
-        logger.info(f"hyperspace query: loading text towers {specs} on {device}")
-        self.model = self.register_disposable(PatchEnsemble(specs, device=device, towers="text"))
-        self.model.start()
-        query_config = hs.QueryConfig(
-            hot_threshold=self.config.hot_threshold,
-            pool=self.config.pool,
-            pooled_hot_threshold=self.config.pooled_hot_threshold,
-            max_hot_patches=self.config.max_hot_patches,
-            cap_near=self.config.cap_near,
-            cap_far=self.config.cap_far,
-            segment_weight=self.config.segment_weight,
-            segment_min_z=self.config.segment_min_z,
-        )
-        prompts = [p.strip() for p in self.config.background_prompts.split(",") if p.strip()]
-        if prompts:
-            query_config.background_prompts = prompts
-        self.engine = HyperspaceQuery(
-            self.store,
-            self.model.embed_text,
-            query_config,
-            world_frame=self.config.world_frame,
-            voxel_size=self.config.voxel_size,
-            refine_config=refine_config_of(
-                self.config.refine, query_config.refine, min_frames=self.config.refine_min_frames
-            ),
-        )
+        self._specs = specs
         self._lock = threading.Lock()
         self._ids = iter(range(1, 1 << 30))
         self._load_the_detector(specs)
@@ -527,7 +499,14 @@ class Hyperspace(MemoryModule):
         # The subscription TF(port, buffer_size=inf) would make, without its
         # transport timing: transforms land in the buffer the answers read,
         # which the store still tops up with whatever predates this module.
-        self.engine.tf.receive_tfmessage(msg)
+        #
+        # Only if the dense path has actually been built. Touching `self.engine` here
+        # would construct it -- a text tower and its GPU memory -- on the first
+        # transform that arrived, which is to say immediately, for a path most callers
+        # never use. One built later reads the transforms back out of the store itself.
+        built = getattr(self, "_engine", None)
+        if built is not None:
+            built.tf.receive_tfmessage(msg)
 
     async def handle_query(self, msg: String) -> None:
         payload = msg.data.strip()
@@ -551,6 +530,51 @@ class Hyperspace(MemoryModule):
     # blocks until every place is found waits ten seconds for an answer whose first line
     # was ready in two, so every start returns what it has and leaves the rest behind an
     # id. See `queries.py` for what separates the three kinds.
+
+    @property
+    def engine(self) -> HyperspaceQuery:
+        """The dense voxel path, built the first time something asks for it.
+
+        It used to be built in `start()`, which meant every module paid a so400m text
+        tower and its GPU memory at boot -- on an 8 GB card, beside OWLv2 and the patch
+        index, that is most of what there is. The three query skills do not touch it:
+        they search the per-model indexes the recording holds. Only `answer()` and the
+        `query` port, which are the older JSON-in-voxels-out path, still do.
+        """
+        built = getattr(self, "_engine", None)
+        if built is not None:
+            return built
+
+        device = pick_device(self.config.device, allow_mps=False)
+        logger.info(f"hyperspace query: loading text towers {self._specs} on {device}")
+        self.model = self.register_disposable(
+            PatchEnsemble(self._specs, device=device, towers="text")
+        )
+        self.model.start()
+        query_config = hs.QueryConfig(
+            hot_threshold=self.config.hot_threshold,
+            pool=self.config.pool,
+            pooled_hot_threshold=self.config.pooled_hot_threshold,
+            max_hot_patches=self.config.max_hot_patches,
+            cap_near=self.config.cap_near,
+            cap_far=self.config.cap_far,
+            segment_weight=self.config.segment_weight,
+            segment_min_z=self.config.segment_min_z,
+        )
+        prompts = [p.strip() for p in self.config.background_prompts.split(",") if p.strip()]
+        if prompts:
+            query_config.background_prompts = prompts
+        built = self._engine = HyperspaceQuery(
+            self.store,
+            self.model.embed_text,
+            query_config,
+            world_frame=self.config.world_frame,
+            voxel_size=self.config.voxel_size,
+            refine_config=refine_config_of(
+                self.config.refine, query_config.refine, min_frames=self.config.refine_min_frames
+            ),
+        )
+        return built
 
     @property
     def queries(self) -> QueryBook:
