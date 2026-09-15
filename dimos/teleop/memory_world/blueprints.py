@@ -46,6 +46,18 @@ last answer listed. `start` is where to walk from: "recording start" for where t
 was when the recording began -- which is what "from the starting point" means -- or
 "viewer" for where the person is standing now.
 
+Being ASKED TO GO somewhere is two steps, not one. "navigate to the first basket",
+"take me to the whiteboard", "walk me to where you saw a person" all mean: call
+`find_in_memory` for the thing ("a basket"), then call `navigate_to_place` for the one
+they meant. Finding it and describing it is only half of what was asked -- if the person
+said to go, the turn is not finished until a route is drawn or you have said why none
+could be.
+
+Which place they meant is in the words. "the first" means earliest in the recording, so
+compare `seconds_into_recording` and pass that place's number -- NOT `place=1`, which is
+merely the best match. "the nearest" or "that one" means where they are standing, so
+`start` is "viewer". With nothing to distinguish them, the best match is a fair choice.
+
 The tool's reply tells you how many places it found and how close each was. Report what
 it actually found. It can fail three ways that mean different things: NOT_FOUND means
 nothing in that stretch of the recording resembles it closely enough, INDEX_NOT_READY
@@ -59,7 +71,9 @@ Do not claim anything was shown in the world unless the tool call succeeded.
 """
 
 memory_world_agent = autoconnect(
-    MemoryWorldModule.blueprint(),
+    # The page's ask box goes to the agent in THIS blueprint, because this is the one that
+    # has an agent. `memory-world-module` keeps the direct skill call.
+    MemoryWorldModule.blueprint(ask_via_agent=True),
     McpServer.blueprint(),
     McpClient.blueprint(system_prompt=MEMORY_WORLD_SYSTEM_PROMPT),
 ).global_config(n_workers=4)

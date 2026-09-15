@@ -594,6 +594,78 @@ class WorldAnswers:
 
     # ---- routes ------------------------------------------------------------
 
+    def _ask_the_agent(self, text: str) -> dict[str, Any] | None:
+        """Put the whole sentence to the LLM agent; return its turn, or None if it has none.
+
+        The agent is the difference between a question and an ORDER. `find_in_memory` is a
+        similarity lookup and embeds whatever string it is given, so "navigate to the first
+        basket in the recording" searches for that entire sentence -- the demo Jeff saw,
+        which reported six places and walked nowhere. The agent reads it, calls
+        `find_in_memory` with just "a basket", reads `seconds_into_recording` to find which
+        one was FIRST, and then calls `navigate_to_place` because it was told to navigate.
+
+        Returning None means "no agent answered", and the caller falls back to the skill.
+        That is deliberate: this ships in a blueprint that may be run without an agent, and
+        a demo that hangs is worse than one that answers the old way.
+        """
+        # Imported here, not at module scope: `memory-world-module` runs this file with no
+        # agent anywhere, and the transport stack should not be a hard import for it.
+        from dimos.core.transport_factory import make_transport
+
+        replies: list[str] = []
+        turn_started = threading.Event()
+        turn_done = threading.Event()
+
+        def on_agent(message: Any) -> None:
+            # langchain messages on the wire; a ToolMessage is the tool's own return and a
+            # chunk with no content is the model calling a tool, so neither is an answer.
+            content = getattr(message, "content", None)
+            if isinstance(content, str) and content.strip():
+                if type(message).__name__ in ("AIMessage", "AIMessageChunk"):
+                    replies.append(content.strip())
+
+        def on_idle(flag: Any) -> None:
+            # False at the start of a turn, True at its end. A turn that never starts
+            # (nothing is listening) leaves both unset and we time out into the fallback.
+            if flag is False:
+                turn_started.set()
+            elif flag is True and turn_started.is_set():
+                turn_done.set()
+
+        transports = []
+        try:
+            reply_t = make_transport(self.config.agent_reply_topic)
+            idle_t = make_transport(self.config.agent_idle_topic)
+            human_t = make_transport(self.config.agent_input_topic)
+            transports = [reply_t, idle_t, human_t]
+            for transport in transports:
+                transport.start()
+            reply_t.subscribe(on_agent)
+            idle_t.subscribe(on_idle)
+            human_t.publish(text)
+            finished = turn_done.wait(self.config.agent_timeout_s)
+        except Exception:
+            logger.exception("could not reach the agent; answering with the skill instead")
+            return None
+        finally:
+            for transport in transports:
+                try:
+                    transport.stop()
+                except Exception:  # a transport that never started has nothing to close
+                    logger.debug("agent transport did not stop cleanly", exc_info=True)
+
+        if not finished or not replies:
+            logger.warning(
+                "no agent turn within %.0fs (started=%s, replies=%d); using the skill",
+                self.config.agent_timeout_s,
+                turn_started.is_set(),
+                len(replies),
+            )
+            return None
+        # The LAST assistant message is the answer; the earlier ones are its narration
+        # between tool calls. The world was already lit by the tool calls themselves.
+        return {"success": True, "answer": replies[-1], "metadata": {"engine": "agent"}}
+
     def _setup_answer_routes(self, app: Any) -> None:
         base = self.config.client_route
 
@@ -625,6 +697,17 @@ class WorldAnswers:
         async def memory_world_ask(request: AskRequest) -> dict[str, Any]:
             """A typed question: same path as a spoken one."""
             self._broadcast(encode_text("voice_transcript", text=request.text))
+            # The whole sentence goes to the agent, which decides what it is being asked
+            # for. Only when there is no agent to ask -- or it did not answer -- does the
+            # sentence go to the similarity lookup as a search phrase.
+            if (
+                self.config.ask_via_agent
+                and request.from_fraction == 0.0
+                and request.to_fraction == 1.0
+            ):
+                answered = await asyncio.to_thread(self._ask_the_agent, request.text)
+                if answered is not None:
+                    return answered
             outcome = await asyncio.to_thread(
                 self.find_in_memory, request.text, request.from_fraction, request.to_fraction
             )

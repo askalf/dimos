@@ -255,6 +255,14 @@ class MemoryWorldConfig(ModuleConfig):
     # clears the voxels its rays pass through), and its final keyframe is the
     # static map, so this bounds both.
     replay_max_range_m: float = PydanticField(default=30.0, gt=0.0)
+    # Ask the LLM agent rather than the `find_in_memory` skill; why, and what happens when
+    # no agent answers, is in `answers.py`'s `_ask_the_agent`. Only `memory-world-agent`
+    # has an agent to ask, so it is off here and that blueprint turns it on.
+    ask_via_agent: bool = False
+    agent_input_topic: str = "/human_input"
+    agent_reply_topic: str = "/agent"
+    agent_idle_topic: str = "/agent_idle"
+    agent_timeout_s: float = PydanticField(default=120.0, gt=0.0)
     # The camera frame shown while scrubbing, fetched one at a time.
     replay_frame_max_size: int = 480
     replay_frame_jpeg_quality: int = 60
