@@ -136,6 +136,11 @@ def _render_map(msg: Any) -> Any:
     return msg.to_rerun(voxel_size=0.01)
 
 
+def _render_points(msg: Any) -> Any:
+    """Flat dots that hold their size on screen: the maps read as scans, not cubes."""
+    return msg.to_rerun(mode="points", ui_radius=1.5)
+
+
 def _rerun_config(visual_override: dict[str, Any] | None = None) -> dict[str, Any]:
     """The bridge's own view, plus whatever the layer above it adds."""
     return {
@@ -492,7 +497,13 @@ go2_viewer = autoconnect(
     vis_module(
         viewer_backend=global_config.viewer,
         rerun_config={
-            **_rerun_config(),
+            **_rerun_config(
+                {
+                    "world/local_map": _render_points,
+                    "world/full_map": _render_points,
+                    "world/global_map": _render_points,
+                }
+            ),
             "topics": [
                 "tf",
                 "odometry",
