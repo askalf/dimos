@@ -55,15 +55,25 @@ from dimos.utils.logging_config import setup_logger
 logger = setup_logger()
 
 
-def _label_for(found: FoundObject, query: str, index: int) -> str:
-    """One place's caption: what it is, how sure, and how far off the camera was.
+def _label_for(found: FoundObject, query: str, index: int, kind: str) -> str:
+    """One place's caption, said in the units the KIND actually measured.
 
-    The distance is named because the centre cannot imply it, and a reader comparing two
-    boxes has no other way to tell a confident near thing from a confident far one.
+    `confidence` means two different things on this stream and the field does not say
+    which: on an item answer it is OWLv2's own calibrated score for a box it drew, and on
+    a heatmap or area answer it is the SCORE OF A CELL -- a different quantity on a
+    different scale, comparable only within its kind. Printing a cell score as
+    "0.42 confidence" would have the reader trust a number nothing measured, so the word
+    changes with the kind.
+
+    The distance is named when there is one, because the centre cannot imply it and a
+    reader has no other way to tell a confident near thing from a confident far one. The
+    patch path chose no photograph, so it has none.
     """
     parts = [f"{query[:80]} #{index + 1}"]
     if found.confidence:
-        parts.append(f"{found.confidence:.2f}")
+        parts.append(
+            f"{found.confidence:.2f}" if kind == "item" else f"score {found.confidence:.2f}"
+        )
     if found.depth_m:
         parts.append(f"{found.depth_m:.1f} m out")
     return "  ".join(parts)
@@ -88,9 +98,22 @@ def _one_per_place(objects: list[FoundObject]) -> list[FoundObject]:
         if key not in best:
             best[key] = obj
             order.append(key)
-        elif float(obj.confidence) > float(best[key].confidence):
+        elif _is_better_look(obj, best[key]):
             best[key] = obj
     return [best[key] for key in order]
+
+
+def _is_better_look(candidate: FoundObject, held: FoundObject) -> bool:
+    """Whether *candidate* is the look worth keeping for a place.
+
+    VIEWS first, confidence only to break a tie. `views > 1` is the signal that a box was
+    REFINED from more than one look, and a refined box is sharper than either look that
+    made it -- so ranking on confidence alone would keep the better score and throw away
+    the better geometry, which is precisely the case this function exists for.
+    """
+    if int(candidate.views) != int(held.views):
+        return int(candidate.views) > int(held.views)
+    return float(candidate.confidence) > float(held.confidence)
 
 
 class HyperspaceAnswers:
@@ -170,6 +193,9 @@ class HyperspaceAnswers:
             return
 
         objects = _one_per_place(objects)
+        # Read BEFORE `confidence` or `extent`: both mean different things per kind, and
+        # neither field says which it is.
+        kind = found.kind or "item"
         fallback_radius = float(self.config.place_radius_m)
         clusters: list[ClusterSummary] = []
         points: list[HighlightPoint] = []
@@ -192,13 +218,13 @@ class HyperspaceAnswers:
                     # the near-identical frames away and there is nothing left to count.
                     n_views=int(obj.views),
                     n_evidence=1 if obj.image is not None else 0,
-                    label=_label_for(obj, query, index),
+                    label=_label_for(obj, query, index, kind),
                 )
             )
             points.append(
                 HighlightPoint(
                     position=centre,
-                    label=_label_for(obj, query, index),
+                    label=_label_for(obj, query, index, kind),
                     radius=radius if measured else None,
                 )
             )
