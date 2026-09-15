@@ -21,7 +21,10 @@ from dimos.robot.manipulators.dual_openyam.blueprints.teleop import (
 )
 
 
-def test_visualization_configuration_preserves_teleop_composition():
+def test_visualization_configuration_preserves_teleop_composition(mocker):
+    download = mocker.patch(
+        "dimos.utils.data.get_data", side_effect=AssertionError("Config must not download models")
+    )
     base = teleop_webxr_dual_openyam
     configured = build_dual_openyam_webxr(visualization=ViserVisualizationConfig(host="0.0.0.0"))
 
@@ -51,3 +54,4 @@ def test_visualization_configuration_preserves_teleop_composition():
         ["--manipulationmodule.visualization.host", "127.0.0.1"], environ={}
     )
     assert parsed.module_kwargs(updated.name)["visualization"]["host"] == "127.0.0.1"
+    download.assert_not_called()

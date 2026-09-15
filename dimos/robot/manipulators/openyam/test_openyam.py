@@ -57,16 +57,19 @@ def _coordinator_kwargs(blueprint: Blueprint) -> dict[str, Any]:
     )
 
 
-def test_make_openyam_model_config_uses_canonical_arm_joints() -> None:
+def test_make_openyam_model_config_uses_canonical_arm_joints(mocker) -> None:
+    download = mocker.patch(
+        "dimos.utils.data.get_data", side_effect=AssertionError("Config must not download models")
+    )
     config = make_openyam_model_config()
 
-    assert OPENYAM_MODEL_PATH.parts[-2:] == ("i2rt", "yam.urdf")
     assert config.model.source_path is OPENYAM_MODEL_PATH
     assert config.joint_names == OPENYAM_ARM_JOINTS
     assert config.base_link == "base"
     assert config.planning_groups[0].tip_link == "gripper_tip"
     assert config.gripper_hardware_id == OPENYAM_HARDWARE_ID
     assert config.home_joints == OPENYAM_HOME_JOINTS
+    download.assert_not_called()
 
 
 @pytest.mark.self_hosted
@@ -74,6 +77,7 @@ def test_openyam_model_contains_canonical_arm_joints() -> None:
     config = make_openyam_model_config()
     model = prepare_robot_model(config).description
 
+    assert OPENYAM_MODEL_PATH.parts[-2:] == ("i2rt", "yam.urdf")
     assert [joint.name for joint in model.joints if joint.name in config.joint_names] == (
         OPENYAM_ARM_JOINTS
     )
