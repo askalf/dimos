@@ -41,7 +41,11 @@ import zipfile
 import typer
 
 from dimos.mapping.hyperspace.cli import open_store, pick_device, pick_stream
-from dimos.mapping.hyperspace.detect import DetectConfig
+from dimos.mapping.hyperspace.detect import (
+    DetectConfig,
+    detector_dtype_for,
+    gpu_preprocess_for,
+)
 from dimos.mapping.hyperspace.frames import member_streams, spec_of
 from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
 from dimos.utils.logging_config import setup_logger
@@ -140,6 +144,18 @@ def main(
         help="detector precision: 'auto' is fp16 on CUDA and float32 elsewhere; "
         "'' forces float32. bf16 moves scores and is not worth it",
     ),
+    rank_with: str = typer.Option(
+        DetectConfig.rank_with,
+        "--rank-with",
+        help="score one member over everything and let it choose the frames the others "
+        "confirm; 'auto' picks the cheapest member, '' searches every member in full",
+    ),
+    rank_frames: int = typer.Option(
+        DetectConfig.rank_frames,
+        "--rank-frames",
+        help="how many of the ranking member's best frames the others confirm; 0 = no cut, "
+        "which narrows nothing and so saves nothing",
+    ),
     contrast: bool = typer.Option(
         DetectConfig.contrast,
         "--contrast/--no-contrast",
@@ -179,6 +195,8 @@ def main(
                 depth2depth=depth2depth,
                 dtype=dtype,
                 gpu_preprocess=gpu_preprocess,
+                rank_with=rank_with,
+                rank_frames=rank_frames,
                 contrast=contrast,
             ),
             models=wanted,
@@ -193,7 +211,16 @@ def main(
         ),
     )
 
+    # What it actually ran on, not what was asked for: "auto" is three different machines
+    # and a page that compares two of them should not leave the reader inferring which.
+    detect = live.config.detect
     typer.echo(f"index: {recording_path}  models {wanted} of {available}")
+    typer.echo(
+        f"detector: {detect.device} dtype "
+        f"{detector_dtype_for(detect.dtype, detect.device) or 'float32'} "
+        f"gpu_preprocess {gpu_preprocess_for(detect.gpu_preprocess, detect.device)} "
+        f"rank_with {detect.rank_with or 'every member'} rank_frames {detect.rank_frames}"
+    )
     loaded = live.warm([spec_of(tag) for tag in wanted])
     typer.echo(
         f"warm: detector {loaded['detector']:.1f}s, text towers {loaded['towers']:.1f}s, "
@@ -204,7 +231,19 @@ def main(
     scene = scene_of(store, live.frames, world_frame)
 
     written = []
-    summary: dict[str, Any] = {"recording": str(recording_path), "queries": {}}
+    summary: dict[str, Any] = {
+        "recording": str(recording_path),
+        "ran_on": {
+            "device": detect.device,
+            "dtype": detector_dtype_for(detect.dtype, detect.device) or "float32",
+            "gpu_preprocess": gpu_preprocess_for(detect.gpu_preprocess, detect.device),
+            "rank_with": detect.rank_with,
+            "rank_frames": detect.rank_frames,
+            "models": list(wanted),
+            "warm": loaded,
+        },
+        "queries": {},
+    }
     for text in query:
         typer.echo(f"\n{text!r}")
         started = time.monotonic()
