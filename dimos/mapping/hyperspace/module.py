@@ -638,40 +638,81 @@ class Hyperspace(MemoryModule):
     def _fill_from_patches(self, query: Query, kind: str) -> None:
         """No detector: the hot patches themselves, put into the world.
 
-        Nothing here can refuse, which is the point. It answers where a box cannot --
-        a query the detector has no word for, and anything that is not an object.
+        Nothing here can refuse, which is the point. It answers where a box cannot -- a
+        query the detector has no word for, and anything that is not an object.
+
+        The search is the SAME one the item path uses: `hot_frames` over the per-model
+        indexes this recording actually holds. The dense engine was used here first and
+        it answered "nothing scored for kitchen" on a recording where the kitchen is
+        plainly found, because it searches whichever checkpoint the module's own config
+        names -- so400m-384 against a store indexed with four other checkpoints. Two
+        searches over two layouts is one search too many.
         """
+        import numpy as np
+
+        from dimos.mapping.hyperspace.frames import hot_frames
+
         prompts = AREA_PROMPTS if kind == "area" else None
-        heat = self.engine.heatmap(query.text, background_prompts=prompts)
-        query.timings = {"search": heat.stats.get("search_s", 0.0)}
-        clusters = heat.clusters or []
-        if clusters:
-            query.places = [
-                Place(
-                    where=tuple(float(value) for value in cluster.centre),
-                    frame=heat.frame,
-                    kind=kind,
-                    score=float(cluster.score),
-                    views=int(getattr(cluster, "views", 0) or 1),
-                )
-                for cluster in clusters
-            ]
-        else:
-            # No clustering to speak of, so the strongest voxels are the answer. Better
-            # than nothing and honestly labelled: a voxel is a place, not a thing.
-            centres = heat.centres()
-            scores = heat.scores()
-            query.places = [
-                Place(
-                    where=(float(centre[0]), float(centre[1]), float(centre[2])),
-                    frame=heat.frame,
-                    kind=kind,
-                    score=float(score),
-                )
-                for centre, score in zip(centres[:20], scores[:20], strict=False)
-            ]
-        if not query.places:
+        started = time.monotonic()
+        frames = hot_frames(
+            self.store,
+            query.text,
+            towers=self.live.towers,
+            models=[tag for tag, _ in self.live.members()],
+            resident=self.live.held,
+            contrast=self.config.contrast,
+            background_prompts=prompts,
+        )
+        query.timings = {"search": time.monotonic() - started}
+        if not frames:
             query.note = f"no patch anywhere in the map scored for {query.text!r}"
+            return
+
+        # Every hot patch, placed where its own frame was looking. A patch carries the
+        # ray it sat on and how far the depth said that was, which is the same arithmetic
+        # the box placer does -- see `object_points`.
+        size = self.config.voxel_size
+        weight: dict[tuple[int, int, int], float] = {}
+        seen: dict[tuple[int, int, int], set[tuple[str, float]]] = {}
+        when: dict[tuple[int, int, int], float] = {}
+        for frame in frames:
+            pose = self.live.frames.pose(frame.frame, frame.ts, self.config.world_frame)
+            if pose is None:
+                continue
+            pose = np.asarray(pose, dtype=float)
+            for hit in frame.hits:
+                if hit.depth <= 0:
+                    continue
+                here = pose @ np.array(
+                    [hit.ray[0] * hit.depth, hit.ray[1] * hit.depth, hit.depth, 1.0]
+                )
+                cell = (
+                    int(np.floor(here[0] / size)),
+                    int(np.floor(here[1] / size)),
+                    int(np.floor(here[2] / size)),
+                )
+                weight[cell] = weight.get(cell, 0.0) + float(hit.score)
+                seen.setdefault(cell, set()).add((frame.frame, frame.ts))
+                when[cell] = min(when.get(cell, frame.ts), frame.ts)
+        if not weight:
+            query.note = (
+                f"{len(frames)} frame(s) scored for {query.text!r} and none of them could "
+                "be placed -- no pose, or no depth behind the patches"
+            )
+            return
+
+        ranked = sorted(weight.items(), key=lambda item: -item[1])
+        query.places = [
+            Place(
+                where=((cell[0] + 0.5) * size, (cell[1] + 0.5) * size, (cell[2] + 0.5) * size),
+                frame=self.config.world_frame,
+                kind=kind,
+                score=score,
+                views=len(seen[cell]),
+                seen_at=when[cell],
+            )
+            for cell, score in ranked[:50]
+        ]
 
     def _where_the_robot_is(self, at_time: float = 0.0) -> tuple[float, float, float] | None:
         """The robot's own position, now or at a moment, or None when nothing knows.
