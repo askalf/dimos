@@ -438,4 +438,19 @@ go2_zenoh_motion_pointlio = autoconnect(
     ),
     mid360_for_pointlio(),
     PointLioRust.blueprint(),
+    # The clouds are the driver's raw frames, LIO's deskewed ones and the planner's
+    # region box -- all of them either already drawn as the raytraced map or not worth
+    # drawing. Muted here rather than upstream because only this stack has lidar_raw.
+    # The bridge still receives and decodes them; this only stops the rerun conversion.
+    vis_module(
+        viewer_backend=global_config.viewer,
+        rerun_config=_rerun_config(
+            {
+                "world/pointlio_map": None,
+                "world/lidar": None,
+                "world/lidar_raw": None,
+                "world/region_bounds": None,
+            }
+        ),
+    ),
 ).global_config(transport="zenoh", n_workers=11, robot_model="unitree_go2")
