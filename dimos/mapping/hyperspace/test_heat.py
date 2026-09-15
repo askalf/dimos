@@ -195,3 +195,75 @@ def test_places_group_across_frames_and_rank_by_heat() -> None:
     assert found[0].heat == 2.0, "hottest place first"
     assert found[0].best.ts == 11.0, "and the hottest frame of it is the one to detect in"
     assert found[0].frames == 2
+
+
+def _box(centre, extent, heat_value, *, frame="cam", ts=0.0):
+    from dimos.mapping.hyperspace.heat import HeatBox
+
+    return HeatBox(
+        camera_frame=frame,
+        ts=ts,
+        centre=tuple(float(value) for value in centre),
+        extent=tuple(float(value) for value in extent),
+        heat=heat_value,
+        cells=1,
+        members=("a", "b"),
+        near_m=1.0,
+        far_m=2.0,
+    )
+
+
+def test_overlap_answers_exactly_what_the_numpy_version_did() -> None:
+    """The fast path has to be the same predicate, not a nearly-the-same one.
+
+    It was six little numpy arrays per call and 0.24 s of a 0.44 s grouping pass on
+    bike; plain floats with an early exit per axis is 37x faster over the same boxes.
+    Faster and slightly different would be a silent change to which frames a detector
+    is shown, so this checks the answer rather than the clock.
+    """
+    import numpy as np
+
+    from dimos.mapping.hyperspace.heat import overlap
+
+    def as_numpy_did(one, other, pad, fraction=0.0):
+        size = max(max(one.extent), max(other.extent))
+        room = pad + fraction * size
+        here = np.array(one.centre) - np.array(one.extent) / 2 - room
+        here_to = np.array(one.centre) + np.array(one.extent) / 2 + room
+        there = np.array(other.centre) - np.array(other.extent) / 2
+        there_to = np.array(other.centre) + np.array(other.extent) / 2
+        return bool(np.all(here <= there_to) and np.all(there <= here_to))
+
+    rng = np.random.default_rng(4)
+    boxes = [
+        _box(rng.normal(size=3) * 2, np.abs(rng.normal(size=3)) * 0.5 + 0.05, float(rng.random()))
+        for _ in range(60)
+    ]
+    for pad, fraction in [(0.0, 0.0), (0.25, 0.0), (0.0, 0.5), (0.25, 0.5)]:
+        for one in boxes:
+            for other in boxes:
+                assert overlap(one, other, pad, fraction) == as_numpy_did(
+                    one, other, pad, fraction
+                ), (one, other, pad, fraction)
+
+
+def test_a_place_is_anchored_on_its_hottest_box_without_recomputing_it() -> None:
+    """`places` compares against `place.boxes[0]`, and that has to BE the hottest.
+
+    The boxes arrive in descending heat, so the first one a place is opened with is its
+    hottest and stays so -- which is why the anchor can be read instead of `max`-ed over
+    every box on every comparison. If that ordering ever changes this is the test that
+    notices, because the grouping would quietly start anchoring on the wrong box.
+    """
+    from dimos.mapping.hyperspace.heat import HeatConfig, places
+
+    config = HeatConfig()
+    near = [_box((0.0, 0.0, 0.0), (0.2, 0.2, 0.2), heat) for heat in (0.1, 0.9, 0.5)]
+    far = [_box((50.0, 0.0, 0.0), (0.2, 0.2, 0.2), 0.7)]
+
+    found = places([*near, *far], config=config)
+    assert len(found) == 2
+    for place in found:
+        assert place.boxes[0] is place.best, "the anchor has to be the hottest box"
+        assert place.boxes[0].heat == max(box.heat for box in place.boxes)
+    assert [place.heat for place in found] == [0.9, 0.7], "places come back hottest first"

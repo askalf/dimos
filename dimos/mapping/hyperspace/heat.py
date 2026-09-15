@@ -310,13 +310,22 @@ def overlap(one: HeatBox, other: HeatBox, pad: float, fraction: float = 0.0) -> 
     thing and not its outline. A fixed pad big enough to join two cores of a cone would
     be a radius again; one that grows with the box is not.
     """
-    size = max(max(one.extent), max(other.extent))
+    # Plain floats, not numpy. These are three numbers a side and the call is made tens
+    # of thousands of times per query -- building six little arrays for each was 0.24 s
+    # of a 0.44 s grouping pass, measured on bike's 800 boxes and 180 places. An axis
+    # that misses also gets to stop early, which an `np.all` over the whole vector
+    # cannot do.
+    one_centre, one_extent = one.centre, one.extent
+    other_centre, other_extent = other.centre, other.extent
+    size = max(max(one_extent), max(other_extent))
     room = pad + fraction * size
-    here = np.array(one.centre) - np.array(one.extent) / 2 - room
-    here_to = np.array(one.centre) + np.array(one.extent) / 2 + room
-    there = np.array(other.centre) - np.array(other.extent) / 2
-    there_to = np.array(other.centre) + np.array(other.extent) / 2
-    return bool(np.all(here <= there_to) and np.all(there <= here_to))
+    for axis in range(3):
+        half, other_half = one_extent[axis] / 2, other_extent[axis] / 2
+        if one_centre[axis] - half - room > other_centre[axis] + other_half:
+            return False
+        if other_centre[axis] - other_half > one_centre[axis] + half + room:
+            return False
+    return True
 
 
 def places(boxes: Sequence[HeatBox], *, config: HeatConfig | None = None) -> list[HeatPlace]:
@@ -329,7 +338,11 @@ def places(boxes: Sequence[HeatBox], *, config: HeatConfig | None = None) -> lis
     found: list[HeatPlace] = []
     for box in sorted(boxes, key=lambda box: -box.heat):
         for place in found:
-            if overlap(place.best, box, config.pad_m, config.pad_fraction):
+            # `place.boxes[0]` IS `place.best` here, and cheaply: the boxes arrive in
+            # descending heat, so the first one a place was opened with is its hottest
+            # and stays so. The property recomputed a `max` over every box of the place
+            # on every comparison, which on bike was 135,705 of them.
+            if overlap(place.boxes[0], box, config.pad_m, config.pad_fraction):
                 place.boxes.append(box)
                 break
         else:
