@@ -46,6 +46,8 @@ from dimos.core.global_config import global_config
 from dimos.hardware.sensors.lidar.pointlio.module import PointLioRust
 from dimos.hardware.sensors.lidar.pointlio.pointlio_blueprints import mid360_for_pointlio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap, RayTracingVoxelMapConfig
+from dimos.mapping.relocalization.lidar.module import LocalMapRelocalization
+from dimos.mapping.relocalization.lidar.relocalize import GO2_NAV
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
 from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
@@ -443,6 +445,26 @@ go2_zenoh_motion_pointlio = autoconnect(
         ),
     ),
 ).global_config(transport="zenoh", n_workers=11, robot_model="unitree_go2")
+
+
+# `go2-zenoh-motion-pointlio` on a premap. `LocalMapRelocalization` aligns the
+# raytracer's local_map to the premap named by --map-file (a stem or path, `.pc2.lcm`
+# appended; resolved cwd -> project root -> data/), then publishes `odom -> map` on tf
+# and the premap itself on `loaded_map`, which the raytracer merges into the maps
+# the planners read. Until a fix is accepted the stack is exactly the one above.
+#
+#     dimos ... run go2-zenoh-motion-pointlio-reloc --map-file=mid360_athens_stairs
+#
+# Wait for `relocalize:` info lines before sending goals; `skipped` and `rejected`
+# are normal for the first 30-60 s.
+go2_zenoh_motion_pointlio_reloc = autoconnect(
+    go2_zenoh_motion_pointlio,
+    LocalMapRelocalization.blueprint(
+        world_frame="odom",
+        republish_loaded_map=30.0,
+        relocalize=GO2_NAV,
+    ),
+).global_config(n_workers=12)
 
 
 # The viewer half, on its own: run it on the machine with the screen while the stack

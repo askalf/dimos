@@ -73,6 +73,7 @@ all_blueprints = {
     "go2-zenoh-motion": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_motion",
     "go2-zenoh-motion-local": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_motion_local",
     "go2-zenoh-motion-pointlio": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_motion_pointlio",
+    "go2-zenoh-motion-pointlio-reloc": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_motion_pointlio_reloc",
     "go2-zenoh-nav": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_nav",
     "go2-zenoh-nav-baked": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_nav_baked",
     "go2-zenoh-nav-remote": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_nav_remote",
