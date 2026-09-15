@@ -1263,3 +1263,43 @@ def test_the_text_towers_stay_off_the_card_the_detector_needs(store: SqliteStore
     # And an explicit choice still wins, for a card with room to spare.
     shared = LiveQuery(store, LiveConfig(detect=DetectConfig(device="cuda"), tower_device="cuda"))
     assert shared.towers.device == "cuda"
+
+
+def test_one_device_chooser_for_the_cli_and_the_modules() -> None:
+    """The CLI was fast on a Mac and the module was not, because there were TWO of these.
+
+    `cli.pick_device` allowed MPS and `module.pick_device` refused it, so the same question
+    got different answers depending on which door the caller came in. A shared function is
+    the whole fix; this test is what keeps the second copy from growing back.
+    """
+    from dimos.mapping.hyperspace import module
+
+    assert cli.pick_device is module.pick_device
+
+
+def test_a_named_device_is_never_second_guessed() -> None:
+    from dimos.mapping.hyperspace.module import pick_device
+
+    for named in ["cpu", "cuda", "mps", "cuda:1"]:
+        assert pick_device(named) == named
+
+
+def test_the_metal_escape_hatch_turns_mps_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`HYPERSPACE_NO_MPS=1` is the way out for a stack whose parent process touches Metal.
+
+    There is no probe for that case -- see `pick_device` -- so the hatch has to work, and
+    it has to leave a machine with a real GPU alone.
+    """
+    import torch
+
+    from dimos.mapping.hyperspace.module import pick_device
+
+    if not torch.backends.mps.is_available() or torch.cuda.is_available():
+        pytest.skip("only says anything on an Apple machine with no CUDA")
+    monkeypatch.delenv("HYPERSPACE_NO_MPS", raising=False)
+    assert pick_device("auto") == "mps"
+    for off in ["1", "true", "yes"]:
+        monkeypatch.setenv("HYPERSPACE_NO_MPS", off)
+        assert pick_device("auto") == "cpu"
+    monkeypatch.setenv("HYPERSPACE_NO_MPS", "0")
+    assert pick_device("auto") == "mps"

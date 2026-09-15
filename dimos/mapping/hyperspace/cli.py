@@ -52,7 +52,7 @@ from dimos.mapping.hyperspace.ingest import (
     thumbnail_stream_for,
     transform_to_matrix,
 )
-from dimos.mapping.hyperspace.module import depth2depth_model_of
+from dimos.mapping.hyperspace.module import depth2depth_model_of, pick_device
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import METHODS, refine_config_of
 from dimos.memory.tf import StreamTF
@@ -233,18 +233,6 @@ def pick_stream(store: Store, wanted: str | None, *keywords: str) -> str:
         )
     # Prefer the shortest match: "color_image" over "color_image_camera_info".
     return min(matches, key=len)
-
-
-def pick_device(device: str) -> str:
-    if device != "auto":
-        return device
-    import torch
-
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
 
 
 def ingest(

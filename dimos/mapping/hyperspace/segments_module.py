@@ -91,8 +91,7 @@ class HyperspaceSegments(MemoryModule):
 
     @rpc
     def start(self) -> None:
-        # Never "mps" from "auto": Metal asserts inside forkserver workers on macOS.
-        device = pick_device(self.config.device, allow_mps=False)
+        device = pick_device(self.config.device)
         logger.info(f"hyperspace segments: loading {self.config.segmenter_name} on {device}")
         segmenter = seg.SegFormerSegmenter(
             seg.SegmenterConfig(
