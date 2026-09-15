@@ -1345,3 +1345,63 @@ def test_ranking_with_one_model_only_looks_where_that_model_looked() -> None:
     assert _rows_on(held, {("left", 1.0), ("right", 2.0)}).tolist() == [0, 5]
     assert _rows_on(held, {("left", 9.0)}).tolist() == [], "a frame it never saw"
     assert _rows_on(held, {("nope", 1.0)}).tolist() == [], "a camera it does not have"
+
+
+def test_narrowed_rows_become_contiguous_spans_not_a_gather() -> None:
+    """The saving is only real if the scorer SLICES, so the runs have to be right.
+
+    MEASURED, same query and index on two machines: fancy-indexing the wanted rows made
+    CudaLaptop's search go 4.11 s -> 17.20 s, four times slower than reading the whole
+    19.2 GB, while the Mac went 0.81 s -> 0.83 s and hid the problem completely. A gather
+    reads one row at a time wherever they are; a slice streams. An off-by-one here is the
+    difference between scoring the right patches and scoring their neighbours, so the
+    boundaries are pinned rather than the count.
+    """
+    import numpy as np
+
+    from dimos.mapping.hyperspace.resident import _spans
+
+    assert _spans(None, 7) == [(0, 7)], "no narrowing means one span over everything"
+    assert _spans(np.array([], np.intp), 7) == []
+    assert _spans(np.array([3], np.intp), 7) == [(3, 4)], "half-open, so one row is (n, n+1)"
+    assert _spans(np.array([0, 1, 2, 3], np.intp), 7) == [(0, 4)], "one run, not four"
+    assert _spans(np.array([0, 1, 4, 5, 6], np.intp), 7) == [(0, 2), (4, 7)]
+    assert _spans(np.array([1, 3, 5], np.intp), 7) == [(1, 2), (3, 4), (5, 6)], (
+        "alternating rows are the worst case and still have to be exact"
+    )
+
+
+def test_a_narrowed_score_equals_the_same_rows_scored_whole() -> None:
+    """Slicing is an optimisation, so it has to answer what the slow way answers.
+
+    The rows chosen are deliberately in two runs with a gap, because a single run would
+    pass under an implementation that ignored `rows` altogether.
+    """
+    import numpy as np
+
+    from dimos.mapping.hyperspace.resident import ResidentPatches
+
+    rng = np.random.default_rng(7)
+    vectors = rng.standard_normal((9, 4)).astype(np.float32)
+    held = ResidentPatches(
+        tag="t",
+        stream="s",
+        vectors=vectors,
+        last_id=9,
+        frame_of=np.zeros(9, np.int32),
+        ts=np.arange(9, dtype=np.float64),
+        cell=np.arange(9, dtype=np.int32),
+        grid=np.ones((9, 2), np.int16),
+        ray=np.zeros((9, 2), np.float32),
+        depth=np.ones(9, np.float32),
+        camera_frames=["cam"],
+    )
+    query = rng.standard_normal(4).astype(np.float32)
+    background = rng.standard_normal((2, 4)).astype(np.float32)
+    wanted = np.array([1, 2, 3, 6, 7], np.intp)
+
+    whole = held.scores(query, background)
+    narrowed = held.scores(query, background, wanted)
+
+    assert narrowed.shape == (len(wanted),), "one score per row asked for"
+    assert np.allclose(narrowed, whole[wanted]), "narrowing must not change the arithmetic"

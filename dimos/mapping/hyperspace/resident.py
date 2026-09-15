@@ -183,17 +183,26 @@ class ResidentPatches:
         texts = np.vstack([np.asarray(query, dtype=np.float32)[None, :], background])
         count = self.rows if rows is None else len(rows)
         out = np.empty(count, dtype=np.float32)
-        for start in range(0, count, SCORE_CHUNK):
-            stop = min(start + SCORE_CHUNK, count)
-            # A slice is a view and costs nothing; `rows` gathers, and gathering is the
-            # point -- it touches only the vectors it is about to score.
-            taken = self.vectors[start:stop] if rows is None else self.vectors[rows[start:stop]]
-            block = np.asarray(taken, dtype=np.float32)
-            against = block @ texts.T
-            out[start:stop] = (
-                against[:, 0] - against[:, 1:].max(axis=1) if len(background) else against[:, 0]
-            )
-        return out
+        at = 0
+        for first, last in _spans(rows, self.rows):
+            # SLICES, not a fancy index, and the difference is not small. A gather reads
+            # one row at a time wherever they happen to be; a slice streams. MEASURED on
+            # the same query, same index, two machines: gathering made CudaLaptop's search
+            # go 4.11 s -> 17.20 s, four times SLOWER than reading everything, while the
+            # Mac barely noticed (0.81 s -> 0.83 s) because its memory hides random
+            # access. The rows wanted here are whole frames' worth of patches, written
+            # consecutively at ingest, so they come in long runs and slicing gets the
+            # sequential read back.
+            for start in range(first, last, SCORE_CHUNK):
+                stop = min(start + SCORE_CHUNK, last)
+                block = np.asarray(self.vectors[start:stop], dtype=np.float32)
+                against = block @ texts.T
+                taken = (
+                    against[:, 0] - against[:, 1:].max(axis=1) if len(background) else against[:, 0]
+                )
+                out[at : at + len(taken)] = taken
+                at += len(taken)
+        return out[:at] if rows is not None else out
 
     def hot(
         self,
@@ -218,6 +227,23 @@ class ResidentPatches:
             order = order[:limit]
         picked = picked[order]
         return (picked if rows is None else rows[picked]), found[picked]
+
+
+def _spans(rows: NDArray[np.intp] | None, total: int) -> list[tuple[int, int]]:
+    """*rows* as half-open contiguous ranges, or the whole index when it is None.
+
+    The row numbers arrive sorted and mostly consecutive -- they are every patch of a
+    handful of frames, and a frame's patches were written together. Turning them back
+    into runs is what lets the scorer slice instead of gather.
+    """
+    if rows is None:
+        return [(0, total)]
+    if not len(rows):
+        return []
+    breaks = np.flatnonzero(np.diff(rows) != 1)
+    starts = np.concatenate(([0], breaks + 1))
+    ends = np.concatenate((breaks + 1, [len(rows)]))
+    return [(int(rows[a]), int(rows[b - 1]) + 1) for a, b in zip(starts, ends, strict=True)]
 
 
 def _warn_if_it_will_not_fit(tag: str, rows: int, width: int) -> None:
