@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from importlib.metadata import PackageNotFoundError
-import json
 from pathlib import Path
 import subprocess
 
@@ -26,9 +24,11 @@ from dimos.experimental.isolated_python.module import (
     IsolatedPythonModuleConfig,
     isolated_python_run_command,
 )
+from dimos.utils import data
 
 
 class Contract(IsolatedPythonModule):
+    project_dir = "native/python/test"
     implementation = "runtime:Runtime"
     config: IsolatedPythonModuleConfig
 
@@ -37,213 +37,119 @@ class Contract(IsolatedPythonModule):
         raise NotImplementedError
 
 
-def test_sibling_project_is_required(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "contract.py"
-    source.touch()
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    runtime = tmp_path / Contract.project_dir
+    runtime.mkdir(parents=True)
+    (runtime / "pyproject.toml").touch()
+    (runtime / "uv.lock").touch()
     monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile", lambda _: str(source)
+        "dimos.experimental.isolated_python.module.get_project_root", lambda: tmp_path
+    )
+    return runtime
+
+
+def test_checkout_resolution_is_lazy(mocker):
+    root = mocker.patch("dimos.experimental.isolated_python.module.get_project_root")
+    module = Contract()
+    try:
+        Contract.blueprint()
+        root.assert_not_called()
+    finally:
+        module.stop()
+
+
+@pytest.mark.parametrize("manifest", [False, True])
+def test_missing_runtime_reports_expected_path(tmp_path, monkeypatch, manifest):
+    project = tmp_path / Contract.project_dir
+    if manifest:
+        project.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dimos.experimental.isolated_python.module.get_project_root", lambda: tmp_path
     )
     module = Contract()
     try:
-        with pytest.raises(FileNotFoundError, match="sibling 'python/'"):
+        with pytest.raises(FileNotFoundError, match=str(project)):
             module.runtime_project  # noqa: B018
     finally:
         module.stop()
 
 
-def test_uv_lock_enables_frozen_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "contract.py"
-    source.touch()
-    project = tmp_path / "python"
-    project.mkdir()
+@pytest.mark.parametrize("installed", [False, True])
+def test_runtime_uses_shared_checkout(tmp_path, monkeypatch, installed):
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    project = checkout / Contract.project_dir
+    project.mkdir(parents=True)
     (project / "pyproject.toml").touch()
-    (project / "uv.lock").touch()
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    (checkout / "pyproject.toml").write_text('[project]\nname = "dimos"\n')
     monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile", lambda _: str(source)
+        data, "DIMOS_PROJECT_ROOT", tmp_path / "site-packages" if installed else checkout
     )
-    monkeypatch.setattr("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", checkout)
+    monkeypatch.setattr(data, "_get_user_data_dir", lambda: tmp_path)
+    data.get_project_root.cache_clear()
     module = Contract()
     try:
-        command = module._launch_command(7)
+        assert module.runtime_project == project
+        assert isolated_python_run_command(project, "python") == [
+            "uv",
+            "run",
+            "--with-editable",
+            str(checkout),
+            "python",
+        ]
+    finally:
+        module.stop()
+        data.get_project_root.cache_clear()
 
+
+def test_uv_lock_enables_frozen_commands(project):
+    module = Contract()
+    try:
         assert module._prepare_command() == ["uv", "sync", "--frozen"]
-        assert command[:5] == [
+        assert module._launch_command(7)[:5] == [
             "uv",
             "run",
             "--frozen",
             "--with-editable",
-            str(checkout),
+            str(project.parents[2]),
         ]
-        assert "--python" not in command
     finally:
         module.stop()
 
 
-@pytest.mark.parametrize(
-    ("origin", "requirement"),
-    [
-        (None, "dimos==0.0.14"),
-        (
-            {
-                "url": "https://github.com/dimensionalOS/dimos.git",
-                "vcs_info": {"vcs": "git", "requested_revision": "main", "commit_id": "a" * 40},
-            },
-            "dimos @ git+https://github.com/dimensionalOS/dimos.git@" + "a" * 40,
-        ),
-        (
-            {
-                "url": "ssh://git@example.com/repo.git",
-                "vcs_info": {"vcs": "git", "commit_id": "b" * 40},
-                "subdirectory": "packages/dimos",
-            },
-            "dimos @ git+ssh://git@example.com/repo.git@"
-            + "b" * 40
-            + "#subdirectory=packages%2Fdimos",
-        ),
-    ],
-)
-def test_installed_host_follows_source(tmp_path, monkeypatch, mocker, origin, requirement):
-    monkeypatch.setattr("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", tmp_path)
-    metadata = mocker.patch("dimos.experimental.isolated_python.module.distribution")
-    metadata.return_value.version = "0.0.14"
-    metadata.return_value.read_text.return_value = None if origin is None else json.dumps(origin)
-
-    command = isolated_python_run_command(tmp_path, "python", "-c", "pass")
-
-    assert command == ["uv", "run", "--with", requirement, "python", "-c", "pass"]
-    metadata.assert_called_once_with("dimos")
-    metadata.return_value.read_text.assert_called_once_with("direct_url.json")
-
-
-@pytest.mark.parametrize("version", ["0.0.14", "0.0.15rc1", "0.0.15.dev2", "0.0.14+custom.1"])
-def test_index_install_preserves_full_host_version(tmp_path, monkeypatch, mocker, version):
-    monkeypatch.setattr("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", tmp_path)
-    metadata = mocker.patch("dimos.experimental.isolated_python.module.distribution")
-    metadata.return_value.read_text.return_value = None
-    metadata.return_value.version = version
-
-    assert isolated_python_run_command(tmp_path, "python") == [
-        "uv",
-        "run",
-        "--with",
-        f"dimos=={version}",
-        "python",
-    ]
-
-
-@pytest.mark.parametrize("name", ["dimos", "another-project"])
-def test_only_dimos_manifest_selects_editable_source(tmp_path, monkeypatch, mocker, name):
-    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
-    monkeypatch.setattr("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", tmp_path)
-    metadata = mocker.patch("dimos.experimental.isolated_python.module.distribution")
-    metadata.return_value.read_text.return_value = None
-    metadata.return_value.version = "0.0.14"
-    expected = {
-        "dimos": ["--with-editable", str(tmp_path)],
-        "another-project": ["--with", "dimos==0.0.14"],
-    }
-
-    assert isolated_python_run_command(tmp_path, "python") == [
-        "uv",
-        "run",
-        *expected[name],
-        "python",
-    ]
-
-
-def test_missing_installation_metadata_has_actionable_error(tmp_path, monkeypatch, mocker):
-    monkeypatch.setattr("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", tmp_path)
-    mocker.patch(
-        "dimos.experimental.isolated_python.module.distribution",
-        side_effect=PackageNotFoundError("dimos"),
-    )
-
-    with pytest.raises(RuntimeError, match="no dimos installation metadata"):
-        isolated_python_run_command(tmp_path, "python")
-
-
-@pytest.mark.parametrize(
-    "recorded",
-    [
-        "not json",
-        "null",
-        "[]",
-        "{}",
-        '{"url": "relative/path", "vcs_info": {"vcs": "git", "commit_id": "abc"}}',
-        '{"url": "file:///tmp/dimos", "dir_info": {}, "archive_info": {}}',
-        '{"url": "https://example.com/repo", "vcs_info": {"vcs": "hg", "commit_id": "abc"}}',
-        '{"url": "https://example.com/repo", "vcs_info": {"vcs": "git"}}',
-        '{"url": "https://example.com/dimos", "dir_info": {}}',
-        '{"url": "file:///tmp/dimos.whl", "archive_info": {}}',
-        '{"url": "https://example.com/dimos.tar.gz", "archive_info": {}}',
-        '{"url": "file:///tmp/dimos", "dir_info": {}}',
-        '{"url": "https://example.com/repo", "vcs_info": {"vcs": "git", "commit_id": ""}}',
-        '{"url": "https://example.com/repo", "vcs_info": {"vcs": "git", "commit_id": "abc"}, "subdirectory": 42}',
-    ],
-)
-def test_invalid_installation_source_fails_without_index_fallback(
-    tmp_path, monkeypatch, mocker, recorded
-):
-    monkeypatch.setattr("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", tmp_path)
-    metadata = mocker.patch("dimos.experimental.isolated_python.module.distribution")
-    metadata.return_value.read_text.return_value = recorded
-
-    with pytest.raises(RuntimeError, match="invalid or unsupported direct_url.json"):
-        isolated_python_run_command(tmp_path, "python", "-c", "pass")
-
-
-def test_pixi_supplies_uv_when_manifest_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "contract.py"
-    source.touch()
-    project = tmp_path / "python"
-    project.mkdir()
-    (project / "pyproject.toml").touch()
+def test_pixi_supplies_uv_when_manifest_exists(project):
     (project / "pixi.toml").touch()
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile", lambda _: str(source)
-    )
     module = Contract()
     try:
-        assert module._prepare_command() == ["pixi", "run", "--executable", "uv", "sync"]
+        assert module._prepare_command() == [
+            "pixi",
+            "run",
+            "--executable",
+            "uv",
+            "sync",
+            "--frozen",
+        ]
+        assert module._launch_command(7)[:4] == ["pixi", "run", "--executable", "uv"]
     finally:
         module.stop()
 
 
-def test_runtime_environment_uses_project_specific_cache(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_runtime_environment_uses_project_specific_cache(project, tmp_path, monkeypatch):
     monkeypatch.setenv("VIRTUAL_ENV", "/parent/.venv")
     monkeypatch.setenv("UV_PYTHON", "3.10")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/parent/.venv")
     monkeypatch.setattr("dimos.experimental.isolated_python.module.CACHE_DIR", tmp_path / "cache")
-    project = tmp_path / "python"
-    project.mkdir()
-    (project / "pyproject.toml").touch()
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile",
-        lambda _: str(tmp_path / "contract.py"),
-    )
     module = Contract(extra_env={"EXAMPLE_SETTING": "configured"})
     try:
         env = module._runtime_env()
-
         assert "VIRTUAL_ENV" not in env
         assert "UV_PYTHON" not in env
         assert Path(env["UV_PROJECT_ENVIRONMENT"]).is_relative_to(tmp_path / "cache")
         assert module._runtime_env()["UV_PROJECT_ENVIRONMENT"] == env["UV_PROJECT_ENVIRONMENT"]
-        other = tmp_path / "other"
-        (other / "python").mkdir(parents=True)
-        (other / "python/pyproject.toml").touch()
-        monkeypatch.setattr(
-            "dimos.experimental.isolated_python.module.inspect.getfile",
-            lambda _: str(other / "contract.py"),
-        )
+        other = tmp_path / "native/python/other"
+        other.mkdir()
+        (other / "pyproject.toml").touch()
+        monkeypatch.setattr(Contract, "project_dir", "native/python/other")
         assert module._runtime_env()["UV_PROJECT_ENVIRONMENT"] != env["UV_PROJECT_ENVIRONMENT"]
         assert env["EXAMPLE_SETTING"] == "configured"
     finally:
@@ -284,19 +190,6 @@ def test_runtime_build_skips_environment_preparation(mocker: MockerFixture) -> N
         module.stop()
 
 
-@pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    runtime = tmp_path / "python"
-    runtime.mkdir()
-    (runtime / "pyproject.toml").touch()
-    (runtime / "uv.lock").touch()
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile",
-        lambda _: str(tmp_path / "contract.py"),
-    )
-    return runtime
-
-
 def test_preparation_warms_the_launch_environment(project: Path, mocker: MockerFixture) -> None:
     run = mocker.patch(
         "dimos.experimental.isolated_python.module.subprocess.run",
@@ -310,35 +203,10 @@ def test_preparation_warms_the_launch_environment(project: Path, mocker: MockerF
             module._prepare_command(),
             isolated_python_run_command(project, "python", "-c", "pass"),
         ]
+        assert module._launch_command(7)[:5] == run.call_args.args[0][:5]
         for call in run.call_args_list:
             assert call.kwargs["cwd"] == project
             assert call.kwargs["env"] == module._runtime_env()
-    finally:
-        module.stop()
-
-
-def test_launch_reuses_prepared_host_version_until_next_build(project, monkeypatch, mocker):
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", project.parent
-    )
-    metadata = mocker.patch("dimos.experimental.isolated_python.module.distribution")
-    metadata.return_value.read_text.return_value = None
-    metadata.return_value.version = "0.0.14"
-    run = mocker.patch(
-        "dimos.experimental.isolated_python.module.subprocess.run",
-        return_value=subprocess.CompletedProcess([], 0, "", ""),
-    )
-    module = Contract()
-    try:
-        module._run_prepare()
-        metadata.return_value.version = "0.0.15"
-
-        expected = ["uv", "run", "--frozen", "--with", "dimos==0.0.14"]
-        assert run.call_args.args[0][:5] == expected
-        assert module._launch_command(7)[:5] == expected
-
-        module._run_prepare()
-        assert module._launch_command(7)[:5] == ["uv", "run", "--frozen", "--with", "dimos==0.0.15"]
     finally:
         module.stop()
 

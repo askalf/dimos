@@ -22,7 +22,8 @@ top; drive those with `dimos agent-send "..."`.
 
 GraspGenX requires Linux x86_64, a CUDA 12.8-compatible GPU, and `uv >=0.9.25`.
 The first launch prepares its isolated Python 3.12 environment and downloads the
-checkpoints. Use a source checkout or Git install; PyPI compatibility is unresolved.
+checkpoints. Runtime sources come from the development checkout or the shared
+repository clone used by installed dimOS.
 
 To show the MuJoCo window with Rerun disabled:
 

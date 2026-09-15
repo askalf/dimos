@@ -12,117 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Run a concrete Module subclass in an isolated sibling Python project."""
+"""Run a concrete Module subclass in an isolated repository Python project."""
 
 from __future__ import annotations
 
 from hashlib import sha256
-from importlib.metadata import PackageNotFoundError, distribution
-import inspect
-import json
 import os
 from pathlib import Path
 import pickle
 import select
 import subprocess
-import sys
 import threading
 import time
 from typing import Any, ClassVar
-from urllib.parse import urlencode, urlsplit
 
-from packaging.utils import canonicalize_name
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
-
-from dimos.constants import CACHE_DIR, DIMOS_PROJECT_ROOT
+from dimos.constants import CACHE_DIR
 from dimos.core.core import rpc
 from dimos.core.module import Module
 from dimos.core.native_module import NativeModule, NativeModuleConfig
 from dimos.core.rpc_client import RPCClient
+from dimos.utils.data import get_project_root
 from dimos.utils.generic import short_id
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
 
-def _installed_dimos_requirement() -> str:
-    """Reuse the host's exact installed release or Git commit."""
-    try:
-        installed = distribution("dimos")
-    except PackageNotFoundError as error:
-        raise RuntimeError(
-            "Cannot select isolated dimOS source: no dimos installation metadata; "
-            "use a source checkout or install dimOS from PyPI or Git"
-        ) from error
-    recorded = installed.read_text("direct_url.json")
-    if recorded is None:
-        return f"dimos=={installed.version}"
-    try:
-        origin = json.loads(recorded)
-        url = origin["url"]
-        vcs = origin["vcs_info"]
-        commit = vcs["commit_id"]
-        if (
-            vcs["vcs"] != "git"
-            or not isinstance(url, str)
-            or not urlsplit(url).scheme
-            or not isinstance(commit, str)
-            or not commit
-            or "archive_info" in origin
-            or "dir_info" in origin
-        ):
-            raise ValueError("expected a Git URL and resolved commit")
-        source = f"git+{url}@{commit}"
-        if "subdirectory" in origin:
-            subdirectory = origin["subdirectory"]
-            if not isinstance(subdirectory, str) or not subdirectory:
-                raise ValueError("invalid project subdirectory")
-            source += "#" + urlencode({"subdirectory": subdirectory})
-        return f"dimos @ {source}"
-    except (ValueError, KeyError, TypeError) as error:
-        raise RuntimeError(
-            "Cannot select isolated dimOS source: invalid or unsupported direct_url.json; "
-            "use a source checkout or install dimOS from PyPI or Git"
-        ) from error
-
-
-def _resolve_dimos_source() -> tuple[str, str]:
-    """Select the imported checkout, or the installed distribution's provenance."""
-    root = DIMOS_PROJECT_ROOT.resolve()
-    manifest = root / "pyproject.toml"
-    if manifest.is_file():
-        with manifest.open("rb") as stream:
-            metadata = tomllib.load(stream)
-        name = metadata.get("project", {}).get("name")
-        if isinstance(name, str) and canonicalize_name(name) == "dimos":
-            return "--with-editable", str(root)
-    return "--with", _installed_dimos_requirement()
-
-
-def _python_run_command(project: Path, dimos_source: tuple[str, str], *command: str) -> list[str]:
+def isolated_python_run_command(project: Path, *command: str) -> list[str]:
+    """Run a project with dimOS from the shared source checkout."""
     args = ["uv", "run"]
     if (project / "uv.lock").is_file():
         args.append("--frozen")
-    args.extend(dimos_source)
+    args.extend(("--with-editable", str(get_project_root())))
     args.extend(command)
     if (project / "pixi.toml").is_file():
         return ["pixi", "run", "--executable", *args]
     return args
 
 
-def isolated_python_run_command(project: Path, *command: str) -> list[str]:
-    """Run a command with the host DimOS available in an isolated project."""
-    return _python_run_command(project, _resolve_dimos_source(), *command)
-
-
 class IsolatedPythonModuleConfig(NativeModuleConfig):
     """Process settings for an isolated Python module."""
 
-    # Isolated Python modules resolve their real command from the sibling project.
+    # Isolated Python modules resolve their real command from the repository project.
     executable: str = "uv"
     startup_timeout: float = 30.0
     output_limit: int = 64 * 1024
@@ -139,26 +70,25 @@ class IsolatedPythonModule(NativeModule):
     """A host RPC contract implemented by an isolated Python subclass.
 
     Contract classes set :attr:`implementation` to an import reference in a
-    sibling ``python/`` project. Calls to RPCs introduced by the contract are
+    repository project selected by :attr:`project_dir`. Contract RPCs are
     forwarded to the concrete runtime subclass. Framework and lifecycle RPCs
     remain on the host facade.
     """
 
     config: IsolatedPythonModuleConfig
     implementation: ClassVar[str]
+    project_dir: ClassVar[str]
 
     _isolated_python_runtime: bool
     _runtime_client: RPCClient | None
     _runtime_name: str | None
     _module_refs: dict[str, RPCClient]
-    _dimos_source: tuple[str, str] | None
 
     def __init__(self, _isolated_python_runtime: bool = False, **kwargs: Any) -> None:
         self._isolated_python_runtime = _isolated_python_runtime
         self._runtime_client = None
         self._runtime_name = None
         self._module_refs = {}
-        self._dimos_source = None
         super().__init__(**kwargs)
 
     def __getattribute__(self, name: str) -> Any:
@@ -177,12 +107,11 @@ class IsolatedPythonModule(NativeModule):
 
     @property
     def runtime_project(self) -> Path:
-        source = Path(inspect.getfile(type(self))).resolve()
-        project = source.parent / "python"
+        project = get_project_root() / self.project_dir
         if not project.is_dir():
             raise FileNotFoundError(
                 f"Isolated Python runtime project is missing: {project}; "
-                "create a sibling 'python/' directory"
+                "ensure the shared dimOS checkout contains this project"
             )
         if not (project / "pyproject.toml").is_file():
             raise FileNotFoundError(
@@ -203,7 +132,8 @@ class IsolatedPythonModule(NativeModule):
         return self._uv_command(*args)
 
     def _launch_command(self, handshake_fd: int) -> list[str]:
-        return self._run_command(
+        return isolated_python_run_command(
+            self.runtime_project,
             "python",
             "-m",
             "dimos.experimental.isolated_python.bootstrap",
@@ -216,11 +146,6 @@ class IsolatedPythonModule(NativeModule):
             "--handshake-fd",
             str(handshake_fd),
         )
-
-    def _run_command(self, *command: str) -> list[str]:
-        if self._dimos_source is None:
-            self._dimos_source = _resolve_dimos_source()
-        return _python_run_command(self.runtime_project, self._dimos_source, *command)
 
     def _new_runtime_name(self) -> str:
         public_name = self.config.instance_name or type(self).__name__
@@ -240,11 +165,10 @@ class IsolatedPythonModule(NativeModule):
         return env
 
     def _run_prepare(self) -> None:
-        self._dimos_source = _resolve_dimos_source()
         # Resolve the DimOS overlay too, before the runtime's readiness deadline.
         commands = [
             self._prepare_command(),
-            self._run_command("python", "-c", "pass"),
+            isolated_python_run_command(self.runtime_project, "python", "-c", "pass"),
         ]
         for command in commands:
             result = subprocess.run(
