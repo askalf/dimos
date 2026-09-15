@@ -88,6 +88,16 @@ class LiveConfig:
     # 6-14 s query -- about a tenth of the time for six gigabytes.
     # Set it to the detector's device on a card with room to spare.
     tower_device: str = "cpu"
+    # Where the PATCH INDEX itself lives. "auto" means the accelerator this process can
+    # use, with whatever does not fit staying in RAM; "cpu" is the numpy path.
+    #
+    # A search reads the whole index and does a handful of dot products per row, so it
+    # is bandwidth and nothing else -- which is why it is four times slower on the
+    # CudaLaptop than on a Mac whose unified memory is faster, and why moving the bytes
+    # to the card ONCE and leaving them there is the thing worth doing rather than
+    # copying them over per query. Held at half precision there, which halves what a
+    # search reads; see `resident.DEVICE_AS`.
+    index_device: str = "auto"
 
 
 class LiveQuery:
@@ -132,6 +142,10 @@ class LiveQuery:
         self.loaded["detector"] = self.boxes.warm()
         self.loaded["recording"] = self.frames.warm()
         at = time.monotonic()
+        # Before the first read, because a member is placed as it loads.
+        from dimos.mapping.hyperspace.resident import RESIDENT
+
+        RESIDENT.device = self.config.index_device
         self.loaded["index"] = float(self.catch_up())
         self.loaded["index_s"] = time.monotonic() - at
         self.loaded["first_pass_s"] = self._touch_the_index(specs)

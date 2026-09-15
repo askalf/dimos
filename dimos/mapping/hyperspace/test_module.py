@@ -1308,3 +1308,122 @@ def test_every_module_can_say_no_to_metal_in_its_config() -> None:
     assert pick_device("auto") == "mps"
     assert pick_device("auto", allow_mps=False) == "cpu"
     assert pick_device("mps", allow_mps=False) == "mps", "a named device still wins"
+
+
+def _fake_index(rows: int = 4096, width: int = 128, seed: int = 7):
+    """A resident index of unit-ish vectors, the shape real patch embeddings have."""
+    from dimos.mapping.hyperspace.resident import ResidentPatches
+
+    rng = np.random.default_rng(seed)
+    vectors = rng.normal(size=(rows, width)).astype(np.float32)
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    return ResidentPatches(
+        tag="fake",
+        stream="fake_patches",
+        vectors=vectors,
+        camera_frames=["cam"],
+        frame_of=np.zeros(rows, np.int32),
+        ts=np.zeros(rows, np.float64),
+        cell=np.arange(rows, dtype=np.int32),
+        grid=np.zeros((rows, 2), np.int16),
+        ray=np.zeros((rows, 2), np.float32),
+        depth=np.ones(rows, np.float32),
+    )
+
+
+def test_an_index_that_does_not_fit_stays_in_ram() -> None:
+    """Not fitting is a normal outcome and must not be an error.
+
+    bike's two members are 12 GB of float32 and an 8 GB card cannot hold both, so the
+    per-member answer has to be "this one goes, that one stays" rather than all or
+    nothing -- which is what makes it useful, because `rank_with` searches the cheap
+    member over everything and it is the one whose bytes dominate a query.
+    """
+    from dimos.mapping.hyperspace.resident import place_on, room_on
+
+    vectors = _fake_index(rows=256, width=64).vectors
+    stayed, spent = place_on(vectors, "cuda", budget=0)
+    assert stayed is vectors and spent == 0
+    stayed, spent = place_on(vectors, "cpu", budget=10**12)
+    assert stayed is vectors and spent == 0
+    assert room_on("cpu") == 0 and room_on("") == 0
+
+
+def test_the_device_scores_agree_with_the_numpy_ones() -> None:
+    """Half precision on the card must not change which patches are hot.
+
+    The whole point of holding the index at `DEVICE_AS` is that it halves what a search
+    reads, and the whole risk is that a score moves across `hot`'s threshold. This asks
+    both questions on the same vectors: how far the scores drift, and whether the rows
+    picked are the same ones.
+    """
+    import torch
+
+    from dimos.mapping.hyperspace.resident import place_on, room_on
+
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "")
+    )
+    if not device:
+        pytest.skip("no accelerator to hold an index on")
+
+    held = _fake_index()
+    rng = np.random.default_rng(11)
+    query = rng.normal(size=held.width).astype(np.float32)
+    query /= np.linalg.norm(query)
+    background = rng.normal(size=(3, held.width)).astype(np.float32)
+    background /= np.linalg.norm(background, axis=1, keepdims=True)
+
+    on_cpu = held.scores(query, background)
+    hot_cpu, _ = held.hot(query, background, threshold=0.0)
+
+    vectors, spent = place_on(held.vectors, device, room_on(device))
+    assert spent, "the fake index is a megabyte; it should fit anywhere"
+    held.vectors = vectors
+    assert held.on_device != "cpu"
+    on_device = held.scores(query, background)
+    hot_device, _ = held.hot(query, background, threshold=0.0)
+
+    assert on_device.shape == on_cpu.shape
+    # Half precision on unit vectors: the error is in the fourth decimal, and the
+    # contrast subtracts two numbers of the same size so it does not compound.
+    assert np.max(np.abs(on_device - on_cpu)) < 5e-3
+    # What actually matters is the decision, not the number.
+    assert set(hot_device.tolist()) == set(hot_cpu.tolist())
+
+
+def test_a_narrowed_device_search_answers_about_the_whole_index() -> None:
+    """`rows` narrows a search and the indices handed back are still into the index.
+
+    The CPU path has been careful about this since `rank_with` existed -- a caller that
+    got back positions within its own subset would put patches on the wrong frames --
+    and the device path is a second implementation of the same contract.
+    """
+    import torch
+
+    from dimos.mapping.hyperspace.resident import place_on, room_on
+
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "")
+    )
+    if not device:
+        pytest.skip("no accelerator to hold an index on")
+
+    held = _fake_index(rows=1024, width=64, seed=3)
+    rng = np.random.default_rng(5)
+    query = rng.normal(size=held.width).astype(np.float32)
+    background = np.zeros((0, held.width), np.float32)
+    wanted = np.concatenate([np.arange(100, 180), np.arange(700, 733)]).astype(np.intp)
+
+    narrowed_cpu = held.scores(query, background, wanted)
+    held.vectors, _ = place_on(held.vectors, device, room_on(device))
+    narrowed_device = held.scores(query, background, wanted)
+
+    assert len(narrowed_device) == len(wanted) == len(narrowed_cpu)
+    assert np.max(np.abs(narrowed_device - narrowed_cpu)) < 5e-3
+    picked, _ = held.hot(query, background, threshold=0.0, rows=wanted)
+    assert set(picked.tolist()) <= set(wanted.tolist())

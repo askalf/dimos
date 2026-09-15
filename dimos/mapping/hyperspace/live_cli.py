@@ -133,6 +133,12 @@ def main(
         "has no filled-depth stream, '' off, or a checkpoint by name",
     ),
     device: str = typer.Option("auto", "--device"),
+    index_device: str = typer.Option(
+        LiveConfig.index_device,
+        "--index-device",
+        help="where the patch index lives: 'auto' is the accelerator with the spill in "
+        "RAM, 'cpu' the numpy path, or name a device",
+    ),
     tower_device: str = typer.Option(
         LiveConfig.tower_device,
         "--tower-device",
@@ -202,6 +208,7 @@ def main(
             models=wanted,
             merge_m=merge_m,
             tower_device=tower_device,
+            index_device=index_device,
             # Named at construction, not patched afterwards: `RecordingFrames` reads the
             # camera intrinsics in its constructor, so a name set later is set too late.
             color_stream=pick_stream(store, None, "color", "image"),
@@ -219,6 +226,7 @@ def main(
         f"detector: {detect.device} dtype "
         f"{detector_dtype_for(detect.dtype, detect.device) or 'float32'} "
         f"gpu_preprocess {gpu_preprocess_for(detect.gpu_preprocess, detect.device)} "
+        f"index_device {live.config.index_device} "
         f"rank_with {detect.rank_with or 'every member'} rank_frames {detect.rank_frames}"
     )
     loaded = live.warm([spec_of(tag) for tag in wanted])

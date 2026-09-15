@@ -49,13 +49,31 @@ READ_CHUNK = 50_000
 # multiply is worth starting, small enough that the promotion is half a gigabyte.
 SCORE_CHUNK = 100_000
 
-# What the vectors are held as. Single precision, because that is what the machine
-# multiplies: half precision halves the index -- grocery's three models are 29 GB
+# The same, on a device. Larger because there is no promotion to pay for -- this only
+# bounds the `(chunk x texts)` intermediate, which is a few floats a row.
+DEVICE_CHUNK = 1_000_000
+
+# What the vectors are held as ON THE CPU. Single precision, because that is what the
+# machine multiplies: half precision halves the index -- grocery's three models are 29 GB
 # against 14 -- but CPUs have no half-precision arithmetic and BLAS no half-precision
 # path, so every block has to be promoted before it can be multiplied. Measured on
 # grocery, that promotion is about a second a query. Memory is the cheaper side of
 # that trade here; on a machine where it is not, this is the line to change.
+#
+# On an ACCELERATOR the trade reverses -- see `place_on`, which holds half precision
+# there because the arithmetic is native and the bytes read are the whole cost.
 HELD_AS = np.float32
+
+# Half precision on the device: the index is bandwidth-bound, so halving it halves the
+# search, and unlike a CPU a GPU multiplies halves natively. `place_on` measures nothing
+# about accuracy on your behalf -- `test_resident.py` pins the agreement against the
+# float32 CPU path instead.
+DEVICE_AS = "float16"
+
+# Left free on a CUDA card after the index takes its share. OWLv2 and its activations
+# live there too, and an index that fills the card leaves the detector nothing -- which
+# on an 8 GB card is how a query goes from fast to out of memory.
+CUDA_RESERVE_BYTES = 3_000_000_000
 
 
 @dataclass
@@ -114,7 +132,16 @@ class ResidentPatches:
                 self.camera_frames.append(name)
             mapping[at] = self.camera_frames.index(name)
         end = self.count + added
-        self.vectors[self.count : end] = block.vectors[:added]
+        # A live index on the card takes its new rows there too: the block comes off
+        # sqlite as a float32 numpy array whatever this is holding.
+        if isinstance(self.vectors, np.ndarray):
+            self.vectors[self.count : end] = block.vectors[:added]
+        else:
+            import torch
+
+            self.vectors[self.count : end] = torch.as_tensor(block.vectors[:added]).to(
+                device=self.vectors.device, dtype=self.vectors.dtype
+            )
         self.frame_of[self.count : end] = [mapping[int(v)] for v in block.frame_of[:added]]
         self.ts[self.count : end] = block.ts[:added]
         self.cell[self.count : end] = block.cell[:added]
@@ -126,9 +153,14 @@ class ResidentPatches:
         return added
 
     def _reserve(self, capacity: int) -> None:
-        def grown(array: NDArray[Any]) -> NDArray[Any]:
+        def grown(array: Any) -> Any:
             shape = (capacity, *array.shape[1:])
-            out = np.empty(shape, dtype=array.dtype)
+            if isinstance(array, np.ndarray):
+                out = np.empty(shape, dtype=array.dtype)
+            else:
+                import torch
+
+                out = torch.empty(shape, dtype=array.dtype, device=array.device)
             out[: self.count] = array[: self.count]
             return out
 
@@ -145,8 +177,15 @@ class ResidentPatches:
         return int(self.vectors.shape[1])
 
     @property
+    def on_device(self) -> str:
+        """Where the vectors are: "cpu" for a numpy array, else the torch device."""
+        return "cpu" if isinstance(self.vectors, np.ndarray) else str(self.vectors.device)
+
+    @property
     def megabytes(self) -> float:
-        return float(self.vectors.nbytes) / 1e6
+        if isinstance(self.vectors, np.ndarray):
+            return float(self.vectors.nbytes) / 1e6
+        return float(self.vectors.element_size() * self.vectors.nelement()) / 1e6
 
     def scores(
         self,
@@ -182,6 +221,8 @@ class ResidentPatches:
         background = np.asarray(background, dtype=np.float32).reshape(-1, len(query))
         texts = np.vstack([np.asarray(query, dtype=np.float32)[None, :], background])
         count = self.rows if rows is None else len(rows)
+        if not isinstance(self.vectors, np.ndarray):
+            return self._scores_on_device(texts, len(background), rows, count)
         out = np.empty(count, dtype=np.float32)
         at = 0
         for first, last in _spans(rows, self.rows):
@@ -203,6 +244,42 @@ class ResidentPatches:
                 out[at : at + len(taken)] = taken
                 at += len(taken)
         return out[:at] if rows is not None else out
+
+    def _scores_on_device(
+        self,
+        texts: NDArray[np.float32],
+        backgrounds: int,
+        rows: NDArray[np.intp] | None,
+        count: int,
+    ) -> NDArray[np.float32]:
+        """The same contrast, on whatever device the vectors already live on.
+
+        The point is that nothing moves: the index was put there once and stays, so a
+        query sends a handful of text vectors over and brings a column of scores back.
+        Copying the index per query would cost more than reading it from RAM ever did.
+
+        Still sliced rather than gathered, for the same reason the CPU path is -- a
+        gather is a random read wherever the rows happen to be -- and still chunked, so
+        the `(chunk x texts)` intermediate stays small rather than being one tensor the
+        size of a tenth of the index.
+        """
+        import torch
+
+        device = self.vectors.device
+        held = torch.as_tensor(texts).to(device=device, dtype=self.vectors.dtype)
+        pieces: list[Any] = []
+        for first, last in _spans(rows, self.rows):
+            for start in range(first, last, DEVICE_CHUNK):
+                stop = min(start + DEVICE_CHUNK, last)
+                against = self.vectors[start:stop] @ held.T
+                taken = against[:, 0] - against[:, 1:].amax(dim=1) if backgrounds else against[:, 0]
+                pieces.append(taken.to(torch.float32))
+        if not pieces:
+            return np.empty(0, dtype=np.float32)
+        # One copy back rather than one per chunk: the scores are four bytes a row and
+        # the round trip is what costs, not the bytes.
+        out = torch.cat(pieces).cpu().numpy()
+        return out[:count] if rows is None else out
 
     def hot(
         self,
@@ -227,6 +304,63 @@ class ResidentPatches:
             order = order[:limit]
         picked = picked[order]
         return (picked if rows is None else rows[picked]), found[picked]
+
+
+def room_on(device: str) -> int:
+    """Bytes an index may take on *device* right now, or 0 for "hold it in RAM".
+
+    CUDA is asked what is actually free and told to leave the detector room. MPS is
+    unified memory, so the question is how much of the machine's RAM is going spare --
+    the same question the CPU path asks, and the answer costs no copy because there is
+    only one pool of memory to be in.
+    """
+    if not device or device == "cpu":
+        return 0
+    import torch
+
+    if device.startswith("cuda"):
+        free, _total = torch.cuda.mem_get_info(device if ":" in device else None)
+        return max(0, int(free) - CUDA_RESERVE_BYTES)
+    if device == "mps":
+        try:
+            import psutil
+
+            return int(psutil.virtual_memory().available * 0.6)
+        except Exception:
+            # No psutil is not a reason to refuse the device; Metal will refuse for us.
+            return int(torch.mps.recommended_max_memory())
+    return 0
+
+
+def place_on(vectors: NDArray[Any], device: str, budget: int) -> tuple[Any, int]:
+    """Move an index onto *device* if it fits in *budget*. Returns it and what it took.
+
+    Held at `DEVICE_AS` there, which is half the bytes of the CPU copy: a search reads
+    the whole index and does a handful of dot products per row, so it is bandwidth and
+    nothing else, and a GPU multiplies halves natively where a CPU does not.
+
+    Staying put is a normal outcome, not a failure -- a 12 GB index and an 8 GB card
+    means the CPU path, and a member that does not fit says so in the log rather than
+    half-fitting and thrashing. The same call is made per member, so a big model can
+    stay in RAM while the cheap one the ranking uses lives on the card.
+    """
+    import torch
+
+    wanted = (
+        int(vectors.shape[0])
+        * int(vectors.shape[1])
+        * torch.empty(0, dtype=getattr(torch, DEVICE_AS)).element_size()
+    )
+    if not device or device == "cpu" or wanted > budget:
+        return vectors, 0
+    try:
+        held = torch.as_tensor(vectors).to(device=device, dtype=getattr(torch, DEVICE_AS))
+    except Exception as error:
+        # Out of memory mid-copy, a device that went away, a dtype it will not take:
+        # all of them mean "hold it in RAM", and none of them mean "fail the query".
+        logger.warning(f"hyperspace: could not hold an index on {device} ({error}); staying in RAM")
+        return vectors, 0
+    return held, wanted
 
 
 def _spans(rows: NDArray[np.intp] | None, total: int) -> list[tuple[int, int]]:
@@ -477,6 +611,11 @@ class ResidentIndex:
 
     def __init__(self) -> None:
         self._held: dict[str, ResidentPatches] = {}
+        # Where the vectors are kept. "auto" is the accelerator this process can use,
+        # "cpu" is the numpy path this used to be. Set before warming, because a member
+        # is placed as it loads.
+        self.device: str = "auto"
+        self._spent = 0
 
     def __contains__(self, stream: str) -> bool:
         return stream in self._held
@@ -484,10 +623,41 @@ class ResidentIndex:
     def get(self, stream: str) -> ResidentPatches | None:
         return self._held.get(stream)
 
+    def chosen_device(self) -> str:
+        if self.device != "auto":
+            return self.device
+        from dimos.mapping.hyperspace.module import pick_device
+
+        return pick_device("auto")
+
+    def _place(self, held: ResidentPatches) -> ResidentPatches:
+        """Put this member on the device if there is still room for it.
+
+        Per member and in load order, so a small model lands on the card and a large one
+        behind it stays in RAM, rather than the pair being all-or-nothing. `rank_with`
+        makes that the useful arrangement: the cheap member is searched over everything
+        and is the one whose bytes dominate a query.
+        """
+        device = self.chosen_device()
+        budget = room_on(device) - self._spent
+        vectors, spent = place_on(held.vectors, device, budget)
+        if spent:
+            held.vectors = vectors
+            self._spent += spent
+            logger.info(
+                f"hyperspace: {held.tag} held on {device} at {DEVICE_AS} ({spent / 1e6:.0f} MB)"
+            )
+        elif device not in {"", "cpu"}:
+            logger.info(
+                f"hyperspace: {held.tag} stays in RAM -- {held.megabytes:.0f} MB of float32 "
+                f"does not fit the {budget / 1e6:.0f} MB left on {device}"
+            )
+        return held
+
     def of(self, store: Any, tag: str, stream: str) -> ResidentPatches:
         held = self._held.get(stream)
         if held is None:
-            held = self._held[stream] = load(store, tag, stream)
+            held = self._held[stream] = self._place(load(store, tag, stream))
         return held
 
     def warm(self, store: Any, members: Sequence[tuple[str, str]]) -> float:
@@ -512,7 +682,7 @@ class ResidentIndex:
                 # Nothing held yet, and `load` refuses an empty stream, so wait for the
                 # first patches rather than treating "not written yet" as an error.
                 try:
-                    self._held[stream] = load(store, tag, stream)
+                    self._held[stream] = self._place(load(store, tag, stream))
                 except (ValueError, KeyError, TypeError):
                     continue
                 added += self._held[stream].rows
@@ -523,7 +693,11 @@ class ResidentIndex:
         return added
 
     def drop(self, stream: str) -> None:
-        self._held.pop(stream, None)
+        gone = self._held.pop(stream, None)
+        if gone is not None and gone.on_device != "cpu":
+            # Give the budget back, or a process that reloads an index twice believes
+            # the card is full when it is not.
+            self._spent = max(0, self._spent - int(gone.megabytes * 1e6))
 
 
 # One per process. A query path looks here before it reaches for sqlite.
