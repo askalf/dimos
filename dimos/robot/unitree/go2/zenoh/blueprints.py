@@ -33,7 +33,7 @@ so a failure can be bisected by dropping down a level:
   the required precision off the path stamps.
 - ``go2-zenoh-motion-local`` — ``go2-zenoh-motion`` with planner, follower and mux
   lifted onto the robot as one ``dimos bake`` host.
-- ``go2-zenoh-motion-pointlio`` — ``go2-zenoh-motion`` running its own ``PointLio``,
+- ``go2-zenoh-motion-pointlio`` — ``go2-zenoh-motion`` running its own ``PointLioRust``,
   for when the MID-360 hangs off this box rather than the robot.
 """
 
@@ -42,7 +42,8 @@ from typing import Any
 from dimos.core.baked_host import baked_host
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
-from dimos.hardware.sensors.lidar.pointlio.module import PointLio
+from dimos.hardware.sensors.lidar.pointlio.module import PointLioRust
+from dimos.hardware.sensors.lidar.pointlio.pointlio_blueprints import mid360_for_pointlio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap, RayTracingVoxelMapConfig
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
@@ -411,14 +412,17 @@ go2_zenoh_motion_local = autoconnect(
 # Only the producer changes, not the frames: GO2Zenoh's static mount tree is already
 # rooted at mid360_link "because Point-LIO owns that frame" (see its transforms()), and
 # odom -> mid360_link is the same edge either way. So the mount stays the bridge's job and
-# the moving edge becomes PointLio's -- GO2Zenoh derives that edge from its own odometry
+# the moving edge becomes Point-LIO's -- GO2Zenoh derives that edge from its own odometry
 # port, which is remapped into the void here, so it simply stops publishing it rather than
 # fighting for base_link at 35 Hz.
 #
-# The lidar's address is NOT hardcoded: set DIMOS_POINTLIO_LIDAR_IP, and on this rig also
-# DIMOS_POINTLIO_HOST_IP. host_ip normally auto-derives from the lidar's subnet, which is
-# wrong here -- the Jetson carries 192.168.123.5/32 for the lidar AND 192.168.123.222/24
-# for the Go2 link, so deriving picks the Go2 link and Point-LIO never hears a point.
+# The rust Point-LIO, not the C++ one: the C++ SDK speaks LCM only until its binary is
+# rebuilt against the zenoh support #3846 landed, and this stack is zenoh. It takes the
+# lidar from the Mid360 driver rather than opening the sensor itself, so the addresses
+# are the DRIVER's: set DIMOS_MID360_LIDAR_IP, and on this rig also DIMOS_MID360_HOST_IP.
+# host_ip normally auto-derives from the lidar's subnet, which is wrong here -- the Jetson
+# carries 192.168.123.5/32 for the lidar AND 192.168.123.222/24 for the Go2 link, so
+# deriving picks the Go2 link and Point-LIO never hears a point.
 go2_zenoh_motion_pointlio = autoconnect(
     _go2_zenoh_motion_base,
     TrajectoryFollower.blueprint(),
@@ -432,5 +436,6 @@ go2_zenoh_motion_pointlio = autoconnect(
             (GO2Zenoh, "pointlio_map", "go2_pointlio_map_unused"),
         ]
     ),
-    PointLio.blueprint(),
-).global_config(transport="zenoh", n_workers=10, robot_model="unitree_go2")
+    mid360_for_pointlio(),
+    PointLioRust.blueprint(),
+).global_config(transport="zenoh", n_workers=11, robot_model="unitree_go2")
