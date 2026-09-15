@@ -393,20 +393,30 @@ mod tests {
     use super::*;
     use crate::wire::{build_imu_samples, build_points_high, DataPacket, DataType, ImuSample};
     use std::collections::HashSet;
+    use std::sync::atomic::AtomicU16;
 
-    /// Distinct per test slot and per process, so parallel checkouts running
-    /// cargo test at once don't fight over loopback ports.
-    fn test_ports(slot: u16) -> Ports {
-        let base = 40000 + (std::process::id() % 1000) as u16 * 24 + slot * 8;
-        Ports {
-            cmd_data: base,
-            point_data: base + 1,
-            imu_data: base + 2,
-            host_cmd_data: base + 3,
-            host_point_data: base + 4,
-            host_imu_data: base + 5,
-            push_msg: base + 6,
-            host_push_msg: base + 7,
+    // allocate ports
+    fn test_ports() -> Ports {
+        static NEXT: AtomicU16 = AtomicU16::new(0);
+        let start = 10000 + (std::process::id() % 600) as u16 * 32;
+        loop {
+            let base = start + NEXT.fetch_add(8, Ordering::Relaxed);
+            assert!(base + 8 < 32768, "no free port block left below {start}");
+            let free = (0..8).all(|offset| {
+                UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, base + offset)).is_ok()
+            });
+            if free {
+                return Ports {
+                    cmd_data: base,
+                    point_data: base + 1,
+                    imu_data: base + 2,
+                    host_cmd_data: base + 3,
+                    host_point_data: base + 4,
+                    host_imu_data: base + 5,
+                    push_msg: base + 6,
+                    host_push_msg: base + 7,
+                };
+            }
         }
     }
 
@@ -495,7 +505,7 @@ mod tests {
 
     #[test]
     fn handshake_and_stream_over_loopback() {
-        let ports = test_ports(0);
+        let ports = test_ports();
         let device = spawn_fake_device(ports);
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -543,7 +553,7 @@ mod tests {
 
     #[test]
     fn packets_from_unexpected_senders_are_ignored() {
-        let ports = test_ports(3);
+        let ports = test_ports();
         let stop = Arc::new(AtomicBool::new(false));
         // A dropped loopback datagram fails the test instead of hanging it.
         let watchdog = stop.clone();
@@ -597,7 +607,7 @@ mod tests {
 
     #[test]
     fn recv_ends_on_stop() {
-        let ports = test_ports(1);
+        let ports = test_ports();
         let stop = Arc::new(AtomicBool::new(false));
         let mut source = LiveSource::start(
             LiveConfig {
@@ -618,7 +628,7 @@ mod tests {
 
     #[test]
     fn rejected_handshake_fails_the_source() {
-        let ports = test_ports(2);
+        let ports = test_ports();
         let device = std::thread::spawn(move || {
             let cmd =
                 UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, ports.cmd_data)).unwrap();
