@@ -15,7 +15,7 @@
 //! The base pose off tf, read per tick -- the rust twin of `TfPose` in
 //! `dimos/navigation/tf_pose.py`, which is the specification.
 //!
-//! go2_tf publishes `odom -> mid360_link` off odometry at odometry rate and
+//! GO2Zenoh publishes `odom -> mid360_link` off odometry at odometry rate and
 //! the static mounts beside it, so tf carries `odom -> base_link` -- LIO's
 //! sensor pose already resolved into the body (0.30 m back and 0.16 m down on
 //! this rig). The deadman is on OUR clock, keyed by the edge's stamp: the

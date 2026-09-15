@@ -189,7 +189,7 @@ class MotionPlannerConfig(ModuleConfig):
     # a real reroute moves it metres.
     reset_carrot_m: float = RESET_CARROT_M
     # The pose is the `world_frame -> base_frame` edge on tf, read each tick
-    # (go2_tf publishes it off odometry at odometry rate). Ticks wait until
+    # (GO2Zenoh publishes it off odometry at odometry rate). Ticks wait until
     # it resolves, and hold once its stamp stops advancing for max_map_age_s.
     world_frame: str = "odom"
     base_frame: str = "base_link"

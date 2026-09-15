@@ -275,11 +275,9 @@ go2_zenoh_htc = autoconnect(
     MovementManager.blueprint(),
 ).global_config(transport="zenoh", n_workers=9, robot_model="unitree_go2")
 
-# The rig the motion stacks run on. It has to equal `go2_tf`'s
-# `mid360_mount_rpy_deg` (robot/unitree/go2/tf/go2_tf.py) on any robot that runs
-# the baked host, because the two publish the SAME tf edges: disagree and
-# base_link jumps between two mounts at their combined publish rate (test_blueprints.py
-# asserts the pair). `MID360_MOUNT` above stays whatever the nav/htc stacks want.
+# The rig the motion stacks run on. GO2Zenoh is the only publisher of these edges
+# on every stack here, so the value only has to match the robot it runs on.
+# `MID360_MOUNT` above stays whatever the nav/htc stacks want.
 MOTION_MID360_MOUNT = "ATHENS"
 
 # Its own MLS tuning: the local planner + follower are the precision layer (embodiment
@@ -354,22 +352,20 @@ go2_zenoh_motion = autoconnect(
     TrajectoryFollower.blueprint(),
 ).global_config(transport="zenoh", n_workers=9, robot_model="unitree_go2")
 
-# go2-zenoh-motion with the time-critical half lifted off the laptop. The three modules
+# go2-zenoh-motion with the time-critical half lifted off the laptop. The two modules
 # below are ABSENT here because they run on the robot as one baked host
 # (`dimos/navigation/motion/deploy/deploy.sh`):
 #
-#     motion_planner -> trajectory_follower -> cmd_vel_mux
+#     motion_planner -> trajectory_follower
 #
-# So this composes from the module list rather than from go2_zenoh_raycaster, which would
-# drag in the CmdVelMux that now belongs on the robot. What stays here is everything that
-# is either expensive (the raycaster), global (the MLS graph), or attached to the operator
-# (rerun, clicks, teleop).
+# What stays here is everything that is either expensive (the raycaster), global (the MLS
+# graph), attached to the operator (rerun, clicks, teleop), or python-only (tf, the mux).
 #
-# THIS BLUEPRINT ALONE DOES NOT DRIVE. Without the baked host running there is no planner,
-# no follower and no mux, so clicks become goals and MLS plans a global path that nothing
-# tracks. Bring the robot host up first:
+# THIS BLUEPRINT ALONE DOES NOT DRIVE. Without the baked host running there is no planner
+# and no follower, so clicks become goals and MLS plans a global path that nothing tracks.
+# Bring the robot host up first:
 #
-#     dimos bake motion_planner trajectory_follower cmd_vel_mux go2_tf \
+#     dimos bake motion_planner trajectory_follower \
 #         -o motion-host --builder zigbuild --target aarch64-unknown-linux-gnu.2.31
 #
 # Topology: go2web runs as the zenoh ROUTER on 7447 (GO2_ZENOH_MODE=router in its unit)
@@ -378,11 +374,11 @@ go2_zenoh_motion = autoconnect(
 # odometry comes from, and it keeps the 30 Hz stream off the wifi); it listens on nothing.
 # The laptop dials the same router once: --robot-ip <robot>.
 #
-# tf is robot-local here: go2_tf is baked into the host and publishes the odometry edge
-# and the mount tree there, so the odom -> base_link pose the planner and follower read
-# never depends on the laptop being up. Both wait until that edge resolves on tf --
-# planning nothing rather than planning off-heading -- and treat one whose stamp has
-# stopped advancing for their deadman as missing again.
+# tf comes from the laptop: GO2Zenoh publishes the mount tree and the odometry edge, and
+# the baked planner and follower read them over the router. Both wait until that edge
+# resolves on tf -- planning nothing rather than planning off-heading -- and treat one
+# whose stamp has stopped advancing for their deadman as missing again, so a wifi stall
+# stops the stack rather than steering it off a stale pose.
 #
 # cmd_vel still crosses back to the laptop, because GO2Zenoh is what talks to the go2web
 # bridge. This cut buys jitter immunity on the control loop, not fewer wire crossings.
@@ -391,18 +387,19 @@ go2_zenoh_motion_local = autoconnect(
         viewer_backend=global_config.viewer,
         rerun_config=_rerun_config({"world/pointlio_map": None, "world/lidar": None}),
     ),
-    # tf comes from the ROBOT here: go2_tf is baked into the host and publishes
-    # the mount tree there. GO2Zenoh would publish the same three edges from the
-    # laptop, and two publishers of one static tree is not redundancy -- it is
-    # base_link jumping between them, at their combined rate, on whichever mount
-    # each was configured with. So its tf goes nowhere and the robot's wins.
-    GO2Zenoh.blueprint(mid360_mount=MOTION_MID360_MOUNT).remappings(
-        [(GO2Zenoh, "tf", "tf_from_the_laptop_unused")]
-    ),
+    GO2Zenoh.blueprint(mid360_mount=MOTION_MID360_MOUNT),
     RayTracingVoxelMap.blueprint(**ray_tracing_config.model_dump(exclude_unset=True)),
     _mls_planner_motion.remappings([(MLSPlannerNative, "path", "planner_path")]),
-    MovementManager.blueprint(),
-).global_config(transport="zenoh", n_workers=6, robot_model="unitree_go2")
+    # Click relay only, as in `_go2_zenoh_motion_base`: cmd_vel and stop_movement are
+    # CmdVelMux's, and two publishers of either trip the stream-conflict check.
+    MovementManager.blueprint().remappings(
+        [
+            (MovementManager, "cmd_vel", "movement_manager_cmd_vel_unused"),
+            (MovementManager, "stop_movement", "movement_manager_stop_unused"),
+        ]
+    ),
+    CmdVelMux.blueprint(),
+).global_config(transport="zenoh", n_workers=7, robot_model="unitree_go2")
 
 
 # `go2-zenoh-motion` with Point-LIO running HERE instead of read off the bridge.

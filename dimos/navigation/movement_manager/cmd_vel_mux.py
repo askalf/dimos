@@ -14,10 +14,6 @@
 
 """CmdVelMux: teleop preempts nav on cmd_vel, and a watchdog zeros it when nav dies.
 
-The python twin of the `cmd_vel_mux` native module (`cmd_vel_mux_native.py`),
-which is the one that goes on the robot. Same ports, same config names, same
-decisions — a stack swaps one for the other without touching a remapping.
-
 Pairs with `MovementManager`, which kept the click relay. Both subscribe
 `tele_cmd_vel` so one keystroke reaches both halves: this one preempts nav and
 stops the follower, that one cancels the goal.

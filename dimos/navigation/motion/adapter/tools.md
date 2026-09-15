@@ -24,7 +24,7 @@ a refusal is a single-pose stub the follower holds on while MLS reroutes. The
 follower reads no map -- the room arrives in the path stamps -- and stops
 through a goal latch that ignores sub-tolerance carrot jitter. Neither module
 reads odometry: the pose is the `world -> base_link` edge on tf, looked up per
-tick (`navigation/tf_pose.py::TfPose`) — go2_tf publishes it off odometry
+tick (`navigation/tf_pose.py::TfPose`) — GO2Zenoh publishes it off odometry
 through the mount. A tick waits until it resolves, and an edge whose stamp
 stopped advancing for the module's deadman counts as missing.
 

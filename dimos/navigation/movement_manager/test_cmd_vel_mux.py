@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The python mux's decisions, and the parity that keeps it swappable for the rust.
+"""The mux's decisions.
 
 The staleness and preemption predicates are tested by handing them a time
-rather than by sleeping: the rust twin injects `now` for the same reason, and a
-deadman test that waits out its own timeout is a slow test that still only
-proves the clock works.
+rather than by sleeping: a deadman test that waits out its own timeout is a
+slow test that still only proves the clock works.
 """
 
 from __future__ import annotations
@@ -29,11 +28,7 @@ import pytest
 
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
-from dimos.navigation.movement_manager.cmd_vel_mux import CmdVelMux, CmdVelMuxConfig
-from dimos.navigation.movement_manager.cmd_vel_mux_native import (
-    CmdVelMuxNative,
-    CmdVelMuxNativeConfig,
-)
+from dimos.navigation.movement_manager.cmd_vel_mux import CmdVelMux
 
 COOLDOWN = 1.0
 STALE = 0.5
@@ -136,17 +131,3 @@ def test_the_watchdog_is_suppressed_while_teleop_drives(mux_and_captured):
     assert not mux._nav_is_stale(101.0)
     # once the teleop cooldown lapses the deadman takes over again
     assert mux._nav_is_stale(101.7)
-
-
-def test_the_two_muxes_are_swappable(modules):
-    """Same ports and same config keys, so a stack swaps one for the other.
-
-    The rust is the one that goes on the robot; this pins the python twin to it
-    so a blueprint does not have to know which it got.
-    """
-    py, native = CmdVelMux(), CmdVelMuxNative()
-    modules += [py, native]
-    assert set(py.inputs) == set(native.inputs)
-    assert set(py.outputs) == set(native.outputs)
-    # every key the rust reads is one the python spells the same way
-    assert set(CmdVelMuxConfig.model_fields) >= set(CmdVelMuxNativeConfig().to_config_dict())
