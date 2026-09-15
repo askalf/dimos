@@ -363,7 +363,7 @@ def test_a_cell_is_scored_by_how_well_it_matches_not_by_how_much_landed_in_it() 
     module = Hyperspace.__new__(Hyperspace)
     module.config = HyperspaceConfig(db_path="unused")
 
-    scored = module._cells_worth_answering(placed, 0.0, module.config.heat_min_views, 0, 0.25)
+    scored = module._cells_worth_answering(placed, module.config.heat_min_views)
     assert max(scored, key=lambda cell: scored[cell]) == matched, (
         "the well-matched cell has to win; summing gives it to the grazed one"
     )
@@ -387,61 +387,11 @@ def test_one_stray_patch_cannot_be_a_place() -> None:
     module = Hyperspace.__new__(Hyperspace)
     module.config = HyperspaceConfig(db_path="unused")
 
-    gated = module._cells_worth_answering(placed, 0.0, module.config.heat_min_views, 0, 0.25)
+    gated = module._cells_worth_answering(placed, module.config.heat_min_views)
     assert stray not in gated and real in gated
 
-    everything = module._cells_worth_answering(placed, 0.0, 1, 0, 0.25)
+    everything = module._cells_worth_answering(placed, 1)
     assert stray in everything, "the gate has to be droppable, or a short recording answers nothing"
-
-
-def test_a_lone_cell_on_a_far_wall_is_not_a_place() -> None:
-    """A place is somewhere its neighbours agree about.
-
-    MEASURED on "kitchen" over sf_office_drive1: of 290 answered cells, 268 were outside
-    the kitchen and the strongest of those scored 0.63 of the true one -- strong enough to
-    read as a place on the page and to send a robot across the building. Requiring eight
-    scoring neighbours within half a metre left 7 cells, all 7 in the kitchen.
-    """
-    from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
-
-    module = Hyperspace.__new__(Hyperspace)
-    module.config = HyperspaceConfig(db_path="unused")
-
-    # A patch of space three cells across, and one cell on its own far away.
-    lump = {(x, y, z): 0.5 for x in range(3) for y in range(3) for z in range(3)}
-    alone = {(90, 90, 90): 0.9}
-    kept = module._where_neighbours_agree({**lump, **alone}, 8, 0.25, 0.5)
-    assert (90, 90, 90) not in kept, "one cell by itself cannot be a place"
-    assert len(kept) >= 7, f"the lump has to survive its own company, kept {len(kept)}"
-
-
-def test_the_patch_floor_is_a_fraction_of_this_query_and_gives_way() -> None:
-    """Patch scores are not comparable between words, so the floor cannot be absolute.
-
-    And every gate has to give way: a weak query over a short recording should answer
-    "here, weakly" with a note, not nothing at all. The order matters -- neighbours
-    first, then the floor, then the view gate -- so the answer loses the least it can.
-    """
-    from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
-
-    module = Hyperspace.__new__(Hyperspace)
-    module.config = HyperspaceConfig(db_path="unused")
-    cell = (0, 0, 0)
-    placed = [(cell, 0.004, ("cam", float(index))) for index in range(3)]
-
-    strongest = max(score for _, score, _ in placed)
-    floor = module.config.heat_patch_floor * strongest
-    assert module._cells_worth_answering(placed, floor, 3, 8, 0.25) == {}, (
-        "one cell alone must not pass the neighbour rule"
-    )
-    relaxed = module._cells_worth_answering(placed, floor, 3, 0, 0.25)
-    assert cell in relaxed, "dropping the neighbour rule has to bring the answer back"
-    assert relaxed[cell] == 0.004, "a weak answer keeps its own weak score"
-
-    from pathlib import Path
-
-    source = Path(__file__).with_name("module.py").read_text()
-    assert "nowhere had neighbours that agreed" in source, "the caller has to be told what gave way"
 
 
 def test_the_patch_path_answers_end_to_end_over_a_fake_search() -> None:
