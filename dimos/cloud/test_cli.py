@@ -89,8 +89,16 @@ def test_bar_draws_inline_and_erases_itself(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "\x1b[?1049h" not in out and "?1007" not in out, "inline: no alt screen, no modes"
     assert "\x1b[?25l" in out and "\x1b[?25h" in out, "cursor hidden while drawing"
-    assert "uploading" in out and "\x1b[K" in out, "rich's line, placed by our drawer"
-    assert "\x1b[1F\x1b[J" in out, "erased at the end, so only the summary line stays"
+    assert "uploading" in out and "\r" in out and "\x1b[K" in out, "rich's line, drawn with \\r"
+    # The property that survives a resize: never move the cursor up a row count,
+    # never end a frame with a newline. Reflow has nothing to desync.
+    import re as _re
+
+    assert not _re.search(r"\x1b\[\d*F", out), "no cursor-up: that is what smeared on resize"
+    assert "\n" not in out, "no trailing newline: the cursor never leaves the row"
+    assert out.rstrip("\x1b[?25h").endswith("\r\x1b[K"), (
+        "row wiped at the end, summary prints after"
+    )
 
 
 def test_ticker_sheds_columns_when_the_window_narrows() -> None:

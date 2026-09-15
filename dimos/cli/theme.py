@@ -429,13 +429,6 @@ class Live:
         sys.stdout.flush()
         self._rows = len(rows)
 
-    def clear(self) -> None:
-        """Erase what was drawn, for a transient surface whose result prints after."""
-        if not self._static and self._rows:
-            sys.stdout.write(f"\033[{self._rows}F\033[J")
-            sys.stdout.flush()
-            self._rows = 0
-
     def spinner(self) -> Iterator[str]:
         i = 0
         while True:
@@ -454,6 +447,48 @@ class Live:
         while time.time() < end:
             self.update(redraw())
             time.sleep(min(0.1, max(0.0, end - time.time())))
+
+
+class Line:
+    """Redraws one row in place, for a progress line that polls.
+
+    Only ever a carriage return and a clear-to-end — never a cursor-up move or a
+    newline — so the cursor never leaves the row. That is what lets it survive a
+    window resize on a terminal that reflows: there is no relative position to
+    desync. It stays inline, so the terminal above it stays visible.
+
+    Off a terminal it prints nothing; a log gets the summary line printed after.
+    """
+
+    def __init__(self) -> None:
+        self._static = not enabled()
+        self._drawn = False
+
+    def __enter__(self) -> Line:
+        if not self._static:
+            sys.stdout.write("\033[?25l")  # hide the cursor for the duration
+            sys.stdout.flush()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if not self._static:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+
+    def update(self, text: str) -> None:
+        if self._static:
+            return
+        sys.stdout.write("\r" + text + "\033[K")
+        sys.stdout.flush()
+        self._drawn = True
+
+    def clear(self) -> None:
+        """Wipe the row, so the summary line printed after the transfer is all
+        that remains."""
+        if not self._static and self._drawn:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+            self._drawn = False
 
 
 def show(rows: list[str], err: bool = False) -> None:

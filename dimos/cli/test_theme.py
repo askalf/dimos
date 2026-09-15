@@ -339,11 +339,29 @@ def test_fullscreen_live_tolerates_a_non_tty_stdin(
         live.update(["x"])  # reaching here without raising is the assertion
 
 
-def test_inline_live_clear_erases_what_it_drew(
+def test_line_redraws_in_place_without_moving_the_cursor(
     tty: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A transient surface: back to its first row, then clear to the end of the screen."""
-    with theme.Live() as live:
-        live.update(["one row"])
-        live.clear()
-    assert "\x1b[1F\x1b[J" in capsys.readouterr().out
+    """The progress row: only carriage-return and clear-to-end, never a cursor-up
+    move or a newline, which is what lets it survive a resize on a terminal that
+    reflows. clear() wipes the row so the summary printed after is all that stays."""
+    import re
+
+    with theme.Line() as line:
+        line.update("2% ---")
+        line.update("40% ======")
+        line.clear()
+    out = capsys.readouterr().out
+    assert out.count("\r") >= 2 and "\x1b[K" in out
+    assert not re.search(r"\x1b\[\d*F", out) and "\n" not in out
+    assert out.endswith("\r\x1b[K\x1b[?25h"), "row cleared, then cursor shown on exit"
+
+
+def test_line_is_silent_off_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(theme, "enabled", lambda: False)
+    with theme.Line() as line:
+        line.update("50%")
+        line.clear()
+    assert capsys.readouterr().out == "", "no terminal, no bar; the summary line prints later"

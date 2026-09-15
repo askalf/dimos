@@ -199,19 +199,19 @@ def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
     width = theme.term_width()
     progress = Progress(*_progress_columns(width), auto_refresh=False)  # a model; we draw it
     ticker = _Ticker(progress, name, width)
-    live, stop = theme.Live(), threading.Event()
+    line, stop = theme.Line(), threading.Event()
 
     def refresh() -> None:
         while not stop.is_set():
             try:
                 cols = theme.term_width()
                 ticker.fit(cols)
-                live.update([_render_line(progress, cols)])
+                line.update(_render_line(progress, cols))
             except Exception:
                 return  # a bar must never break the transfer; go quiet instead
             stop.wait(0.1)
 
-    with live:
+    with line:
         thread = threading.Thread(target=refresh, daemon=True, name="dimos-progress")
         thread.start()
         try:
@@ -219,7 +219,7 @@ def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
         finally:
             stop.set()
             thread.join(1.0)
-            live.clear()
+            line.clear()
 
 
 @handle_fail
