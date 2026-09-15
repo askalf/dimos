@@ -1554,16 +1554,17 @@ def test_the_towers_get_the_card_before_the_index_does(store: SqliteStore) -> No
 
 
 def test_metal_refuses_an_index_bigger_than_its_ndarray_limit() -> None:
-    """A tensor past 2^31 elements ABORTS the process on MPS, so it must never be built.
+    """A member this big is kept off Metal, and the reason is not the one it looks like.
 
-    Found on grocery: its so400m member is 3,489,696 x 1152 = 4.0 billion elements and
-    Metal's `MPSNDArray` asserts `dimension length > INT_MAX` -- not an exception, an
-    abort, so there is nothing to catch and the only safe answer is not to try.
-    sf_office's 1.0 billion sits under the line, which is why this went unnoticed until a
-    big recording arrived.
+    Measured, one shape per process: an 8 GB fp16 tensor multiplied WHOLE survives on
+    MPS; the same tensor multiplied over a SLICE aborts, from row 1,664,135 onwards. So
+    the trigger is a view with a large storage offset, and `scores` slices constantly --
+    which is why grocery died in the real query path and never in an isolated test.
 
-    CUDA has no such limit, and the difference matters: it is why a Mac measurement is
-    not an answer about what a large NVIDIA card could hold.
+    The proper fix is to hold a member as several smaller pieces (measured to survive);
+    until that exists this keeps the process alive at the cost of the GPU on grocery and
+    bike. CUDA is unaffected. The docstring says all this because the first version of
+    this test asserted a confident wrong reason.
     """
     from dimos.mapping.hyperspace.resident import MPS_MAX_ELEMENTS, place_on
 

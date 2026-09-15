@@ -96,17 +96,28 @@ TOWER_ROOM_BYTES = 3_000_000_000
 # of it, and the detector OOM'd exactly as it had before any of this was touched.
 DETECTOR_HEADROOM_BYTES = 1_200_000_000
 
-# Elements a single tensor may have on Metal. MPS builds an MPSNDArray and asserts
-# `NDArray dimension length > INT_MAX` -- an ABORT, not an exception -- so this is a
-# refusal rather than something to catch.
+# How large a tensor may get on Metal before this refuses to put one there. A STOPGAP,
+# and the comment says so because the first version of it claimed a reason that turned
+# out to be wrong.
 #
-# FOUND THE HARD WAY on grocery: its so400m member is 3,489,696 x 1152 = 4.0 billion
-# elements and took the whole process down. sf_office's 1.0 billion is under the line,
-# which is why nothing hit it until a big recording did; bike's 2.7 billion was next.
+# WHAT ACTUALLY HAPPENS, measured one shape per process because the failure is an abort:
 #
-# CUDA HAS NO SUCH LIMIT. It is the reason a big index can live on an NVIDIA card and
-# not on Metal, and worth knowing before anyone reads a Mac measurement as an answer
-# about a card.
+#   an 8 GB fp16 tensor on mps, matmul over the WHOLE thing          survived
+#   the same tensor, matmul over a SLICE from row 1,664,135          ABORTED
+#   the same tensor, slice from row 1,865,135 / near the end         ABORTED
+#
+# So it is not the size. It is SLICING: a view with a large storage offset is what Metal
+# cannot build, and `scores` slices constantly because that is what `rank_with` narrowing
+# does -- which is why grocery only ever died in the real query path and never in an
+# isolated test of the same tensor. The error it dies with, `MPSNDArray ... NDArray
+# dimension length > INT_MAX`, is about the view, not the array.
+#
+# THE REAL FIX is to hold a member as several pieces small enough that no offset is ever
+# large -- measured to survive, along with `narrow().clone()` and `index_select`, while
+# `.contiguous()` on the slice does NOT. Until that exists, a member over this size stays
+# on the cpu, which costs the win on grocery and bike and keeps the process alive.
+#
+# CUDA is unaffected either way.
 MPS_MAX_ELEMENTS = 2**31 - 1
 
 
