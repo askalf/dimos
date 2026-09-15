@@ -180,3 +180,25 @@ def test_a_hot_patch_lands_where_its_frame_was_looking() -> None:
     assert all(abs(a - b) <= size for a, b in zip(back, centre[:3], strict=False)), (
         "a voxel's centre has to be within one voxel of the point that made it"
     )
+
+
+def test_detect_models_names_member_tags_not_checkpoints() -> None:
+    """`detect_models` is a list of MEMBER TAGS, the same thing `--models` takes.
+
+    It used to be handed to `warm()` as if it were checkpoint names, so setting it at all
+    sent a tag like "base_patch16_224" to the Hugging Face hub as a repository and the
+    module died on a 404 -- while the SAME value was simultaneously used as a tag to
+    filter the streams. One value cannot be both.
+    """
+    from pathlib import Path
+    import re
+
+    source = Path(__file__).with_name("module.py").read_text()
+    assert "self.live.warm(self.config.detect_models" not in source, (
+        "detect_models holds tags; warm() takes checkpoints"
+    )
+    # What warm is given has to come from spec_of, which is the tag -> checkpoint map.
+    warm_call = re.search(
+        r"wanted = \[spec_of\(tag\) for tag, _ in self\.live\.members\(\)\]", source
+    )
+    assert warm_call, "the checkpoints warm() loads should be derived from the tags searched"

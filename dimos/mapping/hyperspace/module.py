@@ -43,6 +43,7 @@ from dimos.mapping.hyperspace.embedder import (
     SIGLIP2_MODEL_NAME,
     PatchEnsemble,
 )
+from dimos.mapping.hyperspace.frames import spec_of
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
 from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
 from dimos.mapping.hyperspace.msgs import FoundObjects
@@ -327,6 +328,9 @@ class HyperspaceConfig(MemoryModuleConfig):
     owl_device: str = "auto"
     # Models the frames-first search ranks with. [] = every model in the index,
     # which is what the three-way agreement wants.
+    # MEMBER TAGS to search, as `dimos map live --models` takes them (for example
+    # "base_patch16_224"), NOT Hugging Face checkpoint names. Empty searches every model
+    # the recording holds, which is what the cross-model agreement wants.
     detect_models: list[str] = []
     # Episodes to spend a detector call on, frames of each to try, and frames per
     # forward pass. The detector is ~90% of a query, so these are the cost.
@@ -465,7 +469,14 @@ class Hyperspace(MemoryModule):
             ),
         )
         self.register_disposable(self.live)
-        loaded = self.live.warm(self.config.detect_models or specs)
+        # The tags this query will actually search, turned into the checkpoints behind
+        # them. `detect_models` names MEMBER TAGS, the same thing `--models` takes and
+        # the same thing `LiveConfig.models` filters on -- it used to be handed to
+        # `warm()` as if it were a list of checkpoints, so setting it at all sent a tag
+        # like "base_patch16_224" to the Hugging Face hub as a repository name and the
+        # module died on a 404. Empty means every model the store holds.
+        wanted = [spec_of(tag) for tag, _ in self.live.members()] or specs
+        loaded = self.live.warm(wanted)
         logger.info(
             f"hyperspace detect: OWLv2 on {device} in {loaded['detector']:.1f}s, text towers "
             f"in {loaded['towers']:.1f}s, {int(loaded['index'])} patches already indexed, "
