@@ -32,8 +32,8 @@ from typing import Any, TypeVar
 
 from dimos_lcm.geometry_msgs import PoseStamped as LCMPoseStamped
 from dimos_lcm.sensor_msgs import Joy as LCMJoy
-from fastapi import WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import Field
 from reactivex.disposable import Disposable
@@ -45,6 +45,7 @@ from dimos.core.stream import In, Out
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.imitation_msgs.EpisodeStatus import EpisodeStatus
 from dimos.msgs.sensor_msgs.Joy import Joy
+from dimos.stream.audio.tts.spec import SpeechRequest, SpeechSynthesisSpec
 from dimos.teleop.utils.teleop_transforms import webxr_to_robot
 
 # Hand is re-exported for callers; it lives in controller_types.
@@ -111,6 +112,7 @@ class WebXRTeleopModule(Module):
     button_pressed: Out[Buttons]
     button_released: Out[Buttons]
     status: In[EpisodeStatus]
+    _speech: SpeechSynthesisSpec | None = None
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -162,7 +164,24 @@ class WebXRTeleopModule(Module):
         @self._web_server.app.get("/teleop", response_class=HTMLResponse)
         async def teleop_index() -> HTMLResponse:
             index_path = STATIC_DIR / "index.html"
-            return HTMLResponse(content=index_path.read_text())
+            return HTMLResponse(
+                content=index_path.read_text().replace(
+                    "__SPEECH_ENABLED__", str(self._speech is not None).lower()
+                )
+            )
+
+        @self._web_server.app.post("/teleop/speech")
+        def speech(request: SpeechRequest) -> Response:
+            # FastAPI runs this synchronous route in its thread pool; synthesis
+            # and module RPC must not block video, status, or controller input.
+            if self._speech is None:
+                raise HTTPException(status_code=503, detail="Speech synthesis is unavailable")
+            try:
+                audio = self._speech.synthesize(request.text)
+            except Exception as exc:
+                logger.exception("Speech synthesis failed")
+                raise HTTPException(status_code=503, detail="Speech synthesis failed") from exc
+            return Response(audio, media_type="audio/wav")
 
         if STATIC_DIR.is_dir():
             self._web_server.app.mount(
@@ -203,7 +222,7 @@ class WebXRTeleopModule(Module):
         with self._lock:
             status = self._latest_episode_status
         if status is not None:
-            self._broadcast_text(self._encode_episode_status(status))
+            self._broadcast_text(self._encode_episode_status(status, snapshot=True))
         return True
 
     def _client_disconnected(self, ws: WebSocket) -> None:
@@ -226,12 +245,13 @@ class WebXRTeleopModule(Module):
     def _on_episode_status(self, status: EpisodeStatus) -> None:
         with self._lock:
             self._latest_episode_status = status
-        self._broadcast_text(self._encode_episode_status(status))
+        self._broadcast_text(self._encode_episode_status(status, snapshot=False))
 
     @staticmethod
-    def _encode_episode_status(status: EpisodeStatus) -> str:
+    def _encode_episode_status(status: EpisodeStatus, *, snapshot: bool) -> str:
         payload = status.model_dump(mode="json")
         payload["type"] = "episode_status"
+        payload["snapshot"] = snapshot
         payload["elapsed_s"] = (
             max(0.0, time.time() - status.ts) if status.state == "recording" else 0.0
         )

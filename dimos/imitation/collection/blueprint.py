@@ -29,6 +29,7 @@ from dimos.core.global_config import global_config
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
 from dimos.imitation.collection.episode_monitor import EpisodeMonitorModule
 from dimos.imitation.collection.recorder import CollectionRecorder
+from dimos.stream.audio.tts.kokoro_module import optional_tts
 from dimos.teleop.webxr.blueprints import (
     teleop_webxr_piper,
     teleop_webxr_xarm7,
@@ -60,6 +61,7 @@ learning_collect_webxr_xarm7 = autoconnect(
         record_tf=False,
     ),
     EpisodeMonitorModule.blueprint(),  # default button_map: toggle=B, discard=Y
+    *optional_tts(),
     teleop_webxr_xarm7,
     *_camera_if_real(),
 )
@@ -71,6 +73,7 @@ learning_collect_webxr_piper = autoconnect(
         record_tf=False,
     ),
     EpisodeMonitorModule.blueprint(),  # default button_map: toggle=B, discard=Y
+    *optional_tts(),
     teleop_webxr_piper,
     *_camera_if_real(),
 )
