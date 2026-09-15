@@ -29,7 +29,9 @@ use dimos_motion2_target::planner::Emb;
 /// floor whose true height sits near a voxel boundary quantises into both
 /// layers either side of it, and one layer leaves the upper one standing as a
 /// carpet the search cannot cross.
-pub const LOW: f64 = 0.16;
+/// Three voxel layers: the floor reads a layer high at range under the pitched
+/// lidar, and its noise reaches the next (see obstacles.py).
+pub const LOW: f64 = 0.24;
 
 /// The model names a config may carry, for the validation error message.
 pub const MODELS: [&str; 1] = ["body_band"];
@@ -123,7 +125,7 @@ mod tests {
         Emb::fixture()
     }
 
-    /// A ground slab 0..0.12 m thick under a 0.30 m obstacle, lifted to `base_z`.
+    /// A ground slab 0..0.12 m thick under an obstacle just above LOW, lifted to `base_z`.
     ///
     /// The recording's geometry: the map's z origin is base height, so absolute
     /// z says nothing until it is referenced to the surface the feet stand on.
@@ -134,10 +136,16 @@ mod tests {
                 pts.push([x, 0.0, z + ground_z]);
             }
         }
-        for z in [0.18f32, 0.24, 0.30] {
+        for z in obstacle_heights() {
             pts.push([2.0, 0.0, z + ground_z]);
         }
         pts
+    }
+
+    /// Three heights just above the ground exclusion, so the fixture follows LOW.
+    fn obstacle_heights() -> [f32; 3] {
+        let low = LOW as f32;
+        [low + 0.02, low + 0.08, low + 0.14]
     }
 
     #[test]
@@ -146,7 +154,7 @@ mod tests {
         let model = load("body_band", &fixture()).expect("known model");
         let got = hard_points(model.as_ref(), &room(-0.28), -0.28);
         assert_eq!(got.len(), 3, "{got:?}");
-        for (p, want) in got.iter().zip([0.18f32, 0.24, 0.30]) {
+        for (p, want) in got.iter().zip(obstacle_heights()) {
             assert!((p[2] - want).abs() < 1e-6, "{p:?} wanted {want}");
         }
     }

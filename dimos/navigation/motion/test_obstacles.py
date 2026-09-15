@@ -27,15 +27,18 @@ from dimos.navigation.motion.obstacles import (
     load,
 )
 
+# Three heights just above the ground exclusion, so the fixture follows LOW.
+POST_HEIGHTS = (LOW + 0.02, LOW + 0.08, LOW + 0.14)
+
 
 def _room(base_z: float) -> NDArray[np.float64]:
-    """A ground slab 0..0.12 m thick under a 0.30 m obstacle, lifted to base_z.
+    """A ground slab 0..0.12 m thick under an obstacle just above LOW, lifted to base_z.
 
     The recording's geometry: the map's z origin is base height, so absolute z
     says nothing until it is referenced to the surface the feet stand on.
     """
     ground = np.array([[x, 0.0, z] for x in (-1.0, 0.0, 1.0) for z in (0.0, 0.04, 0.08, 0.12)])
-    post = np.array([[2.0, 0.0, z] for z in (0.18, 0.24, 0.30)])
+    post = np.array([[2.0, 0.0, z] for z in POST_HEIGHTS])
     return (np.concatenate([ground, post]) + np.array([0.0, 0.0, base_z])).astype(np.float32)
 
 
@@ -44,7 +47,7 @@ def test_body_band_drops_the_ground_slab_and_keeps_the_obstacle():
     ground_z = -0.28  # base at +0.01, base_height 0.29
     out = hard_points(BodyBand(GO2), _room(ground_z), ground_z)
     assert len(out) == 3
-    assert np.allclose(np.sort(out[:, 2]), [0.18, 0.24, 0.30], atol=1e-6)
+    assert np.allclose(np.sort(out[:, 2]), POST_HEIGHTS, atol=1e-6)
 
 
 def test_body_band_looks_under_the_belly_not_over_it():

@@ -214,10 +214,10 @@ def test_only_a_carrot_that_jumped_is_a_new_task():
 
 
 def _room(floor_z: float, n: int = 400) -> NDArray[np.float64]:
-    """A floor slab at `floor_z` with clutter 0.2..0.4 m above it."""
+    """A floor slab at `floor_z` with clutter 0.3..0.4 m above it (over LOW, under the belly)."""
     a = np.arange(n) / n * 2 * math.pi
     slab = np.column_stack([np.cos(a), np.sin(a), np.full(n, floor_z)])
-    clutter = np.array([[1.0, 0.0, floor_z + 0.2], [1.0, 0.2, floor_z + 0.4]])
+    clutter = np.array([[1.0, 0.0, floor_z + 0.3], [1.0, 0.2, floor_z + 0.4]])
     return np.concatenate([slab, clutter]).astype(np.float32)
 
 
@@ -226,7 +226,7 @@ def test_the_band_rides_the_body_not_the_map_origin():
     out = hard_points(load_model(MotionPlannerConfig().obstacle_model, GO2), _room(-0.28), -0.28)
     # the slab is gone and the clutter reads as its true height over the ground
     assert len(out) == 2
-    assert abs(float(out[:, 2].min()) - 0.2) < 1e-6
+    assert abs(float(out[:, 2].min()) - 0.3) < 1e-6
     assert abs(float(out[:, 2].max()) - 0.4) < 1e-6
 
 

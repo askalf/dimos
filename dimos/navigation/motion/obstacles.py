@@ -42,12 +42,14 @@ if TYPE_CHECKING:
 
     from dimos.navigation.motion.embodiment.base import Embodiment
 
-# Ground exclusion for the body-referenced band: TWO voxel layers, not one. A
-# floor whose true height sits near a voxel boundary quantises into both layers
-# either side of it, and one layer leaves the upper one standing as a carpet
-# the search cannot cross (measured: at one layer the robot is inside its own
-# band on every tick, at two on 7 % of them).
-LOW = 2 * VOXEL
+# Ground exclusion for the body-referenced band: THREE voxel layers. A floor
+# whose true height sits near a voxel boundary quantises into the layers either
+# side of it, and under a lidar pitched 60 deg down the grazing returns beyond
+# a metre read a layer high again (measured on the Go2: floor voxels at +0.02
+# under the body, +0.10 at 1-6 m). Their noise then reaches the third layer,
+# and at two layers that layer stood as a carpet the search could not cross:
+# 18 of 36 waypoints of an open-room route at zero clearance, 0 of 36 at three.
+LOW = 3 * VOXEL
 
 
 def _no_soft() -> NDArray[np.float32]:
