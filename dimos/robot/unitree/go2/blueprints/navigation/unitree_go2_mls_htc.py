@@ -27,7 +27,7 @@ from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
 from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
-from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
+from dimos.navigation.nav_3d.mls_planner.viz import nav_visual_override
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import rerun_config
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.visualization.vis_module import vis_module
@@ -65,7 +65,7 @@ _nav_rerun_config = {
         "world/global_map": _render_global_map,
         "world/planner_path": None,
         "world/path": _render_path,
-        **planner_visual_override(planner_viz_hz),
+        **nav_visual_override(planner_viz_hz, voxel_size, wall_clearance_m=0.2),
     },
 }
 

@@ -139,7 +139,12 @@ MID360 = RelocalizeConfig(
 
 # A rig's name to its measured settings. Add an entry by running a study for
 # that rig (tune.md); do not retune an existing one for a new sensor.
-PRESETS: dict[str, RelocalizeConfig] = {"mid360": MID360}
+# The mid360 scales with the accept policy the go2 nav_3d stack runs: a wrong
+# hypothesis inside the mapped area scores 0.5 to 0.67, a right one 0.85 up, and
+# best of three RANSAC searches lands a right one most attempts.
+GO2_NAV = MID360.model_copy(update={"fitness_threshold": 0.8, "ransac_restarts": 3})
+
+PRESETS: dict[str, RelocalizeConfig] = {"mid360": MID360, "go2-nav": GO2_NAV}
 DEFAULT_PRESET = "mid360"
 
 
@@ -250,6 +255,11 @@ class LidarRelocalizer:
     def relocalize(
         self, local_map: PointCloud, world_frame: str, map_frame: str
     ) -> Transform | None:
+        return self.attempt(local_map, world_frame, map_frame)[0]
+
+    def attempt(
+        self, local_map: PointCloud, world_frame: str, map_frame: str
+    ) -> tuple[Transform | None, RegistrationResult]:
         """The ``world_frame -> map_frame`` transform, or ``None`` when nothing was good enough.
 
         Ready to publish: stamped with the frames the TF tree expects, and
@@ -262,8 +272,8 @@ class LidarRelocalizer:
         result = self.align(local_map)
         logger.info(f"align: fitness={result.fitness:.3f} rmse={result.inlier_rmse:.3f}")
         if result.fitness < self.config.fitness_threshold:
-            return None
+            return None, result
         placement = Transform.from_matrix(
             np.asarray(result.transformation), frame_id=map_frame, child_frame_id=world_frame
         )
-        return placement.inverse()
+        return placement.inverse(), result

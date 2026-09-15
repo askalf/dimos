@@ -32,7 +32,7 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import (
     MLSPlannerNative,
     MLSPlannerNativeConfig,
 )
-from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
+from dimos.navigation.nav_3d.mls_planner.viz import nav_visual_override
 from dimos.simulation.habitat.connection import HabitatConnection
 from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
 from dimos.visualization.vis_module import vis_module
@@ -181,9 +181,7 @@ habitat_nav = autoconnect(
         rerun_config=_rerun_config(
             {
                 "world/path": _render_path,
-                **planner_visual_override(
-                    planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=0.1
-                ),
+                **nav_visual_override(planner_viz_hz, voxel_size, wall_clearance_m=0.1),
             }
         ),
     ).remappings(

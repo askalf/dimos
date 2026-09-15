@@ -26,7 +26,7 @@ from dimos.navigation.dannav.holonomic_tc.module import DanHolonomicTC
 from dimos.navigation.dannav.local_planner.module import DanLocalPlanner
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
-from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
+from dimos.navigation.nav_3d.mls_planner.viz import nav_visual_override
 from dimos.protocol.pubsub.impl.zenohpubsub import QOS_LATEST_WINS, Topic as ZenohTopic
 from dimos.robot.deeprobotics.m20.camera import M20CameraRelay
 from dimos.robot.deeprobotics.m20.connection import M20Connection
@@ -127,7 +127,7 @@ _rerun_config = {
         "world/rear_camera": _render_h265,
         "world/front_camera_info": _render_front_camera_info,
         "world/rear_camera_info": _render_rear_camera_info,
-        **planner_visual_override(PLANNER_VIZ_HZ),
+        **nav_visual_override(PLANNER_VIZ_HZ, VOXEL_SIZE_M, wall_clearance_m=0.3),
     },
     "static": {
         "world/robot_body": _static_robot_body,
