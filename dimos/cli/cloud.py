@@ -25,8 +25,8 @@ backend. `DIMOS_API_KEY` (via GlobalConfig) overrides any stored login.
 import importlib.metadata
 import json
 import os
+from pathlib import Path
 import socket
-import sys
 import textwrap
 import time
 from types import ModuleType
@@ -98,6 +98,9 @@ def _signed_in_card(email: str, key_id: str, where: str) -> list[str]:
     """
     cols = min(theme.term_width(), 110)
     width = max(24, cols - 2 - (22 + 3) - 4)
+    # A robot without a keyring stores the key in a file; "~" keeps that path
+    # short enough that the card keeps its art.
+    where = where.replace(str(Path.home()), "~", 1)
     body = [
         theme.paint("Signed in", theme.rgb("agent")),
         theme.paint(email, theme.rgb("white")),
@@ -155,14 +158,14 @@ def _reveal(rows: list[str]) -> None:
     effect.terminal_config.frame_rate = 100_000
     frames = list(effect)
     started, n = time.time(), 60
-    for k in range(n):
-        sys.stdout.write(
-            "\033[H" + frames[min(len(frames) - 1, int(len(frames) * k / (n - 1)))] + "\n"
-        )
-        sys.stdout.flush()
-        slack = started + (k + 1) / 30 - time.time()
-        if slack > 0:
-            time.sleep(slack)
+    # Redraw in place, relative to where the cursor is. An absolute cursor-home
+    # would paint the wordmark over whatever sits at the top of the window.
+    with theme.Live() as live:
+        for k in range(n):
+            live.update(frames[min(len(frames) - 1, int(len(frames) * k / (n - 1)))].split("\n"))
+            slack = started + (k + 1) / 30 - time.time()
+            if slack > 0:
+                time.sleep(slack)
 
 
 def _wordmark() -> list[str]:

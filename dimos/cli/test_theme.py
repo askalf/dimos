@@ -212,3 +212,27 @@ def test_narrow_cards_fit_a_normal_terminal(tty: None, monkeypatch: pytest.Monke
         monkeypatch.setattr(theme, "term_width", lambda c=cols: c)
         rows = cloud._signed_in_card("you@dimensionalos.com", "ab12cd34", "keyring")
         assert len(rows) <= 24, f"{len(rows)} rows at {cols} columns"
+
+
+def test_reveal_redraws_relative_to_the_cursor(
+    tty: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wordmark must land where the card was, not at the top of the window.
+
+    An absolute cursor-home (ESC [ H) paints over whatever the user had on
+    screen; a recording through a real pty is how that was first seen."""
+    monkeypatch.setattr(theme, "term_width", lambda: 120)
+    rows = cloud._wordmark()
+    cloud._reveal(rows)
+    out = capsys.readouterr().out
+    assert out and "\x1b[H" not in out
+    assert f"\x1b[{len(rows)}F" in out, "frames should be redrawn by moving up the block's height"
+
+
+def test_signed_in_card_abbreviates_the_home_dir(tty: None) -> None:
+    """Robots keep the key in a file; the full path would cost the card its art."""
+    from pathlib import Path
+
+    rows = plain(cloud._signed_in_card("a@b", "k", str(Path.home() / ".config/dimos/credentials")))
+    text = " ".join(rows)
+    assert "~/.config/dimos/credentials" in text and str(Path.home()) not in text
