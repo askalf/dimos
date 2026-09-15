@@ -29,6 +29,7 @@ import torch
 import typer
 
 from dimos.mapping.hyperspace import cli, patches as hs, siglip_embedder
+from dimos.mapping.hyperspace.FoundObject import FoundObject, detection_of
 from dimos.mapping.hyperspace.ingest import (
     COMPLETE_STREAM,
     KEYFRAME_STREAM,
@@ -475,6 +476,52 @@ def test_member_specs_and_tags() -> None:
     assert member_tag("google/siglip2-base-patch16-naflex@576") == "base-patch16-naflex-576"
     assert member_tag("/models/siglip2-so400m-patch16-384") == "so400m-patch16-384"
     assert member_tag("google/siglip2-base-patch16-224#2x3") == "base-patch16-224-2x3"
+
+
+def test_an_answer_carries_a_real_detection3d_and_still_compares() -> None:
+    """The geometry is a `vision_msgs.Detection3D`, not a copy of its fields, so anything
+    that already draws a Detection3D draws this. Equality is checked because the LCM
+    message has no `__eq__` of its own: left to the generated dataclass one it compared
+    the message by IDENTITY and called two identical answers different, which is a
+    silent wrong answer in every test that compares results."""
+    found = FoundObject(
+        detection=detection_of(
+            frame=WORLD,
+            centre=(1.0, 2.0, 3.0),
+            extent=(0.4, 0.5, 0.6),
+            confidence=0.9,
+            query="a cone",
+            place_id=2,
+            stamp=101.0,
+        ),
+        depth_m=2.0,
+    )
+    position = found.detection.bbox.center.position
+    assert (position.x, position.y, position.z) == (1.0, 2.0, 3.0)
+    assert found.detection.results[0].hypothesis.class_id == "a cone"
+    assert found.detection.results_length == 1, "a reader trusts the length, not len()"
+    assert found.detection.frame_id == WORLD
+    assert found.centre == (1.0, 2.0, 3.0), "and the properties read the same numbers back"
+    assert found.extent == (0.4, 0.5, 0.6)
+    assert found.confidence == pytest.approx(0.9)
+    assert found.query == "a cone"
+    assert found.place_id == 2
+    assert found.stamp == pytest.approx(101.0)
+
+    same = FoundObject(
+        detection=detection_of(WORLD, (1.0, 2.0, 3.0), (0.4, 0.5, 0.6), 0.9, "a cone", 2, 101.0),
+        depth_m=2.0,
+    )
+    assert found == same, "two answers saying the same thing are the same answer"
+    assert found != FoundObject(
+        detection=detection_of(WORLD, (9.0, 2.0, 3.0), (0.4, 0.5, 0.6), 0.9, "a cone", 2, 101.0),
+        depth_m=2.0,
+    )
+
+    # Every answer needs its OWN box: the generated LCM constructor hands out a shared
+    # default one, so a second answer built the short way overwrites the first's geometry.
+    assert found.detection.bbox is not same.detection.bbox
+    assert FoundObject().detection.bbox is not FoundObject().detection.bbox
 
 
 def test_naflex_on_metal_gets_its_missing_resize() -> None:

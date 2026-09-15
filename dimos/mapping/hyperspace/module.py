@@ -38,7 +38,7 @@ from dimos.agents.skill_result import SkillResult
 from dimos.core.core import rpc
 from dimos.core.stream import In, Out
 from dimos.mapping.hyperspace import patches as hs
-from dimos.mapping.hyperspace.FoundObject import FoundObject
+from dimos.mapping.hyperspace.FoundObject import FoundObject, detection_of
 from dimos.mapping.hyperspace.FoundObjects import FoundObjects
 from dimos.mapping.hyperspace.frames import spec_of
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
@@ -891,11 +891,16 @@ class Hyperspace(MemoryModule):
                 frame=self.config.world_frame,
                 objects=[
                     FoundObject(
-                        frame=place.frame,
-                        centre=place.where,
-                        confidence=place.score,
+                        detection=detection_of(
+                            frame=place.frame,
+                            centre=place.where,
+                            extent=(0.0, 0.0, 0.0),
+                            confidence=place.score,
+                            query=query.text,
+                            place_id=0,
+                            stamp=place.seen_at,
+                        ),
                         views=place.views,
-                        stamp=place.seen_at,
                         depth_m=place.distance_m,
                     )
                     for place in query.places

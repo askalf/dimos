@@ -45,7 +45,7 @@ from dimos.mapping.hyperspace.detect import (
     find,
     merge_duplicates,
 )
-from dimos.mapping.hyperspace.FoundObject import FoundObject
+from dimos.mapping.hyperspace.FoundObject import FoundObject, detection_of
 from dimos.mapping.hyperspace.FoundObjects import FoundObjects
 from dimos.mapping.hyperspace.frames import TextTowers, member_streams, spec_of
 from dimos.mapping.hyperspace.resident import ResidentIndex
@@ -347,16 +347,19 @@ def objects_of(answers: Sequence[Detection], top: int = 0) -> list[FoundObject]:
         assert box is not None
         found.append(
             FoundObject(
-                frame=box.frame,
-                centre=tuple(float(v) for v in box.centre),
-                extent=tuple(float(v) for v in box.extent),
+                detection=detection_of(
+                    frame=box.frame,
+                    centre=tuple(float(v) for v in box.centre),
+                    extent=tuple(float(v) for v in box.extent),
+                    confidence=float(answer.score),
+                    query=answer.query,
+                    place_id=place_of(answer),
+                    stamp=float(answer.ts),
+                ),
                 depth_m=float(box.depth_m),
-                confidence=float(answer.score),
                 image=answer.image,
                 camera_frame=answer.camera_frame,
-                stamp=float(answer.ts),
                 box2d=tuple(float(v) for v in (answer.box2d or (0.0, 0.0, 0.0, 0.0))),
-                place_id=place_of(answer),
                 views=seen.get(place_of(answer), 1),
                 models=list(answer.models),
             )
