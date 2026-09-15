@@ -509,6 +509,9 @@ go2_viewer = autoconnect(
     # never between peers, so a peer here links to it and still sees nothing.
     zenoh_mode="client",
     zenoh_connect=GO2_ROUTER,
+    # The robot's own stack owns the bus-wide `Coordinator` name; this one just
+    # watches, so it shares the bus instead of fighting for it.
+    serve_coordinator_rpc=False,
     n_workers=3,
     robot_model="unitree_go2",
 )

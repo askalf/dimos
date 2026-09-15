@@ -62,3 +62,21 @@ def test_no_topics_keeps_the_firehose() -> None:
     _bridge()._subscribe(pubsub)
     assert pubsub.subscribed_all
     assert pubsub.keys == []
+
+
+def test_a_leaf_stack_does_not_claim_the_coordinator_name() -> None:
+    """Two stacks share one zenoh bus only if the second declines the bus-wide name."""
+    from unittest.mock import patch
+
+    from dimos.core.coordination.module_coordinator import ModuleCoordinator
+    from dimos.core.global_config import GlobalConfig
+
+    coordinator = ModuleCoordinator.__new__(ModuleCoordinator)
+    coordinator._global_config = GlobalConfig(serve_coordinator_rpc=False)
+    coordinator._coordinator_rpc = None
+
+    with patch("dimos.core.coordination.module_coordinator.CoordinatorRPC.serve") as serve:
+        coordinator.start_rpc_service()
+
+    serve.assert_not_called()
+    assert coordinator._coordinator_rpc is None
