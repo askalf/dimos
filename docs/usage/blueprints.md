@@ -366,8 +366,12 @@ parser = BlueprintConfigParser(base_blueprint)
 parsed = parser.parse(["--module1.arg1=5"])
 ```
 
-Use the same parser to render blueprint-aware CLI help (this is how
-`dimos run unitree-go2 --help` lists module configuration):
+`dimos run --help` and `dimos run unitree-go2 --help` show command usage and exit
+before loading blueprints or starting DimOS. Use `dimos run unitree-go2 --config-help`
+to load the blueprint and list its module configuration options without starting
+the robot. This requires the blueprint's dependencies to be installed.
+
+The configuration help uses the same parser:
 
 ```python skip
 print(parser.format_help())

@@ -78,7 +78,8 @@ dimos run <blueprint> [<blueprint> ...] [--daemon] [--disable <module> ...] [--<
 | `--daemon`, `-d` | Run in background (double-fork, health check, writes run registry) |
 | `--disable` | Module class names to exclude from the blueprint |
 | `--<config-field>` | Set a blueprint configuration field using its kebab-case name, for example `--voxel-size=1`; qualify ambiguous fields as `--voxelgridmapper.voxel-size=1` |
-| `--help` | Display the run options and available blueprint configuration flags |
+| `--help` | Display run command usage and exit before loading blueprints; works with or without a blueprint name |
+| `--config-help` | Load the selected blueprints and display their configuration flags without starting the robot; requires their dependencies |
 
 Dynamic values accept both `--field=value` and `--field value`. A shorthand is
 available only when it identifies one active module. If two modules expose the
@@ -87,6 +88,13 @@ as `--relocalizationmodule.map-file`. Global flags work on either side of
 `run`; older wrapper-style overrides are no longer accepted.
 
 ```bash
+# Command help without loading a blueprint
+dimos run --help
+dimos run unitree-go2 --help
+
+# Configuration help with blueprint dependencies installed
+dimos run unitree-go2 --config-help
+
 # Foreground (Ctrl-C to stop)
 dimos run unitree-go2
 

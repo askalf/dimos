@@ -101,12 +101,18 @@ def run(
         "--relay-ca",
         help="PEM CA bundle that signed the relay's certificate (mkcert, a private CA)",
     ),
-    show_help: bool = typer.Option(False, "--help"),
+    # Leave --help to Typer so it exits before argument validation or blueprint imports.
+    show_config_help: bool = typer.Option(
+        False,
+        "--config-help",
+        help="Load blueprints to show their configuration options, then exit",
+    ),
 ) -> None:
     """Start a robot blueprint"""
 
     # Log this at the start so that people get immediate feedback that the program has started.
-    logger.info("Starting DimOS")
+    if not show_config_help:
+        logger.info("Starting DimOS")
 
     if config_path == DEFAULT_CONFIG_PATH:
         _reject_legacy_config()
@@ -188,10 +194,10 @@ def run(
             raise typer.Exit(2) from error
     parser = BlueprintConfigParser(blueprint)
 
-    if show_help:
+    if show_config_help:
         reserved_options = {
             option
-            for parameter in ctx.command.params
+            for parameter in ctx.command.get_params(ctx)
             for option in (
                 *getattr(parameter, "opts", ()),
                 *getattr(parameter, "secondary_opts", ()),

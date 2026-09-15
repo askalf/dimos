@@ -40,6 +40,8 @@ class RunConfigA(ModuleConfig):
     map_file: str | None = None
     entity_prefix: str = "world"
     daemon: str = "module-default"
+    help: str = "module-help"
+    config_help: str = "module-config-help"
 
 
 class RunModuleA(Module):
@@ -430,8 +432,8 @@ def test_run_options_still_work_after_dynamic_config_flags(
     assert stubbed_run["blueprint"].disabled_modules_tuple == (RunModuleB,)
 
 
-def test_run_help_lists_dynamic_flags_without_starting(stubbed_run: dict[str, Any]) -> None:
-    result = CliRunner().invoke(main, ["run", "alpha", "--help"])
+def test_run_config_help_lists_dynamic_flags_without_starting(stubbed_run: dict[str, Any]) -> None:
+    result = CliRunner().invoke(main, ["run", "alpha", "--config-help"])
 
     assert result.exit_code == 0, result.output
     # In CI, GITHUB_ACTIONS makes typer emit ANSI styling that splits option
@@ -439,7 +441,11 @@ def test_run_help_lists_dynamic_flags_without_starting(stubbed_run: dict[str, An
     output_plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     assert "--map-file" in output_plain
     assert "--runmodulea.daemon" in output_plain
+    assert "--runmodulea.help" in output_plain
+    assert "--runmodulea.config-help" in output_plain
     assert output_plain.count("--daemon") == 1
+    assert output_plain.count("--help") == 1
+    assert output_plain.count("--config-help") == 1
     assert "parsed_config" not in stubbed_run
     assert "entry" not in stubbed_run
 

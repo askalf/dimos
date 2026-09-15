@@ -22,6 +22,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 # CI runners are slower — give generous headroom but still catch gross regressions.
 HELP_TIMEOUT_SECONDS = 8
 
@@ -61,18 +63,22 @@ def test_cli_import_does_not_pull_ipython() -> None:
     assert result.returncode == 0, f"IPython leaked into CLI import:\n{result.stderr}"
 
 
-def test_help_startup_time() -> None:
-    """`dimos --help` must finish in under {HELP_TIMEOUT_SECONDS}s."""
+@pytest.mark.parametrize("args", [["--help"], ["run", "--help"], ["run", "unitree-go2", "--help"]])
+def test_help_startup_time(args: list[str]) -> None:
+    """Help must finish without starting a robot or loading its dependencies."""
+    command = [sys.executable, "-m", "dimos.cli.dimos", *args]
     start = time.monotonic()
     result = subprocess.run(
-        [sys.executable, "-m", "dimos.cli.dimos", "--help"],
+        command,
         capture_output=True,
         text=True,
         timeout=HELP_TIMEOUT_SECONDS + 5,  # hard kill safety margin
     )
     elapsed = time.monotonic() - start
-    assert result.returncode == 0, f"dimos --help failed:\n{result.stderr}"
+    assert result.returncode == 0, f"{command} failed:\n{result.stderr}"
+    assert "Usage:" in result.stdout
+    assert "Starting DimOS" not in result.stdout
     assert elapsed < HELP_TIMEOUT_SECONDS, (
-        f"dimos --help took {elapsed:.1f}s (limit: {HELP_TIMEOUT_SECONDS}s). "
+        f"{command} took {elapsed:.1f}s (limit: {HELP_TIMEOUT_SECONDS}s). "
         f"Check for heavy imports in the CLI entrypoint or GlobalConfig."
     )
