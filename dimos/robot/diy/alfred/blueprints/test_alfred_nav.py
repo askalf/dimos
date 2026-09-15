@@ -249,7 +249,7 @@ def test_the_follower_falls_back_to_the_go2_artifact_until_alfred_has_one(
     """A robot that has never been characterized must still start.
 
     The follower raises on a missing artifact, so alfred-nav cannot simply point at
-    Alfred's before autotune has written it - it resolves, and says so loudly.
+    Alfred's and assume it is there - it resolves, and says so loudly.
     """
     from dimos.robot.diy.alfred import alfred_model
 
@@ -261,12 +261,22 @@ def test_the_follower_falls_back_to_the_go2_artifact_until_alfred_has_one(
     assert alfred_model.alfred_follower_artifact() == str(missing)
 
 
-def test_nav_and_autotune_agree_on_where_the_artifact_lives() -> None:
-    """Autotune writing somewhere the follower does not read would be silent."""
-    from dimos.robot.diy.alfred.alfred_model import ALFRED_FOLLOWER_ARTIFACT
-    from dimos.robot.diy.alfred.blueprints.alfred_autotune import ALFRED_ARTIFACT_PATH
+def test_alfreds_tuned_artifact_is_checked_in_where_the_follower_reads_it() -> None:
+    """The artifact is config now, not a build output - losing it degrades silently.
 
-    assert ALFRED_ARTIFACT_PATH == ALFRED_FOLLOWER_ARTIFACT
+    Nothing in this branch regenerates it, and a missing file does not fail: the
+    follower quietly falls back to a quadruped's gains and overshoots on hardware.
+    """
+    import json
+
+    from dimos.robot.diy.alfred.alfred_model import (
+        ALFRED_FOLLOWER_ARTIFACT,
+        alfred_follower_artifact,
+    )
+
+    assert Path(ALFRED_FOLLOWER_ARTIFACT).is_file(), "Alfred's tuned artifact is missing"
+    assert json.loads(Path(ALFRED_FOLLOWER_ARTIFACT).read_text()), "artifact is empty"
+    assert alfred_follower_artifact() == ALFRED_FOLLOWER_ARTIFACT
 
 
 def test_alfreds_measured_size_constants_match_the_urdf() -> None:

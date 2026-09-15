@@ -50,27 +50,27 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-# Where `dimos run alfred-autotune` writes what it measures, alongside the Go2's.
+# Alfred's measured plant model, checked in alongside the Go2's. It is the output
+# of a characterization run against the real FlowBase; the tooling that produces
+# it is not in this branch, so treat this file as config - hand-edit it only if
+# you know what the numbers mean.
 _ARTIFACT_DIR = Path(_GO2_FOLLOWER_ARTIFACT).parent
 ALFRED_FOLLOWER_ARTIFACT = str(_ARTIFACT_DIR / "alfred_posedomain.json")
-ALFRED_CHARACTERIZATION_REPORT = str(_ARTIFACT_DIR / "alfred_characterization.json")
 
 
 def alfred_follower_artifact() -> str:
-    """Alfred's own plant model once autotune has written it; the Go2's until then.
+    """Alfred's own plant model when it is present; the Go2's when it is not.
 
-    The follower raises on a missing artifact, so this cannot simply point at
-    Alfred's before it exists. Resolving at blueprint-build time instead means a
-    finished autotune run is picked up on the next launch with nothing to edit,
-    and a robot that has never been characterized still starts - loudly, on a
-    quadruped's gains, which it will overshoot on.
+    The follower raises on a missing artifact, so this resolves at blueprint-build
+    time rather than hardcoding a path: a checkout without the artifact still
+    starts - loudly, on a quadruped's gains, which it will overshoot on.
     """
     if Path(ALFRED_FOLLOWER_ARTIFACT).exists():
         return ALFRED_FOLLOWER_ARTIFACT
     logger.warning(
         "Alfred has no tuned artifact; the follower falls back to the Go2's plant model "
-        "and will run hot and overshoot. Produce Alfred's with: dimos run alfred-autotune "
-        "--alfredautotunedriver.armed true",
+        "and will run hot and overshoot. Restore it from the branch it was characterized "
+        "on before driving the base at speed.",
         expected=ALFRED_FOLLOWER_ARTIFACT,
     )
     return _GO2_FOLLOWER_ARTIFACT

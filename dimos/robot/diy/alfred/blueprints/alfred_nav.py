@@ -178,9 +178,9 @@ def alfred_manipulation_tasks() -> list[TaskConfig]:
                 "speed": 0.4,
                 "goal_tolerance": 0.20,
                 "orientation_tolerance": 0.25,
-                # Alfred's own plant model once alfred-autotune has written it,
-                # the Go2's with a warning until then. The follower raises on a
-                # missing artifact, so this resolves rather than hardcodes.
+                # Alfred's measured plant model when the artifact is present,
+                # the Go2's with a warning when it is not. The follower raises on
+                # a missing artifact, so this resolves rather than hardcodes.
                 "artifact_path": alfred_follower_artifact(),
                 # A sharp vertex makes the nearest point on the path flip between
                 # the incoming and outgoing legs, and the reference yaw flips

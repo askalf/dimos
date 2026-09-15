@@ -45,28 +45,16 @@ MAX_CLICK_VERTICAL_M = 50.0
 
 class MovementManagerConfig(ModuleConfig):
     tele_cooldown_sec: float = 1.0
-    # A whole-body plan drives the base in bursts with gaps between segments; navigation
-    # must not fill those gaps or it fights the plan it is sitting under.
-    manip_cooldown_sec: float = 1.0
     tele_cmd_vel_scaling: Twist = Twist(Vector3(1, 1, 1), Vector3(1, 1, 1))
 
 
 class MovementManager(Module):
-    """Mux the three things that drive the base, highest priority first.
-
-    teleop  > manipulation > navigation
-
-    Teleop is the operator and always wins. Manipulation is a whole-body plan executing a
-    base segment, and outranks navigation so a locomanipulation plan is not steered off
-    course by the route follower underneath it. Each level suppresses the one below for a
-    cooldown, so the gaps between a plan's segments do not hand the base back and forth.
-    """
+    """Combine tele_cmd_vel (keyboard controls) and nav_cmd_vel in a sane way, output cmd_vel"""
 
     config: MovementManagerConfig
 
     clicked_point: In[PointStamped]
     nav_cmd_vel: In[Twist]
-    manip_cmd_vel: In[Twist]
     tele_cmd_vel: In[Twist]
 
     goal: Out[PointStamped]
@@ -79,22 +67,18 @@ class MovementManager(Module):
         self._lock = threading.Lock()
         self._teleop_active = False
         self._last_teleop_time = 0.0
-        self._manip_active = False
-        self._last_manip_time = 0.0
 
     @rpc
     def start(self) -> None:
         super().start()
         self.register_disposable(Disposable(self.clicked_point.subscribe(self._on_click)))
         self.register_disposable(Disposable(self.nav_cmd_vel.subscribe(self._on_nav)))
-        self.register_disposable(Disposable(self.manip_cmd_vel.subscribe(self._on_manip)))
         self.register_disposable(Disposable(self.tele_cmd_vel.subscribe(self._on_teleop)))
 
     @rpc
     def stop(self) -> None:
         with self._lock:
             self._teleop_active = False
-            self._manip_active = False
         super().stop()
 
     def _on_click(self, msg: PointStamped) -> None:
@@ -125,30 +109,14 @@ class MovementManager(Module):
         self.goal.publish(cancel)
         logger.debug("Navigation cancelled — waiting for new goal")
 
-    def _expired(self, last: float, cooldown: float) -> bool:
-        return time.monotonic() - last >= cooldown
-
     def _on_nav(self, msg: Twist) -> None:
         with self._lock:
             if self._teleop_active:
-                if not self._expired(self._last_teleop_time, self.config.tele_cooldown_sec):
+                # check if cooldown has expired
+                elapsed = time.monotonic() - self._last_teleop_time
+                if elapsed < self.config.tele_cooldown_sec:
                     return
                 self._teleop_active = False
-            if self._manip_active:
-                if not self._expired(self._last_manip_time, self.config.manip_cooldown_sec):
-                    return
-                self._manip_active = False
-            self.cmd_vel.publish(msg)
-
-    def _on_manip(self, msg: Twist) -> None:
-        """Base segment of a whole-body plan. Yields to teleop, outranks navigation."""
-        with self._lock:
-            if self._teleop_active:
-                if not self._expired(self._last_teleop_time, self.config.tele_cooldown_sec):
-                    return
-                self._teleop_active = False
-            self._manip_active = True
-            self._last_manip_time = time.monotonic()
             self.cmd_vel.publish(msg)
 
     def _on_teleop(self, msg: Twist) -> None:
