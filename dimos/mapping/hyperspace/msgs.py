@@ -47,9 +47,16 @@ class FoundObject:
     frame: str = ""
     centre: tuple[float, float, float] = (0.0, 0.0, 0.0)
     extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    # How far the object was from the camera in the frame below, in metres. Kept
-    # because a box eight metres out is worth less than the same box at one metre,
-    # and the centre alone does not say which this was.
+    # How far the object was from the camera THAT SAW IT, at the moment it was seen, in
+    # metres. Kept because a box eight metres out is worth less than the same box at one
+    # metre, and the centre alone does not say which this was.
+    #
+    # IT IS NOT THE DISTANCE FROM WHOEVER IS ASKING, and it reads exactly like one. An
+    # agent handed this alongside `centre` told a user a basket was "about 1 meter away"
+    # while drawing them a 33.7 m route to it -- the recording's camera had passed within
+    # a metre of it, and the person had not. Anything rendering this to a human wants
+    # "seen from about a metre", or nothing; the distance from the asker is theirs to
+    # compute from `centre` and where they are.
     depth_m: float = 0.0
 
     # How sure the detector was, 0-1, on its own calibrated scale.
