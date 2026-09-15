@@ -178,7 +178,7 @@ def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
 
     width = shutil.get_terminal_size((100, 24)).columns
     progress = Progress(*_progress_columns(width), auto_refresh=False)  # the Live below renders it
-    with theme.muted_input(), Live(progress, screen=True, transient=True, refresh_per_second=10):
+    with theme.quiet_scroll(), Live(progress, screen=True, transient=True, refresh_per_second=10):
         yield _Ticker(progress, name, width)
 
 

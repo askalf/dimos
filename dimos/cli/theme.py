@@ -171,48 +171,33 @@ def enabled() -> bool:
     return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
 
-def _mute_echo() -> object | None:
-    """Turn off terminal echo, returning what is needed to restore it.
-
-    A fullscreen view does not read stdin, but the terminal still queues and
-    echoes whatever is typed or scrolled at it. Silencing echo keeps scroll
-    escapes off the canvas; ISIG is untouched, so Ctrl-C still interrupts.
-    """
-    try:
-        import termios
-
-        fd = sys.stdin.fileno()
-        saved = termios.tcgetattr(fd)
-        muted = termios.tcgetattr(fd)
-        muted[3] &= ~termios.ECHO  # lflags
-        termios.tcsetattr(fd, termios.TCSADRAIN, muted)
-        return (fd, saved)
-    except Exception:
-        return None  # not a real terminal, or no termios (Windows): nothing to mute
-
-
-def _restore_echo(state: object | None) -> None:
-    if not isinstance(state, tuple):
-        return
-    try:
-        import termios
-
-        fd, saved = state
-        termios.tcflush(fd, termios.TCIFLUSH)  # drop queued scroll bytes, don't spill to the shell
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-    except Exception:
-        pass
+# In the alternate screen a terminal turns the scroll wheel into arrow keys, which
+# the tty echoes over a fullscreen view as ^[[A litter. That is "alternate
+# scroll" mode, and switching it off for the duration means a scroll sends
+# nothing at all. It is saved first and restored after (XTSAVE / XTRESTORE), so
+# the user's next `less` still wheel-scrolls. This replaces muting echo, which
+# macOS terminals read as a password prompt and answer with Secure Keyboard
+# Entry.
+_SCROLL_OFF = "\033[?1007s\033[?1007l"
+_SCROLL_RESTORE = "\033[?1007r"
 
 
 @contextlib.contextmanager
-def muted_input() -> Iterator[None]:
-    """Mute terminal echo around a fullscreen view, so a touchpad scroll's
-    arrow-key escapes are not painted over it. A no-op off a terminal."""
-    state = _mute_echo() if enabled() else None
+def quiet_scroll() -> Iterator[None]:
+    """Keep a scroll wheel from typing arrow keys over a fullscreen view.
+
+    A no-op off a terminal. Nothing here touches the tty settings.
+    """
+    if not enabled():
+        yield
+        return
+    sys.stdout.write(_SCROLL_OFF)
+    sys.stdout.flush()
     try:
         yield
     finally:
-        _restore_echo(state)
+        sys.stdout.write(_SCROLL_RESTORE)
+        sys.stdout.flush()
 
 
 def term_width() -> int:
@@ -420,7 +405,6 @@ class Live:
         self._static = not enabled()
         self._done = False
         self._fullscreen = fullscreen
-        self._echo: object | None = None
 
     def __enter__(self) -> Live:
         if not self._static:
@@ -428,22 +412,22 @@ class Live:
             # does not, because it moves up a logical-line count that desyncs the
             # moment the terminal reflows. Use fullscreen for a wait that stays on
             # screen long enough to be resized, in-place for a brief animation.
-            if self._fullscreen:
-                # A touchpad scroll makes the terminal send arrow-key escapes;
-                # with echo on they print as ^[[A litter over the card. Off for
-                # the duration, restored on exit.
-                self._echo = _mute_echo()
+            # Fullscreen also switches alternate scroll off, so a touchpad scroll
+            # cannot type arrow keys over the card; see _SCROLL_OFF.
             sys.stdout.write(
-                "\033[?1049h\033[2J\033[H\033[?25l" if self._fullscreen else "\033[?25l"
+                "\033[?1049h" + _SCROLL_OFF + "\033[2J\033[H\033[?25l"
+                if self._fullscreen
+                else "\033[?25l"
             )
             sys.stdout.flush()
         return self
 
     def __exit__(self, *exc: object) -> None:
         if not self._static:
-            sys.stdout.write("\033[?25h\033[?1049l" if self._fullscreen else "\033[?25h")
+            sys.stdout.write(
+                "\033[?25h" + _SCROLL_RESTORE + "\033[?1049l" if self._fullscreen else "\033[?25h"
+            )
             sys.stdout.flush()
-            _restore_echo(self._echo)
 
     def update(self, rows: list[str]) -> None:
         if self._static:

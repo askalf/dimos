@@ -72,9 +72,12 @@ def test_progress_columns_shed_speed_and_eta_when_narrow() -> None:
         assert any(isinstance(c, BarColumn) and c.bar_width is None for c in cols)
 
 
-def test_bar_draws_on_the_alternate_screen_and_mutes_echo(monkeypatch) -> None:
-    """The transfer bar must repaint whole on the alt screen. An inline bar cannot
-    survive the terminal reflowing a wide line into two rows on a resize."""
+def test_bar_draws_on_the_alternate_screen_and_quiets_scroll(monkeypatch, capsys) -> None:
+    """The transfer bar must repaint whole on the alt screen (an inline bar cannot
+    survive the terminal reflowing a wide line on resize), and it must switch
+    alternate-scroll off for the duration rather than mute echo: echo-off is what
+    a password prompt does, and macOS terminals answer it with Secure Keyboard
+    Entry."""
     import rich.live
     from rich.progress import Progress
 
@@ -94,15 +97,15 @@ def test_bar_draws_on_the_alternate_screen_and_mutes_echo(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(rich.live, "Live", FakeLive)
-    muted: list = []
     monkeypatch.setattr(theme, "enabled", lambda: True)
-    monkeypatch.setattr(theme, "_mute_echo", lambda: muted.append("mute") or ("fd", "saved"))
-    monkeypatch.setattr(theme, "_restore_echo", lambda s: muted.append("restore"))
     with cli._bar("rec.db") as tick:
         tick("upload", 1, 2)
+    out = capsys.readouterr().out
     assert seen.get("screen") is True and seen.get("transient") is True
     assert isinstance(seen["renderable"], Progress)
-    assert muted == ["mute", "restore"], "echo muted for the transfer, restored after"
+    assert out.index("\x1b[?1007s") < out.index("\x1b[?1007l") < out.index("\x1b[?1007r"), (
+        "alternate scroll: saved, then off, then restored"
+    )
 
 
 def test_ticker_sheds_columns_when_the_window_narrows(monkeypatch) -> None:

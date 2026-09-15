@@ -247,6 +247,7 @@ def test_fullscreen_live_uses_the_alternate_screen(
     out = capsys.readouterr().out
     assert "\x1b[?1049h" in out and "\x1b[?1049l" in out, "enter and leave the alt screen"
     assert "\x1b[?25l" in out and "\x1b[?25h" in out, "cursor hidden during, restored after"
+    assert out.index("\x1b[?1007l") < out.index("\x1b[?1007r"), "alternate scroll off, then back"
 
 
 def test_fullscreen_live_repaints_from_a_fixed_origin(
@@ -338,10 +339,22 @@ def test_fullscreen_live_tolerates_a_non_tty_stdin(
         live.update(["x"])  # reaching here without raising is the assertion
 
 
-def test_muted_input_is_a_no_op_off_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_quiet_scroll_is_a_no_op_off_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(theme, "enabled", lambda: False)
-    calls: list[str] = []
-    monkeypatch.setattr(theme, "_mute_echo", lambda: calls.append("mute"))
-    with theme.muted_input():
+    with theme.quiet_scroll():
         pass
-    assert calls == [], "nothing to mute when not drawing to a terminal"
+    assert capsys.readouterr().out == "", "no terminal, no mode changes"
+
+
+def test_quiet_scroll_saves_disables_then_restores(
+    tty: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Off for the duration so a wheel scroll types nothing, and restored after so
+    the user's next `less` still wheel-scrolls. No termios: muting echo instead
+    reads as a password prompt to macOS terminals (Secure Keyboard Entry)."""
+    with theme.quiet_scroll():
+        pass
+    out = capsys.readouterr().out
+    assert out.index("\x1b[?1007s") < out.index("\x1b[?1007l") < out.index("\x1b[?1007r")
