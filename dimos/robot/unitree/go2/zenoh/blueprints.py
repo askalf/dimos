@@ -454,3 +454,46 @@ go2_zenoh_motion_pointlio = autoconnect(
         ),
     ),
 ).global_config(transport="zenoh", n_workers=11, robot_model="unitree_go2")
+
+
+# The viewer half, on its own: run it on the machine with the screen while the stack
+# runs headless next to the robot (`--robot-ip <robot>` dials that router).
+#
+# This is the fix for a viewer that lags on bad wifi. A rerun gRPC stream is ordered
+# and lossless, so a viewer behind a slow link replays history rather than skipping it
+# and the delay only grows. Zenoh drops instead: the subscription keeps the newest
+# sample per topic, and the publisher's congestion control discards the rest. Moving
+# the bridge to this side of the link puts that drop in front of the wifi, and the
+# rerun hop it feeds is then localhost.
+#
+# `topics` is what makes it cheap. It is one zenoh subscription per name, so anything
+# unlisted never crosses the link at all -- unlike `visual_override: None`, which only
+# declines to draw what already arrived. The clouds stay on the robot: `lidar` and
+# `lidar_raw` are the raw sweeps, `local_map_fine` and `global_map` the maps the local
+# map already summarises, and `imu` is 200 Hz of something nothing draws.
+go2_viewer = autoconnect(
+    vis_module(
+        viewer_backend=global_config.viewer,
+        rerun_config={
+            **_rerun_config(),
+            "topics": [
+                "tf",
+                "odometry",
+                "local_map",
+                "path",
+                "planner_path",
+                "nodes",
+                "node_edges",
+                "surface_map",
+                "goal",
+                "way_point",
+                "goal_reached",
+                "video",
+                "camera_info",
+            ],
+            # The map is the one heavy thing left. Its own emit rate is the lidar's,
+            # which is more than a screen needs and more than a bad link carries.
+            "max_hz": {"world/local_map": 4.0, "world/surface_map": 1.0},
+        },
+    ),
+).global_config(transport="zenoh", n_workers=3, robot_model="unitree_go2")
