@@ -88,6 +88,10 @@ pub struct Config {
     /// Publish the global map every Nth frame. Zero disables it.
     #[validate(range(min = 0))]
     pub global_emit_every: u32,
+    /// Republish the full-map snapshot taken after a seed load every this many
+    /// seconds, for a subscriber that joined after the one emit. Zero emits it once.
+    #[validate(range(min = 0.0))]
+    pub full_map_republish_s: f64,
     /// Size the local region to this percentile of batch point distances, so a
     /// stray far hit cannot inflate it.
     #[validate(range(min = 0.0, max = 100.0))]

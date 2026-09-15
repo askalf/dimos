@@ -168,6 +168,10 @@ struct State {
     // a newer mask already accounted for.
     last_clear_mask_stamp: f64,
     seed: SeedState,
+    // The full map as emitted after the seed load, kept so a subscriber that
+    // joined later still gets it (`full_map_republish_s`).
+    full_map_points: Option<Vec<f32>>,
+    full_map_sent: Instant,
 }
 
 /// Owns the mapper and does every map mutation and publish off the handle
@@ -193,13 +197,28 @@ impl Worker {
             mapper: Mapper::new(self.config.clone()),
             last_clear_mask_stamp: 0.0,
             seed: SeedState::Idle,
+            full_map_points: None,
+            full_map_sent: Instant::now(),
         };
+        let republish = Duration::from_secs_f64(self.config.full_map_republish_s);
         loop {
             let job = if matches!(state.seed, SeedState::Loading(_)) {
                 match self.jobs.try_recv() {
                     Ok(job) => Some(job),
                     Err(TryRecvError::Empty) => None,
                     Err(TryRecvError::Disconnected) => return,
+                }
+            } else if !republish.is_zero() && state.full_map_points.is_some() {
+                // Idle with a snapshot to keep alive: wait for a job only until
+                // the next republish is due.
+                let due = republish.saturating_sub(state.full_map_sent.elapsed());
+                match tokio::time::timeout(due, self.jobs.recv()).await {
+                    Ok(Some(job)) => Some(job),
+                    Ok(None) => return,
+                    Err(_elapsed) => {
+                        self.republish_full_map(&mut state).await;
+                        continue;
+                    }
                 }
             } else {
                 match self.jobs.recv().await {
@@ -214,6 +233,15 @@ impl Worker {
                     tokio::task::yield_now().await;
                 }
             }
+        }
+    }
+
+    /// The seeded snapshot again, freshly stamped.
+    async fn republish_full_map(&self, state: &mut State) {
+        if let Some(points) = &state.full_map_points {
+            let cloud = points_to_cloud(points, &self.config.world_frame, now());
+            publish_cloud(&self.full_map, &cloud).await;
+            state.full_map_sent = Instant::now();
         }
     }
 
@@ -479,6 +507,8 @@ impl Worker {
         );
         let cloud = points_to_cloud(&full, &self.config.world_frame, now());
         publish_cloud(&self.full_map, &cloud).await;
+        state.full_map_sent = Instant::now();
+        state.full_map_points = Some(full);
     }
 }
 
@@ -677,6 +707,7 @@ mod tests {
             support_min: 0,
             emit_every: 1,
             global_emit_every: 1,
+            full_map_republish_s: 0.0,
             region_percentile: 95.0,
             world_frame: "world".to_string(),
             tf_match_tolerance_s: 0.1,

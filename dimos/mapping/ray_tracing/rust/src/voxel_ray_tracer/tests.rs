@@ -16,6 +16,7 @@ use super::*;
 
 fn basic_config() -> Config {
     Config {
+        full_map_republish_s: 0.0,
         voxel_size: 1.0,
         fine_divisor: 0,
         emit_fine: false,
@@ -290,6 +291,7 @@ fn ground_clipping_single_ray() {
     let voxel_size = 0.1_f32;
     let lidar_height = 1.0_f32;
     let cfg = Config {
+        full_map_republish_s: 0.0,
         voxel_size,
         fine_divisor: 0,
         emit_fine: false,
@@ -447,6 +449,7 @@ fn stair_clipping_ray_fan() {
     let voxel_size = 0.1_f32;
     let half = voxel_size * 0.5;
     let cfg = Config {
+        full_map_republish_s: 0.0,
         voxel_size,
         fine_divisor: 0,
         emit_fine: false,
@@ -526,6 +529,7 @@ fn landing_floor_ray_fan() {
     let voxel_size = 0.1_f32;
     let half = voxel_size * 0.5;
     let cfg = Config {
+        full_map_republish_s: 0.0,
         voxel_size,
         fine_divisor: 0,
         emit_fine: false,
@@ -593,6 +597,7 @@ fn landing_grazed_from_below() {
     let voxel_size = 0.1_f32;
     let half = voxel_size * 0.5;
     let cfg = |graze_cos| Config {
+        full_map_republish_s: 0.0,
         voxel_size,
         fine_divisor: 0,
         emit_fine: false,
@@ -729,6 +734,7 @@ fn grazing_ray_spares_planar_floor() {
     let ray = vec![(8.0_f32, 0.0, 0.0)];
 
     let cfg = Config {
+        full_map_republish_s: 0.0,
         voxel_size,
         fine_divisor: 0,
         emit_fine: false,

@@ -301,6 +301,7 @@ mod tests {
             support_min: 0,
             emit_every: 1,
             global_emit_every: 1,
+            full_map_republish_s: 0.0,
             region_percentile: 95.0,
             world_frame: "world".to_string(),
             tf_match_tolerance_s: 0.1,
@@ -368,6 +369,7 @@ mod tests {
         let cfg = Config {
             emit_every: 2,
             global_emit_every: 3,
+            full_map_republish_s: 0.0,
             ..config()
         };
         let mut mapper = Mapper::new(cfg);
@@ -398,6 +400,7 @@ mod tests {
         let cfg = Config {
             emit_every: 0,
             global_emit_every: 0,
+            full_map_republish_s: 0.0,
             ..config()
         };
         let mut mapper = Mapper::new(cfg);

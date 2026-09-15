@@ -67,6 +67,9 @@ class RayTracingVoxelMapConfig(NativeModuleConfig):
     emit_every: int = 1
     # Publish the global map every Nth frame. Zero disables it.
     global_emit_every: int = 1
+    # Republish the full-map snapshot taken after a seed load every this many
+    # seconds, for a viewer that joined after the one emit. Zero emits it once.
+    full_map_republish_s: float = 0.0
     # Size the local region to this percentile of batch point distances.
     region_percentile: float = 95.0
     # Fixed frame clouds are registered and published in. Each cloud is placed

@@ -464,6 +464,11 @@ go2_zenoh_motion_pointlio = autoconnect(
 # are normal for the first 30-60 s.
 go2_zenoh_motion_pointlio_reloc = autoconnect(
     go2_zenoh_motion_pointlio,
+    # Re-declared (last duplicate wins) so the seeded snapshot keeps coming: full_map
+    # is otherwise one message, gone before a viewer on the far side of wifi joins.
+    RayTracingVoxelMap.blueprint(
+        **ray_tracing_config.model_dump(exclude_unset=True), full_map_republish_s=5.0
+    ),
     LocalMapRelocalization.blueprint(
         world_frame="odom",
         republish_loaded_map=30.0,
