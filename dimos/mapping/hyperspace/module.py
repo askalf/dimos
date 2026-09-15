@@ -331,6 +331,22 @@ class HyperspaceConfig(MemoryModuleConfig):
     owl_checkpoint: str = ""
     # Where the detector runs. Separate from `device`, which is the text towers':
     # the towers are small enough for a cpu and OWLv2 is not.
+    #
+    # ON APPLE SILICON THIS IS THE CPU AND AN ITEM QUERY IS NOT DEMOABLE. `start()` picks
+    # the device with `allow_mps=False`, because OWLv2 on MPS dies without a traceback, so
+    # a Mac runs the detector on its CPU. MEASURED on grocery.db, two members, second
+    # passes: an item query took 143.7 s and 138.2 s, against 5.98 s for the same shape of
+    # query on an RTX 5070. About 25x. The heatmap and area paths use no detector and were
+    # 1.0 s on the same machine, so it is the detector and nothing else.
+    #
+    # Two consequences worth knowing before anyone plans a demo around this:
+    # * A 140 s query does not survive the RPC layer. `ModuleConfig.default_rpc_timeout`
+    #   and `rpc_timeouts` are 120 s, so `rpc_timeouts={"start_item_query": 600.0}` is
+    #   needed -- and an MCP client in front of that may have a cap of its own.
+    # * The cost is `max_episodes` x `detect_attempts` forward passes, both config below,
+    #   and a REFUSAL spends all of its attempts. 12 x 3 is the worst case. Cutting them
+    #   is the first lever on a CPU box and it trades recall for latency, so count the
+    #   places before and after rather than assuming only the clock moved.
     owl_device: str = "auto"
     # Models the frames-first search ranks with. [] = every model in the index,
     # which is what the three-way agreement wants.
