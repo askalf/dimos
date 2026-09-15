@@ -15,10 +15,10 @@ export const IMAGE_LOD_INTERVAL_S = 0.2;     // how often the visible set is rec
 // A second tier, for the photo you have actually walked up to. The thumbnail is 192 px,
 // which reads fine across the room and is visibly mush at arm's length, so a marker this
 // close is re-fetched from the recording at `MARKER_SHARP_SIZE_PX` and swapped in place.
-export const IMAGE_SHARP_DISTANCE_M = 4.0;
-// Hysteresis: upgrade at 4 m, drop back at 6. Equal thresholds make a viewer standing on
+export const IMAGE_SHARP_DISTANCE_M = 7.0;
+// Hysteresis: upgrade at 7 m, drop back at 10. Equal thresholds make a viewer standing on
 // the boundary fetch and release the same photo every LOD tick.
-export const IMAGE_SHARP_RELEASE_M = 6.0;
+export const IMAGE_SHARP_RELEASE_M = 10.0;
 // Far smaller than IMAGE_QUAD_BUDGET on purpose. Each sharp texture is ~45x the pixels of
 // a thumbnail, so this is what bounds GPU memory, not the quad budget.
 export const IMAGE_SHARP_BUDGET = 6;
