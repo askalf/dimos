@@ -1147,6 +1147,7 @@ def find(
     keep_images: bool = False,
     resident: Any = None,
     timings: dict[str, float] | None = None,
+    background_prompts: Sequence[str] | None = None,
 ) -> Iterator[Detection]:
     """The whole chain: text in, one detection per episode out, in rank order.
 
@@ -1158,6 +1159,10 @@ def find(
     it is worth paying: the detector is a fixed cost per call, so twelve episodes in
     one pass is most of a query's detector time saved, while the trickle only ever
     bought a progress bar.
+
+    *background_prompts* replaces what the contrast subtracts, for this call only. The
+    default set is generic room surfaces, which is right for a thing and wrong for
+    anything those surfaces are part of.
     """
     from dimos.mapping.hyperspace.frames import hot_frames, ranked_episodes
 
@@ -1172,6 +1177,7 @@ def find(
         models=models,
         resident=resident,
         contrast=config.contrast,
+        background_prompts=background_prompts,
     )
     if timings is not None:
         timings["search"] = time.monotonic() - at

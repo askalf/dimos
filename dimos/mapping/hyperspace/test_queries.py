@@ -22,6 +22,7 @@ from dimos.mapping.hyperspace.queries import (
     Query,
     QueryBook,
     near_enough,
+    negative_prompts,
 )
 
 
@@ -281,3 +282,54 @@ def test_one_unplaceable_patch_does_not_take_the_whole_query_down() -> None:
     assert "QUERY_FAILED" in source, (
         "a fault inside the query must not be reported as the caller's bad input"
     )
+
+
+def test_negative_terms_replace_the_default_rather_than_adding_to_it() -> None:
+    """What a caller names is the whole contrast, not an extra on top of ours.
+
+    An agent that says "subtract an office" and gets the office subtracted *plus* the
+    three object prompts cannot tell what its own words did, and the one thing worth
+    having here is a knob whose effect is legible.
+    """
+    assert negative_prompts("an office, a hallway", "area") == ("an office", "a hallway")
+    assert negative_prompts("an office, a hallway", "item") == ("an office", "a hallway")
+
+
+def test_nothing_named_keeps_each_kind_default() -> None:
+    """Empty is not "no contrast": dropping it was measured at 2 of 6 on "kitchen"."""
+    assert negative_prompts("", "area") == AREA_PROMPTS
+    assert negative_prompts("   ,  ,", "area") == AREA_PROMPTS
+    assert negative_prompts("", "item") is None
+    assert negative_prompts("", "heatmap") is None
+
+
+def test_negative_terms_survive_the_way_an_agent_writes_them() -> None:
+    """A language model writes one string with loose spacing, and sometimes a list."""
+    assert negative_prompts("a poster ,  a screen", "item") == ("a poster", "a screen")
+    assert negative_prompts(["a poster", " a screen "], "item") == ("a poster", "a screen")
+
+
+def test_every_query_skill_takes_negative_terms() -> None:
+    """All three, or an agent has to know which of them listens -- and the rpc too,
+    since the skills are meant to be thin wrappers over one implementation."""
+    import inspect
+
+    from dimos.mapping.hyperspace.module import Hyperspace
+
+    for name in ("start_item_query", "start_heatmap_query", "start_area_query", "run_query"):
+        taken = inspect.signature(getattr(Hyperspace, name)).parameters
+        assert "negative_terms" in taken, f"{name} cannot be given negative terms"
+        assert taken["negative_terms"].default == "", f"{name} must default to its kind's own"
+
+
+def test_the_search_is_actually_told_what_to_subtract() -> None:
+    """The argument has to reach `hot_frames`; a skill that accepts it and drops it is
+    worse than one that never offered. This has happened here once already -- the
+    per-call prompts were added to the docstring and never to the call."""
+    from pathlib import Path
+
+    source = Path(__file__).with_name("module.py").read_text()
+    assert "background_prompts=negatives" in source
+    assert "self.live.ask(query.text, background_prompts=negatives)" in source
+    detect = Path(__file__).with_name("detect.py").read_text()
+    assert "background_prompts=background_prompts," in detect

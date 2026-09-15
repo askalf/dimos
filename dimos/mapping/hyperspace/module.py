@@ -47,7 +47,13 @@ from dimos.mapping.hyperspace.frames import spec_of
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
 from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
 from dimos.mapping.hyperspace.msgs import FoundObjects
-from dimos.mapping.hyperspace.queries import AREA_PROMPTS, Place, Query, QueryBook, near_enough
+from dimos.mapping.hyperspace.queries import (
+    Place,
+    Query,
+    QueryBook,
+    near_enough,
+    negative_prompts,
+)
 from dimos.mapping.hyperspace.query import HyperspaceQuery
 from dimos.mapping.hyperspace.refine import refine_config_of
 from dimos.memory.module import MemoryModule, MemoryModuleConfig
@@ -59,7 +65,7 @@ from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from numpy.typing import NDArray
 
@@ -592,6 +598,7 @@ class Hyperspace(MemoryModule):
         query_id: str = "",
         within_m: float = 0.0,
         at_time: float = 0.0,
+        negative_terms: str = "",
     ) -> Query:
         """Ask once. The one implementation the three skills wrap.
 
@@ -601,6 +608,10 @@ class Hyperspace(MemoryModule):
         where it was at `at_time`, which is how "what was near me when that happened"
         is asked. `query_id` names the question so a second call cannot be mistaken for
         the first; one is made up when it is not given.
+
+        `negative_terms` is a comma separated list of what to subtract -- what the caller
+        expects to be in the way. Empty uses the kind's own default. See
+        `queries.negative_prompts`.
         """
         text = text.strip()
         if not text:
@@ -608,12 +619,18 @@ class Hyperspace(MemoryModule):
         if kind not in ("item", "heatmap", "area"):
             raise ValueError(f"unknown query kind {kind!r}; item, heatmap or area")
 
-        query = Query(query_id=query_id or self.queries.next_id(kind), text=text, kind=kind)
+        negatives = negative_prompts(negative_terms, kind)
+        query = Query(
+            query_id=query_id or self.queries.next_id(kind),
+            text=text,
+            kind=kind,
+            negatives=negatives or (),
+        )
         started = time.monotonic()
         if kind == "item":
-            self._fill_from_detector(query)
+            self._fill_from_detector(query, negatives)
         else:
-            self._fill_from_patches(query, kind)
+            self._fill_from_patches(query, kind, negatives)
         query.ms = (time.monotonic() - started) * 1000
 
         # Only when a radius was actually asked for: finding the robot means a walk of
@@ -640,10 +657,10 @@ class Hyperspace(MemoryModule):
         )
         return query
 
-    def _fill_from_detector(self, query: Query) -> None:
+    def _fill_from_detector(self, query: Query, negatives: Sequence[str] | None = None) -> None:
         """The OWLv2 path: boxes, and a detector that is allowed to say no."""
         self.live.config.top = 0
-        result = self.live.ask(query.text)
+        result = self.live.ask(query.text, background_prompts=negatives)
         self.found.publish(result)
         query.refused = result.refused
         query.timings = dict(result.timings)
@@ -672,7 +689,9 @@ class Hyperspace(MemoryModule):
                 "place rather than a thing -- try an area or heatmap query"
             )
 
-    def _fill_from_patches(self, query: Query, kind: str) -> None:
+    def _fill_from_patches(
+        self, query: Query, kind: str, negatives: Sequence[str] | None = None
+    ) -> None:
         """No detector: the hot patches themselves, put into the world.
 
         Nothing here can refuse, which is the point. It answers where a box cannot -- a
@@ -689,7 +708,6 @@ class Hyperspace(MemoryModule):
 
         from dimos.mapping.hyperspace.frames import hot_frames
 
-        prompts = AREA_PROMPTS if kind == "area" else None
         started = time.monotonic()
         frames = hot_frames(
             self.store,
@@ -698,7 +716,7 @@ class Hyperspace(MemoryModule):
             models=[tag for tag, _ in self.live.members()],
             resident=self.live.held,
             contrast=self.config.contrast,
-            background_prompts=prompts,
+            background_prompts=negatives,
         )
         query.timings = {"search": time.monotonic() - started}
         if not frames:
@@ -777,15 +795,21 @@ class Hyperspace(MemoryModule):
         return (float(pose[0][3]), float(pose[1][3]), float(pose[2][3]))
 
     @skill
-    def start_item_query(self, text: str, count: int = 1, query_id: str = "") -> SkillResult:
+    def start_item_query(
+        self, text: str, count: int = 1, query_id: str = "", negative_terms: str = ""
+    ) -> SkillResult:
         """Find a THING and get its position and size. E.g. "a fire extinguisher".
 
         Returns the strongest place immediately; ask `query_results` with the returned
         `query_id` for the others. A detector draws the box, so it can refuse -- which is
         what makes a box worth trusting, and why a place-like query ("the kitchen") is
         better asked with `start_area_query`.
+
+        `negative_terms` is a comma separated list of what is in the way -- things the
+        search should subtract rather than return, like "a poster, a screen" when asking
+        for a thing that is often pictured. Empty subtracts generic room surfaces.
         """
-        return self._answer_with(text, "item", count, query_id)
+        return self._answer_with(text, "item", count, query_id, negative_terms=negative_terms)
 
     @skill
     def start_heatmap_query(
@@ -795,6 +819,7 @@ class Hyperspace(MemoryModule):
         query_id: str = "",
         within_m: float = 0.0,
         at_time: float = 0.0,
+        negative_terms: str = "",
     ) -> SkillResult:
         """Where does the map LOOK LIKE `text`? Positions, no boxes, nothing refuses.
 
@@ -802,18 +827,30 @@ class Hyperspace(MemoryModule):
         has a word for what is being asked. Set `within_m` to keep only places that
         close to the robot, and `at_time` to measure that from where it was at a moment
         rather than from where it is now.
+
+        `negative_terms` is a comma separated list of what to subtract instead of the
+        generic room surfaces -- what the caller expects to be in the way.
         """
-        return self._answer_with(text, "heatmap", count, query_id, within_m, at_time)
+        return self._answer_with(
+            text, "heatmap", count, query_id, within_m, at_time, negative_terms
+        )
 
     @skill
-    def start_area_query(self, text: str, count: int = 1, query_id: str = "") -> SkillResult:
+    def start_area_query(
+        self, text: str, count: int = 1, query_id: str = "", negative_terms: str = ""
+    ) -> SkillResult:
         """Find a PLACE rather than a thing. E.g. "kitchen", "the loading dock".
 
         Same search as a heatmap, contrasted against objects instead of against the room,
         so asking for a room does not subtract the room. Use this when the answer is
         somewhere to go rather than something to pick up.
+
+        `negative_terms` is a comma separated list of what to subtract instead of the
+        default object contrast -- naming the rooms this one is NOT ("an office, a
+        hallway, a conference room") is the other thing worth trying when an area query
+        lands in the wrong part of the building.
         """
-        return self._answer_with(text, "area", count, query_id)
+        return self._answer_with(text, "area", count, query_id, negative_terms=negative_terms)
 
     @skill
     def query_results(self, query_id: str, count: int = 0) -> SkillResult:
@@ -851,12 +888,13 @@ class Hyperspace(MemoryModule):
         query_id: str,
         within_m: float = 0.0,
         at_time: float = 0.0,
+        negative_terms: str = "",
     ) -> SkillResult:
         """Every skill's body: ask, then say what came back in one readable line."""
         if not text.strip():
             return SkillResult.fail("INVALID_INPUT", "text must not be empty")
         try:
-            query = self.run_query(text, kind, count, query_id, within_m, at_time)
+            query = self.run_query(text, kind, count, query_id, within_m, at_time, negative_terms)
         except ValueError as error:
             # Only the argument checks raise ValueError deliberately; anything else that
             # happens to is a fault in here, and calling it INVALID_INPUT tells the
@@ -894,6 +932,7 @@ class Hyperspace(MemoryModule):
             remaining=query.remaining,
             refused=query.refused,
             note=query.note,
+            negatives=list(query.negatives),
             took_ms=round(query.ms),
         )
 

@@ -187,8 +187,13 @@ class LiveQuery:
         """How many patches the answer to the next question will be searched over."""
         return sum(held.rows for held in self.held._held.values())
 
-    def ask(self, text: str) -> FoundObjects:
-        """One question, against the map as it stands this instant."""
+    def ask(self, text: str, background_prompts: Sequence[str] | None = None) -> FoundObjects:
+        """One question, against the map as it stands this instant.
+
+        *background_prompts* replaces what the contrast subtracts for this question only
+        -- the caller's negative terms. None keeps the generic surfaces the config asks
+        for, which is the right answer for a thing and the wrong one for a place.
+        """
         text = text.strip()
         if not text:
             raise ValueError("a query needs something to look for")
@@ -213,6 +218,7 @@ class LiveQuery:
                     keep_images=True,
                     resident=self.held,
                     timings=timings,
+                    background_prompts=background_prompts,
                 )
             )
             merge_duplicates(answers, self.config.merge_m)

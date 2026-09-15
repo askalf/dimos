@@ -113,6 +113,9 @@ class Query:
     # Set when the search found the thing but no answer could be made of it -- which is
     # a different outcome from finding nothing, and the one an agent most needs told.
     note: str = ""
+    # What this query subtracted, so an answer can be read beside the words that shaped
+    # it. Empty means the kind's own default was used.
+    negatives: tuple[str, ...] = ()
 
     @property
     def remaining(self) -> int:
@@ -155,6 +158,31 @@ class QueryBook:
     def ids(self) -> list[str]:
         with self._lock:
             return list(self._order)
+
+
+def negative_prompts(negative_terms: str | Sequence[str], kind: str) -> tuple[str, ...] | None:
+    """What a query subtracts, from what the caller asked for and what kind it is.
+
+    Every patch score is the query's own score minus the best of a handful of other
+    prompts, which is what stops a wall from answering every question moderately well.
+    Which prompts those are decides what the search is blind to, and the right set is not
+    the same for a thing and for a room -- so a caller that knows what is in the way can
+    say so, and gets exactly what it named rather than that plus the defaults.
+
+    Nothing named falls back to the kind's own default: `AREA_PROMPTS` for an area, and
+    None for the other two, which the search reads as "your generic surfaces".
+
+    Comma separated, because these arguments are written by a language model and one
+    string is a shape it gets right where a list of strings is one it does not.
+    """
+    if isinstance(negative_terms, str):
+        wanted = negative_terms.split(",")
+    else:
+        wanted = [str(term) for term in negative_terms]
+    named = tuple(term.strip() for term in wanted if term.strip())
+    if named:
+        return named
+    return AREA_PROMPTS if kind == "area" else None
 
 
 def near_enough(
