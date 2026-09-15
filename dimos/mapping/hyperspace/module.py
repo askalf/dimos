@@ -594,7 +594,11 @@ class Hyperspace(MemoryModule):
             self._fill_from_patches(query, kind)
         query.ms = (time.monotonic() - started) * 1000
 
-        origin = self._where_the_robot_is(at_time)
+        # Only when a radius was actually asked for: finding the robot means a walk of
+        # the transform tree, and a query that never mentioned proximity should not pay
+        # for it -- nor hang on it, which is what happens when the stamp asked for is
+        # outside everything the recording holds.
+        origin = self._where_the_robot_is(at_time) if within_m else None
         if within_m and origin is None:
             query.note = (
                 f"asked for places within {within_m:.1f} m but the robot's own position "

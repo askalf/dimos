@@ -202,3 +202,15 @@ def test_detect_models_names_member_tags_not_checkpoints() -> None:
         r"wanted = \[spec_of\(tag\) for tag, _ in self\.live\.members\(\)\]", source
     )
     assert warm_call, "the checkpoints warm() loads should be derived from the tags searched"
+
+
+def test_a_query_without_a_radius_never_looks_for_the_robot() -> None:
+    """Finding the robot is a walk of the transform tree, and on a recording whose
+    stamps are all in the past, asking for "now" is a lookup that can take forever. A
+    query that never mentioned proximity must not pay for it, or hang on it."""
+    from pathlib import Path
+
+    source = Path(__file__).with_name("module.py").read_text()
+    assert "self._where_the_robot_is(at_time) if within_m else None" in source, (
+        "the robot's pose is only needed when a radius was asked for"
+    )
