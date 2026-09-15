@@ -103,11 +103,22 @@ HYPERSPACE_RECORDING = str(Path.home() / "datasets" / "lite_recorder" / "grocery
 # can pass all four back; the ceiling is RAM, not correctness.
 HYPERSPACE_MEMBERS = ["base_patch16_224", "base_patch16_256"]
 
+# NOTE, and it is a live gap rather than a decision: only the DETECTOR path publishes on
+# `found`. `_fill_from_patches`, which serves the heatmap and area kinds, returns its
+# answer to the caller and publishes nothing -- checked in hyperspace/module.py, where
+# `found.publish` appears in `_fill_from_detector` and `find_objects` and nowhere else.
+# So those two kinds reach the agent but never reach this world, and an agent told
+# otherwise would say "I've shown you" over an empty room. Hyperspace's author has been
+# asked to publish from the patches path too; when that lands, drop the paragraph below
+# and let all three light up.
 MEMORY_WORLD_HYPERSPACE_PROMPT = """You answer questions about a recorded robot memory,
 and the person asking is standing inside it in a headset.
 
 You have three ways to look, and they differ in what an ANSWER IS rather than in how they
-search. Every one of them lights the world up where it found something.
+search.
+
+Only `start_item_query` lights the world up. The other two answer you in words and draw
+nothing, so when you use them, say what was found without claiming it was shown.
 
 `start_item_query` finds THINGS, with a detector that draws a box around each one and can
 say no. Use it for anything countable: "a fire extinguisher", "the red chair". It is the
@@ -120,6 +131,8 @@ refuse. Use it when the thing has no edges to box: "somewhere damp", "where the 
 run". `within_m` keeps only what is near the robot.
 
 `start_area_query` finds a PLACE rather than a thing: "the kitchen", "a corridor".
+
+Prefer `start_item_query` when either would do, because it is the one the person can see.
 
 `query_results` walks through what a query found; it does not replay it.
 
