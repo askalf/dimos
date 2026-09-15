@@ -143,18 +143,29 @@ class LiveQuery:
         "the detector is slow" are different problems and the split is what tells them
         apart.
         """
-        # ORDER MATTERS, and it is the reason "auto" can be honest: the detector and the
-        # index are placed first, and the towers then ask what is actually left. Loading
-        # them first is what made "towers on the card" unsafe on an 8 GB machine.
+        # ORDER IS THE POLICY, and on a card that cannot hold everything it decides what
+        # gets the memory. MEASURED on the 8 GB RTX 5070, sf_office, two members:
+        #
+        #   the index on the card  2.3 GB  saves ~0.6 s of search  = 0.26 s/GB
+        #   the towers on the card 1.7 GB  saves ~1.0 s of encode  = 0.59 s/GB
+        #
+        # So the towers are worth about twice as much per byte and go FIRST; the index
+        # then takes whatever is left, member by member, and spills the rest to RAM --
+        # which it can do, because a CPU search is slower but not broken. Placed the
+        # other way round the index filled the card, the towers were pushed back to the
+        # CPU, and the machine gave up the bigger of the two wins to keep the smaller.
+        #
+        # The detector still goes first of all: it is the one that cannot spill.
         self.loaded["detector"] = self.boxes.warm()
         self.loaded["recording"] = self.frames.warm()
-        at = time.monotonic()
-        self.loaded["index"] = float(self.catch_up())
-        self.loaded["index_s"] = time.monotonic() - at
 
         at = time.monotonic()
         self._place_the_towers(specs)
         self.loaded["towers"] = time.monotonic() - at
+
+        at = time.monotonic()
+        self.loaded["index"] = float(self.catch_up())
+        self.loaded["index_s"] = time.monotonic() - at
         self.loaded["first_pass_s"] = self._touch_the_index(specs)
         return dict(self.loaded)
 

@@ -1525,3 +1525,29 @@ def test_the_headroom_check_is_a_yes_where_there_is_no_separate_pool() -> None:
     assert detector_can_still_breathe("cpu") is True
     assert detector_can_still_breathe("") is True
     assert detector_can_still_breathe("mps") is True, "unified memory is not a card"
+
+
+def test_the_towers_get_the_card_before_the_index_does(store: SqliteStore) -> None:
+    """On a card too small for both, the towers are the better buy and go first.
+
+    MEASURED on the 8 GB RTX 5070, sf_office, two members: the index takes 2.3 GB to save
+    about 0.6 s of search; the towers take 1.7 GB to save about 1.0 s of encoding. Placed
+    the other way round the index filled the card, the towers fell back to the CPU, and
+    the machine kept the smaller of the two wins. The index can spill to RAM member by
+    member -- a CPU search is slower, not broken -- which is what makes it the one to
+    give up space.
+    """
+    from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
+
+    query = LiveQuery(store, LiveConfig())
+    order: list[str] = []
+    query.boxes.warm = lambda: order.append("detector") or 0.0  # type: ignore[assignment]
+    query.frames.warm = lambda: order.append("recording") or 0.0  # type: ignore[assignment]
+    query._place_the_towers = lambda specs: order.append("towers")  # type: ignore[assignment]
+    query.catch_up = lambda: order.append("index") or 0  # type: ignore[assignment]
+    query._touch_the_index = lambda specs: 0.0  # type: ignore[assignment]
+
+    query.warm([])
+    assert order == ["detector", "recording", "towers", "index"], (
+        "the detector cannot spill and the index can, so the order is not arbitrary"
+    )
