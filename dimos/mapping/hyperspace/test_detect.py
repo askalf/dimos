@@ -1405,3 +1405,45 @@ def test_a_narrowed_score_equals_the_same_rows_scored_whole() -> None:
 
     assert narrowed.shape == (len(wanted),), "one score per row asked for"
     assert np.allclose(narrowed, whole[wanted]), "narrowing must not change the arithmetic"
+
+
+def test_the_pass_count_is_per_episode_not_per_answer() -> None:
+    """Two boxes in one photograph are two answers and ONE episode's cost.
+
+    `_Try.finish()` returns the episode's own detection plus a `beside` copy for every
+    extra box the detector saw in the same frame, and those copies carry the SAME
+    `attempts`. Summing over the yielded answers would multiply an episode's cost by how
+    many things happened to be in shot -- so the count is taken over `tries`, and this
+    pins that it is.
+
+    The number exists because "more work" and "dearer work" are different diagnoses and
+    nothing outside could tell them apart: three queries on grocery ranged 138-274 s
+    while the pass count was ASSUMED constant, and the assumption was an upper bound
+    (`candidates` is capped at `min(attempts, len(episode.frames))`) treated as a count.
+    """
+    from dataclasses import replace
+
+    from dimos.mapping.hyperspace.detect import Detection, _Try
+
+    one = _Try(
+        detection=Detection(
+            query="a cone",
+            rank=1,
+            ts=1.0,
+            camera_frame="cam",
+            episode_frames=4,
+            episode_span=0.5,
+            episode_score=1.0,
+            models=["m"],
+            attempts=3,
+        ),
+        candidates=[],
+    )
+    one.answer = replace(one.detection)
+    one.beside = [replace(one.detection), replace(one.detection)]
+
+    assert len(one.finish()) == 3, "one episode, three answers"
+    assert sum(answer.attempts for answer in one.finish()) == 9, (
+        "this is the wrong sum, and it is the one a caller would reach for"
+    )
+    assert one.detection.attempts == 3, "the episode cost three passes, not nine"

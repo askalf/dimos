@@ -915,6 +915,7 @@ def stream_episodes(
     config: DetectConfig,
     keep_images: bool = False,
     first_rank: int = 1,
+    timings: dict[str, float] | None = None,
 ) -> Iterator[Detection]:
     """Answers as they settle, in rank order.
 
@@ -947,6 +948,26 @@ def stream_episodes(
     ]
 
     rank = first_rank + len(tries)
+
+    def count_passes() -> None:
+        """Forward passes this query actually cost, summed HERE and nowhere else.
+
+        It has to be counted over `tries`, one entry per episode, because `finish()`
+        hands back the episode's own detection plus a `beside` copy for every extra box
+        in the same photograph -- and those copies carry the SAME `attempts`. Summing
+        over the yielded answers would multiply an episode's cost by how many things the
+        detector happened to see in one frame.
+
+        Worth having on the wire because it is the number that tells "more work" from
+        "dearer work", and nothing outside could tell them apart. MEASURED on grocery,
+        three queries at 12x3, times ranged 138-274 s with the pass count assumed
+        constant at 30-36 -- an assumption that was an upper bound (`candidates` is
+        capped at `min(attempts, len(episode.frames))`, so a one-frame episode costs one
+        pass) treated as a count. With this, nobody has to assume it again.
+        """
+        if timings is not None:
+            timings["passes"] = float(sum(one.detection.attempts for one in tries))
+
     if config.batch <= 1:
         for one in tries:
             _attempt_rounds([one], query, frames, boxes, config=config, keep_images=keep_images)
@@ -954,9 +975,11 @@ def stream_episodes(
                 if answer.rank == 0:
                     answer.rank, rank = rank, rank + 1
                 yield answer
+        count_passes()
         return
 
     _attempt_rounds(tries, query, frames, boxes, config=config, keep_images=keep_images)
+    count_passes()
     for one in tries:
         for answer in one.finish():
             if answer.rank == 0:
@@ -1240,7 +1263,7 @@ def find(
     at = time.monotonic()
     first: float | None = None
     for answer in stream_episodes(
-        found, query, frames, boxes, config=config, keep_images=keep_images
+        found, query, frames, boxes, config=config, keep_images=keep_images, timings=timings
     ):
         # From the question, not from the detector: this is when someone watching the
         # module would have seen the answer appear.
