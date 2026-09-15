@@ -73,16 +73,57 @@ _PHASE = {
 
 
 def _squeeze(r: dict[str, Any]) -> str:
-    """' — lz4 2.8 GB → 1.1 GB' when the upload was compressed, else ''.
+    """' · compressed 2.8 GB → 1.1 GB (61% smaller)' when it was, else ''.
 
-    The bar that showed the compression is transient; this is the trace it leaves.
+    The uploaded bytes are the compressed size, which does not match the file on
+    disk; this is the line that explains the gap once the transient bar is gone.
     """
     from rich.filesize import decimal
 
     enc, raw, wire = r.get("content_encoding"), r.get("raw_bytes"), r.get("wire_bytes")
     if not (enc and raw and wire):
         return ""
-    return f" — {enc} {decimal(raw)} → {decimal(wire)}"
+    pct = int((1 - wire / raw) * 100)  # floor, so a 99.6% ratio never reads "100% smaller"
+    gain = (
+        f" ({pct}% smaller)" if pct > 0 else ""
+    )  # already-compact data can grow; don't claim a gain
+    return f" · compressed {decimal(raw)} → {decimal(wire)}{gain}"
+
+
+def _short(name: str, n: int = 30) -> str:
+    """Middle-elide a long filename so the progress line fits a narrow terminal,
+    keeping both ends — a recording is told apart by its date suffix."""
+    if len(name) <= n:
+        return name
+    keep = n - 1
+    return name[: keep - keep // 2] + "…" + name[len(name) - keep // 2 :]
+
+
+def _progress_columns(width: int) -> list[Any]:
+    """Columns for the upload/pull bar, shed to fit the terminal.
+
+    The bar flexes to the space left over (``bar_width=None``), and the speed and
+    ETA drop on a narrow terminal so the line stays one row instead of wrapping —
+    a wrapped bar is what smears when the window is resized mid-transfer.
+    """
+    from rich.progress import (
+        BarColumn,
+        DownloadColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeRemainingColumn,
+        TransferSpeedColumn,
+    )
+
+    cols: list[Any] = [
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=None),
+        TaskProgressColumn(),
+        DownloadColumn(),
+    ]
+    if width >= 90:
+        cols += [TransferSpeedColumn(), TimeRemainingColumn()]
+    return cols
 
 
 class _Ticker:
@@ -94,8 +135,8 @@ class _Ticker:
     """
 
     def __init__(self, bar: Any, name: str) -> None:
-        self.bar, self.name, self.phase = bar, name, "reading"
-        self.task = bar.add_task(f"reading {name}", total=None)
+        self.bar, self.name, self.phase = bar, _short(name), "reading"
+        self.task = bar.add_task(f"reading {self.name}", total=None)
 
     def __call__(self, phase: str, done: int, total: int) -> None:
         if phase != self.phase:
@@ -108,25 +149,12 @@ class _Ticker:
 
 @contextlib.contextmanager
 def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
-    from rich.progress import (
-        BarColumn,
-        DownloadColumn,
-        Progress,
-        TaskProgressColumn,
-        TextColumn,
-        TimeRemainingColumn,
-        TransferSpeedColumn,
-    )
+    import shutil
 
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        DownloadColumn(),
-        TransferSpeedColumn(),
-        TimeRemainingColumn(),
-        transient=True,
-    ) as bar:
+    from rich.progress import Progress
+
+    width = shutil.get_terminal_size((100, 24)).columns
+    with Progress(*_progress_columns(width), transient=True) as bar:
         yield _Ticker(bar, name)
 
 
@@ -154,8 +182,11 @@ def upload(
                 )
             note = "already uploaded" if r["skipped"] else r["state"]
             typer.echo(f"{t.name}: {note}{_squeeze(r)} ({r['upload_id'][:12]})")
-            if r["quota"].get("state") not in (None, "ok"):
-                typer.echo(r["quota"]["message"], err=True)
+            # An already-complete upload comes back from create, which carries no
+            # quota; only a fresh completion does. Missing means nothing to warn.
+            quota = r.get("quota") or {}
+            if quota.get("state") not in (None, "ok"):
+                typer.echo(quota["message"], err=True)
         except (RuntimeError, OSError) as e:
             typer.echo(f"{t.name}: {e}", err=True)
             failed = True
