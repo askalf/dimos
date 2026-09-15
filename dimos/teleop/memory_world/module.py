@@ -260,7 +260,12 @@ class MemoryWorldConfig(ModuleConfig):
     agent_input_topic: str = "/human_input"
     agent_reply_topic: str = "/agent"
     agent_idle_topic: str = "/agent_idle"
-    agent_timeout_s: float = PydanticField(default=120.0, gt=0.0)
+    # LONGER than the MCP layer's own 120 s, deliberately. Measured on this Mac: an
+    # OWLv2 item query over grocery.db takes ~140 s and BOTH mcp_client's HTTP post and
+    # the MCP server's RPC to the module cap at 120, so the agent is handed a tool error
+    # it then has to report. At 120 here the two raced and this timeout usually won,
+    # which replaced the agent's own account of the failure with a fallback answer.
+    agent_timeout_s: float = PydanticField(default=300.0, gt=0.0)
     # The camera frame shown while scrubbing, fetched one at a time.
     replay_frame_max_size: int = 480
     replay_frame_jpeg_quality: int = 60

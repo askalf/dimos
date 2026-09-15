@@ -725,20 +725,28 @@ class WorldAnswers:
             # The whole sentence goes to the agent, which decides what it is being asked
             # for. Only when there is no agent to ask -- or it did not answer -- does the
             # sentence go to the similarity lookup as a search phrase.
-            if (
+            tried_agent = (
                 self.config.ask_via_agent
                 and request.from_fraction == 0.0
                 and request.to_fraction == 1.0
-            ):
+            )
+            if tried_agent:
                 answered = await asyncio.to_thread(self._ask_the_agent, request.text)
                 if answered is not None:
                     return answered
             outcome = await asyncio.to_thread(
                 self.find_in_memory, request.text, request.from_fraction, request.to_fraction
             )
+            message = outcome.message
+            if tried_agent:
+                # Say WHICH thing failed. On the hyperspace blueprint the recording has no
+                # siglip index at all, so this fallback can only ever answer "build the
+                # index" -- advice about a component the question never involved, handed to
+                # someone whose real problem is that the agent did not answer.
+                message = f"The agent did not answer in time. Falling back: {message}"
             return {
                 "success": outcome.success,
-                "answer": outcome.message,
+                "answer": message,
                 "metadata": outcome.metadata,
             }
 
