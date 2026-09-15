@@ -17,11 +17,13 @@ import pytest
 from dimos.hardware.whole_body.damiao.config import DamiaoRuntimeConfig
 from dimos.robot.manipulators.dual_openyam.config import (
     DUAL_OPENYAM_ADAPTER_TYPE,
-    DUAL_OPENYAM_ARM_JOINTS,
     DUAL_OPENYAM_HOME_JOINTS,
-    DUAL_OPENYAM_JOINTS,
     dual_openyam_hardware,
     dual_openyam_model_config,
+)
+from dimos.robot.manipulators.dual_openyam.joints import (
+    DUAL_OPENYAM_ARM_JOINTS,
+    DUAL_OPENYAM_JOINTS,
 )
 from dimos.robot.manipulators.openyam.config import OPENYAM_HOME_JOINTS
 
