@@ -333,3 +333,58 @@ def test_the_search_is_actually_told_what_to_subtract() -> None:
     assert "self.live.ask(query.text, background_prompts=negatives)" in source
     detect = Path(__file__).with_name("detect.py").read_text()
     assert "background_prompts=background_prompts," in detect
+
+
+def test_a_cell_is_scored_by_how_well_it_matches_not_by_how_much_landed_in_it() -> None:
+    """Summing every patch that lands in a cell answers with whatever was looked at most.
+
+    MEASURED on "kitchen" over sf_office_drive1, against the kitchen's real rectangle and
+    under four different contrasts: the sum put its best answer 7.5-9.7 m outside the
+    kitchen every time. A wall band the robot drove past a hundred times collects more
+    patches than a kitchen it saw well from ten, and a sum cannot tell those apart.
+
+    This is that case in miniature: a grazed cell with many weak patches against a
+    well-matched one with a few strong ones.
+    """
+    from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
+
+    grazed, matched = (0, 0, 0), (1, 1, 1)
+    weight = {grazed: 0.02 * 40, matched: 0.09 * 6}
+    counted = {grazed: 40, matched: 6}
+    seen = {
+        grazed: {("cam", float(index)) for index in range(20)},
+        matched: {("cam", 100.0), ("cam", 101.0), ("cam", 102.0)},
+    }
+    module = Hyperspace.__new__(Hyperspace)
+    module.config = HyperspaceConfig(db_path="unused")
+
+    scored = module._cell_scores(weight, counted, seen, module.config.heat_min_views)
+    assert max(scored, key=lambda cell: scored[cell]) == matched, (
+        "the well-matched cell has to win; summing gives it to the grazed one"
+    )
+    assert sum(weight[cell] for cell in (grazed,)) > weight[matched], (
+        "this test is only meaningful while the sum would have picked the other one"
+    )
+
+
+def test_one_stray_patch_cannot_be_a_place() -> None:
+    """Scoring by the mean alone answered with a cell holding one patch seen once.
+
+    The view gate is what makes an answer a place rather than a pixel -- and it has to
+    give way rather than answer nothing, since a short recording may have no cell seen
+    from three viewpoints at all.
+    """
+    from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
+
+    stray, real = (0, 0, 0), (1, 1, 1)
+    weight = {stray: 0.5, real: 0.3}
+    counted = {stray: 1, real: 3}
+    seen = {stray: {("cam", 1.0)}, real: {("cam", 1.0), ("cam", 2.0), ("cam", 3.0)}}
+    module = Hyperspace.__new__(Hyperspace)
+    module.config = HyperspaceConfig(db_path="unused")
+
+    gated = module._cell_scores(weight, counted, seen, module.config.heat_min_views)
+    assert stray not in gated and real in gated
+
+    everything = module._cell_scores(weight, counted, seen, 1)
+    assert stray in everything, "the gate has to be droppable, or a short recording answers nothing"

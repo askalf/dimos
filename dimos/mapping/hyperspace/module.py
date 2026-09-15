@@ -357,6 +357,20 @@ class HyperspaceConfig(MemoryModuleConfig):
     # Where the text towers run. "cpu" by default: on an 8 GB card three of them leave
     # the detector no room at all. See `LiveConfig.tower_device` for the measurement.
     tower_device: str = "cpu"
+    # How a heatmap or area cell is scored, and how big a cell is. MEASURED on "kitchen"
+    # over sf_office_drive1 (2026-09-14) against the kitchen's real rectangle, under four
+    # different contrasts: summing every patch that lands in a 10 cm cell -- what this
+    # did -- put the best answer 7.5 to 9.7 m outside the kitchen every time, because a
+    # sum rewards a cell that many patches graze over one that a few patches match well,
+    # and a wall band seen from across the room collects more patches than a kitchen does.
+    # The mean over 25 cm cells seen from three or more viewpoints put the best answer
+    # INSIDE the kitchen under all four contrasts, with 7-8 of its top ten in there
+    # against 2-4 before. The view gate is what keeps a single stray patch from winning a
+    # cell of its own: mean alone answered with one patch seen once.
+    heat_cell_m: float = 0.25
+    # "mean" or "sum". Sum is what a dense occupancy map wants and it is kept for that.
+    heat_score: str = "mean"
+    heat_min_views: int = 3
     # Subtract generic floor/wall/ceiling prompts from every patch score. See
     # `DetectConfig.contrast`; off is the right answer when the query IS a wall.
     contrast: bool = True
@@ -726,8 +740,9 @@ class Hyperspace(MemoryModule):
         # Every hot patch, placed where its own frame was looking. A patch carries the
         # ray it sat on and how far the depth said that was, which is the same arithmetic
         # the box placer does -- see `object_points`.
-        size = self.config.voxel_size
+        size = self.config.heat_cell_m or self.config.voxel_size
         weight: dict[tuple[int, int, int], float] = {}
+        counted: dict[tuple[int, int, int], int] = {}
         seen: dict[tuple[int, int, int], set[tuple[str, float]]] = {}
         when: dict[tuple[int, int, int], float] = {}
         for frame in frames:
@@ -752,6 +767,7 @@ class Hyperspace(MemoryModule):
                     int(np.floor(here[2] / size)),
                 )
                 weight[cell] = weight.get(cell, 0.0) + float(hit.score)
+                counted[cell] = counted.get(cell, 0) + 1
                 seen.setdefault(cell, set()).add((frame.frame, frame.ts))
                 when[cell] = min(when.get(cell, frame.ts), frame.ts)
         if not weight:
@@ -761,7 +777,18 @@ class Hyperspace(MemoryModule):
             )
             return
 
-        ranked = sorted(weight.items(), key=lambda item: -item[1])
+        # How well this patch of space matches, not how much of it there is. See
+        # `heat_score` for the measurement; `scored` is empty when the view gate refuses
+        # everything, which on a short recording it can, and then the gate is dropped
+        # rather than the answer.
+        scored = self._cell_scores(weight, counted, seen, self.config.heat_min_views)
+        if not scored:
+            scored = self._cell_scores(weight, counted, seen, 1)
+            query.note = (
+                f"no place was seen from {self.config.heat_min_views} viewpoints, so the "
+                "answers below rest on fewer -- a single look can be a single mistake"
+            )
+        ranked = sorted(scored.items(), key=lambda item: -item[1])
         query.places = [
             Place(
                 where=((cell[0] + 0.5) * size, (cell[1] + 0.5) * size, (cell[2] + 0.5) * size),
@@ -773,6 +800,21 @@ class Hyperspace(MemoryModule):
             )
             for cell, score in ranked[:50]
         ]
+
+    def _cell_scores(
+        self,
+        weight: dict[tuple[int, int, int], float],
+        counted: dict[tuple[int, int, int], int],
+        seen: dict[tuple[int, int, int], set[tuple[str, float]]],
+        min_views: int,
+    ) -> dict[tuple[int, int, int], float]:
+        """One score per cell, from the patches that landed in it."""
+        mean = self.config.heat_score != "sum"
+        return {
+            cell: (total / counted[cell] if mean else total)
+            for cell, total in weight.items()
+            if len(seen[cell]) >= min_views
+        }
 
     def _where_the_robot_is(self, at_time: float = 0.0) -> tuple[float, float, float] | None:
         """The robot's own position, now or at a moment, or None when nothing knows.
