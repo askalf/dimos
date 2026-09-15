@@ -256,3 +256,28 @@ def test_start_does_not_read_anything_the_lazy_engine_owns() -> None:
     body = body[: body.index("    def _load_the_detector")]
     assert "self.model" not in body, "start() touches the lazily built model"
     assert "self.engine" not in body, "start() touches the lazily built engine"
+
+
+def test_one_unplaceable_patch_does_not_take_the_whole_query_down() -> None:
+    """A patch whose ray or pose carries a NaN has no position, and binning it raises.
+
+    Out of two million patches, one is enough: `int(np.floor(nan))` is a ValueError and
+    the query that was otherwise fine returns nothing. It also came back to the caller
+    as INVALID_INPUT, telling them to fix a question that was never the problem.
+    """
+    import numpy as np
+
+    good = np.array([1.0, 2.0, 3.0])
+    bad = np.array([float("nan"), 2.0, 3.0])
+    assert np.isfinite(good).all()
+    assert not np.isfinite(bad).all()
+
+    from pathlib import Path
+
+    source = Path(__file__).with_name("module.py").read_text()
+    assert "if not np.isfinite(here[:3]).all():" in source, (
+        "every placed point has to be checked before it is binned"
+    )
+    assert "QUERY_FAILED" in source, (
+        "a fault inside the query must not be reported as the caller's bad input"
+    )

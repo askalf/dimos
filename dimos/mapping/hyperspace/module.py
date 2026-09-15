@@ -723,6 +723,11 @@ class Hyperspace(MemoryModule):
                 here = pose @ np.array(
                     [hit.ray[0] * hit.depth, hit.ray[1] * hit.depth, hit.depth, 1.0]
                 )
+                # A patch whose ray or pose carries a NaN has no position, and binning
+                # it raises rather than returning nothing -- one bad patch out of two
+                # million took the whole query down.
+                if not np.isfinite(here[:3]).all():
+                    continue
                 cell = (
                     int(np.floor(here[0] / size)),
                     int(np.floor(here[1] / size)),
@@ -853,7 +858,16 @@ class Hyperspace(MemoryModule):
         try:
             query = self.run_query(text, kind, count, query_id, within_m, at_time)
         except ValueError as error:
-            return SkillResult.fail("INVALID_INPUT", str(error))
+            # Only the argument checks raise ValueError deliberately; anything else that
+            # happens to is a fault in here, and calling it INVALID_INPUT tells the
+            # caller to fix their question when the question was fine.
+            if "query" in str(error) or "look for" in str(error):
+                return SkillResult.fail("INVALID_INPUT", str(error))
+            logger.exception(f"hyperspace {kind} query {text!r} failed")
+            return SkillResult.fail("QUERY_FAILED", f"{type(error).__name__}: {error}")
+        except Exception as error:
+            logger.exception(f"hyperspace {kind} query {text!r} failed")
+            return SkillResult.fail("QUERY_FAILED", f"{type(error).__name__}: {error}")
         handed = query.places[: query.taken]
         if not handed:
             return SkillResult.ok(
