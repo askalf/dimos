@@ -46,7 +46,7 @@ from dimos.mapping.hyperspace.embedder import (
 from dimos.mapping.hyperspace.frames import spec_of
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
 from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
-from dimos.mapping.hyperspace.msgs import FoundObjects
+from dimos.mapping.hyperspace.msgs import FoundObject, FoundObjects
 from dimos.mapping.hyperspace.queries import (
     Place,
     Query,
@@ -692,6 +692,7 @@ class Hyperspace(MemoryModule):
         """The OWLv2 path: boxes, and a detector that is allowed to say no."""
         self.live.config.top = 0
         result = self.live.ask(query.text, background_prompts=negatives)
+        result.kind = "item"
         self.found.publish(result)
         query.refused = result.refused
         query.timings = dict(result.timings)
@@ -825,6 +826,38 @@ class Hyperspace(MemoryModule):
             )
             for cell, score in ranked[:50]
         ]
+        # Published like the detector path's answers, because a viewer that sees one kind
+        # of answer out of three makes `found`'s promise -- "every answer, also published,
+        # so a viewer or a recorder sees them without having made the call" -- half true.
+        # MemWorld hit exactly that: heatmap and area answered correctly in words over an
+        # empty world, which reads as the world being broken rather than the wiring.
+        #
+        # A cell is NOT a detection and the message says so in `kind`. There is no extent,
+        # because nothing measured one; `confidence` carries the cell's score, which is a
+        # different quantity from OWLv2's calibrated one and is only comparable within a
+        # kind. `camera_frame` and `box2d` stay empty: no photograph was chosen and no box
+        # was drawn. `seen_at` is a real frame stamp, which is what a viewer needs to pull
+        # the evidence picture.
+        self.found.publish(
+            FoundObjects(
+                query=query.text,
+                kind=kind,
+                frame=self.config.world_frame,
+                objects=[
+                    FoundObject(
+                        frame=place.frame,
+                        centre=place.where,
+                        confidence=place.score,
+                        views=place.views,
+                        stamp=place.seen_at,
+                        depth_m=place.distance_m,
+                    )
+                    for place in query.places
+                ],
+                ms=query.ms,
+                timings=dict(query.timings),
+            )
+        )
 
     def _cells_worth_answering(
         self,

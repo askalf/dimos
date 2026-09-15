@@ -445,6 +445,17 @@ def test_the_patch_path_answers_end_to_end_over_a_fake_search() -> None:
     module._store = None
     module.live = Live()
 
+    # The port a blueprint would bind. Stubbed rather than guarded in production: a
+    # heatmap answer that reaches nobody is the bug this publish exists to fix, so the
+    # code must not quietly tolerate a missing port.
+    published: list = []
+
+    class Port:
+        def publish(self, message: object) -> None:
+            published.append(message)
+
+    module.found = Port()
+
     original = frames_module.hot_frames
     frames_module.hot_frames = lambda *args, **kwargs: made
     try:
@@ -459,6 +470,26 @@ def test_the_patch_path_answers_end_to_end_over_a_fake_search() -> None:
     assert best.views >= 1 and best.score > 0
     assert best.kind == "area"
     assert query.timings.get("search") is not None
+
+    # Published too, and SAYING WHICH KIND. MemWorld subscribed to `found`, got only the
+    # detector's answers because this path published nothing, and their heatmap queries
+    # answered correctly in words over an empty world -- which reads as the world being
+    # broken rather than the wiring. A subscriber also has to be able to tell a scored
+    # cell from a detection before it reads `confidence`, which is a different quantity
+    # on a different scale for each.
+    assert len(published) == 1, "the patch path has to publish what it found"
+    answer = published[0]
+    assert answer.kind == "area", "a subscriber cannot read `confidence` without this"
+    assert answer.query == "kitchen"
+    assert len(answer.objects) == len(query.places)
+    first = answer.objects[0]
+    assert tuple(first.centre) == tuple(best.where)
+    assert first.confidence == best.score, "the cell's score, not a detector's"
+    assert first.extent == (0.0, 0.0, 0.0), "nothing measured a size"
+    assert first.camera_frame == "" and first.box2d == (0.0, 0.0, 0.0, 0.0), (
+        "no photograph was chosen and no box was drawn"
+    )
+    assert first.stamp == best.seen_at, "a real frame stamp, for pulling the evidence"
 
 
 def test_the_query_module_passes_its_ranking_knobs_to_the_search() -> None:

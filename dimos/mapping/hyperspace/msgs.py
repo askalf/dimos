@@ -96,6 +96,14 @@ class FoundObjects:
 
     query: str = ""
     objects: list[FoundObject] = field(default_factory=list)
+    # Which sort of answer these are, and a subscriber has to read it before it reads
+    # `confidence` or `extent`. "item" means the detector drew a box: `extent` is
+    # measured and `confidence` is OWLv2's own calibrated score. "heatmap" and "area"
+    # mean a scored CELL: `extent` is not measured, and `confidence` carries the cell's
+    # score, which is a different quantity on a different scale and must not be compared
+    # with a detector's. Without this a viewer reads a cell score as a detection and
+    # believes a number nothing measured.
+    kind: str = "item"
     # The world frame every box is in, repeated here so a caller reading only the
     # envelope does not have to open an object to find out.
     frame: str = "odom"
@@ -114,6 +122,7 @@ class FoundObjects:
     def as_dict(self) -> dict[str, Any]:
         return {
             "query": self.query,
+            "kind": self.kind,
             "frame": self.frame,
             "objects": [found.as_dict() for found in self.objects],
             "refused": self.refused,
