@@ -23,7 +23,7 @@ from importlib.metadata import version as package_version
 import json
 from pathlib import Path
 import threading
-from typing import TYPE_CHECKING, Any, Never, TextIO
+from typing import TYPE_CHECKING, Any, NoReturn, TextIO
 import uuid
 
 import typer
@@ -157,7 +157,7 @@ def _format_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> str:
     )
 
 
-def _fail(message: str) -> Never:
+def _fail(message: str) -> NoReturn:
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(1)
 
