@@ -141,3 +141,42 @@ def test_an_item_place_is_built_from_fields_a_found_object_actually_has() -> Non
     fields = set(FoundObject.__dataclass_fields__)
     for name in ("centre", "frame", "confidence", "depth_m", "extent", "views", "stamp"):
         assert name in fields, f"_fill_from_detector reads {name!r} and it is gone"
+
+
+def test_a_hot_patch_lands_where_its_frame_was_looking() -> None:
+    """The heatmap and area answers are placed by hand, so the arithmetic is the risk.
+
+    A patch carries the ray it sat on and how far the depth said that was. The point is
+    `(ray.x * d, ray.y * d, d)` in the camera, then through that frame's pose -- the same
+    arithmetic `object_points` does for a box. Get the convention wrong and every answer
+    is confidently in the wrong place, which is worse than no answer.
+    """
+    import numpy as np
+
+    # A camera two metres up, looking down the world's +x with z forward in its own frame.
+    pose = np.array(
+        [
+            [0.0, 0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 2.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    # Dead centre of the image, three metres out.
+    centre = pose @ np.array([0.0 * 3.0, 0.0 * 3.0, 3.0, 1.0])
+    assert np.allclose(centre[:3], [3.0, 0.0, 2.0]), (
+        f"straight ahead at 3 m should be 3 m along +x, got {centre[:3]}"
+    )
+
+    # Up and to the right in the image: +x right, +y DOWN in an optical frame, so this
+    # must come back to the camera's right and ABOVE it in the world.
+    off = pose @ np.array([0.5 * 4.0, -0.25 * 4.0, 4.0, 1.0])
+    assert np.allclose(off[:3], [4.0, -2.0, 3.0]), f"right and up in the image put it at {off[:3]}"
+
+    size = 0.1
+    cell = tuple(int(np.floor(value / size)) for value in centre[:3])
+    assert cell == (30, 0, 20)
+    back = tuple((index + 0.5) * size for index in cell)
+    assert all(abs(a - b) <= size for a, b in zip(back, centre[:3], strict=False)), (
+        "a voxel's centre has to be within one voxel of the point that made it"
+    )
