@@ -1551,3 +1551,29 @@ def test_the_towers_get_the_card_before_the_index_does(store: SqliteStore) -> No
     assert order == ["detector", "recording", "towers", "index"], (
         "the detector cannot spill and the index can, so the order is not arbitrary"
     )
+
+
+def test_metal_refuses_an_index_bigger_than_its_ndarray_limit() -> None:
+    """A tensor past 2^31 elements ABORTS the process on MPS, so it must never be built.
+
+    Found on grocery: its so400m member is 3,489,696 x 1152 = 4.0 billion elements and
+    Metal's `MPSNDArray` asserts `dimension length > INT_MAX` -- not an exception, an
+    abort, so there is nothing to catch and the only safe answer is not to try.
+    sf_office's 1.0 billion sits under the line, which is why this went unnoticed until a
+    big recording arrived.
+
+    CUDA has no such limit, and the difference matters: it is why a Mac measurement is
+    not an answer about what a large NVIDIA card could hold.
+    """
+    from dimos.mapping.hyperspace.resident import MPS_MAX_ELEMENTS, place_on
+
+    assert MPS_MAX_ELEMENTS == 2**31 - 1
+
+    class Oversized:
+        # Only the shape is read before the refusal, so nothing has to be allocated to
+        # ask the question -- which is the point: allocating it is the crash.
+        shape = (3_489_696, 1152)
+
+    huge = Oversized()
+    stayed, spent = place_on(huge, "mps", budget=10**12)
+    assert stayed is huge and spent == 0, "grocery's so400m must not reach Metal"

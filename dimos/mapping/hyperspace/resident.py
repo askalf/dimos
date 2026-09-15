@@ -96,6 +96,19 @@ TOWER_ROOM_BYTES = 3_000_000_000
 # of it, and the detector OOM'd exactly as it had before any of this was touched.
 DETECTOR_HEADROOM_BYTES = 1_200_000_000
 
+# Elements a single tensor may have on Metal. MPS builds an MPSNDArray and asserts
+# `NDArray dimension length > INT_MAX` -- an ABORT, not an exception -- so this is a
+# refusal rather than something to catch.
+#
+# FOUND THE HARD WAY on grocery: its so400m member is 3,489,696 x 1152 = 4.0 billion
+# elements and took the whole process down. sf_office's 1.0 billion is under the line,
+# which is why nothing hit it until a big recording did; bike's 2.7 billion was next.
+#
+# CUDA HAS NO SUCH LIMIT. It is the reason a big index can live on an NVIDIA card and
+# not on Metal, and worth knowing before anyone reads a Mac measurement as an answer
+# about a card.
+MPS_MAX_ELEMENTS = 2**31 - 1
+
 
 @dataclass
 class ResidentPatches:
@@ -403,12 +416,15 @@ def place_on(vectors: NDArray[Any], device: str, budget: int) -> tuple[Any, int]
     """
     import torch
 
-    wanted = (
-        int(vectors.shape[0])
-        * int(vectors.shape[1])
-        * torch.empty(0, dtype=getattr(torch, DEVICE_AS)).element_size()
-    )
+    elements = int(vectors.shape[0]) * int(vectors.shape[1])
+    wanted = elements * torch.empty(0, dtype=getattr(torch, DEVICE_AS)).element_size()
     if not device or device == "cpu" or wanted > budget:
+        return vectors, 0
+    if device == "mps" and elements > MPS_MAX_ELEMENTS:
+        logger.warning(
+            f"hyperspace: {elements / 1e9:.1f} billion elements is past Metal's "
+            f"{MPS_MAX_ELEMENTS / 1e9:.1f} billion per tensor; holding this one in RAM"
+        )
         return vectors, 0
     try:
         held = torch.as_tensor(vectors).to(device=device, dtype=getattr(torch, DEVICE_AS))
