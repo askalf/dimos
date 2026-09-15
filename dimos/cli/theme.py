@@ -27,7 +27,6 @@ this file only for its palette.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-import contextlib
 import os
 from pathlib import Path
 import re
@@ -180,24 +179,6 @@ def enabled() -> bool:
 # Entry.
 _SCROLL_OFF = "\033[?1007s\033[?1007l"
 _SCROLL_RESTORE = "\033[?1007r"
-
-
-@contextlib.contextmanager
-def quiet_scroll() -> Iterator[None]:
-    """Keep a scroll wheel from typing arrow keys over a fullscreen view.
-
-    A no-op off a terminal. Nothing here touches the tty settings.
-    """
-    if not enabled():
-        yield
-        return
-    sys.stdout.write(_SCROLL_OFF)
-    sys.stdout.flush()
-    try:
-        yield
-    finally:
-        sys.stdout.write(_SCROLL_RESTORE)
-        sys.stdout.flush()
 
 
 def term_width() -> int:
@@ -447,6 +428,13 @@ class Live:
         sys.stdout.write("\n".join("\033[K" + r for r in rows) + "\n")
         sys.stdout.flush()
         self._rows = len(rows)
+
+    def clear(self) -> None:
+        """Erase what was drawn, for a transient surface whose result prints after."""
+        if not self._static and self._rows:
+            sys.stdout.write(f"\033[{self._rows}F\033[J")
+            sys.stdout.flush()
+            self._rows = 0
 
     def spinner(self) -> Iterator[str]:
         i = 0

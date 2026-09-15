@@ -339,22 +339,11 @@ def test_fullscreen_live_tolerates_a_non_tty_stdin(
         live.update(["x"])  # reaching here without raising is the assertion
 
 
-def test_quiet_scroll_is_a_no_op_off_a_terminal(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(theme, "enabled", lambda: False)
-    with theme.quiet_scroll():
-        pass
-    assert capsys.readouterr().out == "", "no terminal, no mode changes"
-
-
-def test_quiet_scroll_saves_disables_then_restores(
+def test_inline_live_clear_erases_what_it_drew(
     tty: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Off for the duration so a wheel scroll types nothing, and restored after so
-    the user's next `less` still wheel-scrolls. No termios: muting echo instead
-    reads as a password prompt to macOS terminals (Secure Keyboard Entry)."""
-    with theme.quiet_scroll():
-        pass
-    out = capsys.readouterr().out
-    assert out.index("\x1b[?1007s") < out.index("\x1b[?1007l") < out.index("\x1b[?1007r")
+    """A transient surface: back to its first row, then clear to the end of the screen."""
+    with theme.Live() as live:
+        live.update(["one row"])
+        live.clear()
+    assert "\x1b[1F\x1b[J" in capsys.readouterr().out

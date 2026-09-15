@@ -21,7 +21,7 @@ import contextlib
 from datetime import datetime, timezone
 import functools
 from pathlib import Path
-import shutil
+import threading
 from typing import Any
 
 import typer
@@ -143,12 +143,13 @@ class _Ticker:
         self.wide = None if width is None else width >= _WIDE
         self.task = bar.add_task(f"reading {self.name}", total=None)
 
+    def fit(self, cols: int) -> None:
+        """Shed or restore speed and ETA as the window crosses the threshold."""
+        if self.wide is not None and (cols >= _WIDE) != self.wide:
+            self.bar.columns = tuple(_progress_columns(cols))
+            self.wide = cols >= _WIDE
+
     def __call__(self, phase: str, done: int, total: int) -> None:
-        if self.wide is not None:  # shed or restore speed and ETA as the window changes
-            cols = shutil.get_terminal_size((100, 24)).columns
-            if (cols >= _WIDE) != self.wide:
-                self.bar.columns = tuple(_progress_columns(cols))
-                self.wide = cols >= _WIDE
         if phase != self.phase:
             self.bar.remove_task(self.task)
             label = f"{_PHASE.get(phase, phase)} {self.name}"
@@ -157,15 +158,35 @@ class _Ticker:
         self.bar.update(self.task, completed=done, total=total or None)
 
 
+def _render_line(progress: Any, width: int) -> str:
+    """Rich's bar as a single row of text, kept a column short of the width.
+
+    A row that wraps is what makes an inline redraw drift down the screen, and
+    some terminals treat a row exactly as wide as the window as wrapped too.
+    """
+    from rich.console import Console
+    from rich.text import Text
+
+    console = Console(width=max(40, width - 1), force_terminal=True, color_system="truecolor")
+    with console.capture() as cap:
+        console.print(progress.get_renderable(), end="")
+    text = Text.from_ansi(cap.get().split("\n")[0])
+    text.truncate(max(1, width - 1), overflow="ellipsis")
+    with console.capture() as cap:
+        console.print(text, end="", soft_wrap=True)
+    return cap.get()
+
+
 @contextlib.contextmanager
 def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
-    """A transfer bar that survives a window resize.
+    """A transfer bar drawn inline, so the terminal above it stays visible.
 
-    Drawn on the alternate screen and repainted whole every frame, the same fix
-    as the login wait. An inline bar cannot be made safe: once the terminal
-    reflows a wide line into two rows, the cursor-up redraw lands under the old
-    frame instead of over it. The bar is transient either way; the line that
-    stays is the summary printed after it.
+    Rich renders the line; our own Live places it, returning to column one and
+    clearing the row on every redraw, and the line is kept under the width so
+    it never wraps. That is what stops a resize from compounding into a smear:
+    a contraction leaves at most one stale fragment above the bar, which the
+    next expansion overwrites. The bar is transient; the summary line printed
+    after it is what stays.
     """
     from dimos.cli import theme
 
@@ -173,13 +194,32 @@ def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
         yield lambda phase, done, total: None
         return
 
-    from rich.live import Live
     from rich.progress import Progress
 
-    width = shutil.get_terminal_size((100, 24)).columns
-    progress = Progress(*_progress_columns(width), auto_refresh=False)  # the Live below renders it
-    with theme.quiet_scroll(), Live(progress, screen=True, transient=True, refresh_per_second=10):
-        yield _Ticker(progress, name, width)
+    width = theme.term_width()
+    progress = Progress(*_progress_columns(width), auto_refresh=False)  # a model; we draw it
+    ticker = _Ticker(progress, name, width)
+    live, stop = theme.Live(), threading.Event()
+
+    def refresh() -> None:
+        while not stop.is_set():
+            try:
+                cols = theme.term_width()
+                ticker.fit(cols)
+                live.update([_render_line(progress, cols)])
+            except Exception:
+                return  # a bar must never break the transfer; go quiet instead
+            stop.wait(0.1)
+
+    with live:
+        thread = threading.Thread(target=refresh, daemon=True, name="dimos-progress")
+        thread.start()
+        try:
+            yield ticker
+        finally:
+            stop.set()
+            thread.join(1.0)
+            live.clear()
 
 
 @handle_fail

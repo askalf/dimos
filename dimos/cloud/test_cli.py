@@ -72,71 +72,62 @@ def test_progress_columns_shed_speed_and_eta_when_narrow() -> None:
         assert any(isinstance(c, BarColumn) and c.bar_width is None for c in cols)
 
 
-def test_bar_draws_on_the_alternate_screen_and_quiets_scroll(monkeypatch, capsys) -> None:
-    """The transfer bar must repaint whole on the alt screen (an inline bar cannot
-    survive the terminal reflowing a wide line on resize), and it must switch
-    alternate-scroll off for the duration rather than mute echo: echo-off is what
-    a password prompt does, and macOS terminals answer it with Secure Keyboard
-    Entry."""
-    import rich.live
-    from rich.progress import Progress
+def test_bar_draws_inline_and_erases_itself(monkeypatch, capsys) -> None:
+    """The transfer bar stays inline so the terminal above it stays visible: no
+    alternate screen, no mode changes. Every redraw returns to column one and
+    clears the row, and the bar is erased when the transfer ends so only the
+    summary line printed after it remains."""
+    import time
 
     from dimos.cli import theme
 
-    seen: dict = {}
-
-    class FakeLive:
-        def __init__(self, renderable=None, **kw):
-            seen.update(kw)
-            seen["renderable"] = renderable
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return None
-
-    monkeypatch.setattr(rich.live, "Live", FakeLive)
     monkeypatch.setattr(theme, "enabled", lambda: True)
-    with cli._bar("rec.db") as tick:
-        tick("upload", 1, 2)
+    monkeypatch.setattr(theme, "term_width", lambda: 80)
+    with cli._bar("recording_go2_office_2026-09-08.db") as tick:
+        tick("upload", 1, 4)
+        time.sleep(0.3)  # let the refresher draw a few frames
     out = capsys.readouterr().out
-    assert seen.get("screen") is True and seen.get("transient") is True
-    assert isinstance(seen["renderable"], Progress)
-    assert out.index("\x1b[?1007s") < out.index("\x1b[?1007l") < out.index("\x1b[?1007r"), (
-        "alternate scroll: saved, then off, then restored"
-    )
+    assert "\x1b[?1049h" not in out and "?1007" not in out, "inline: no alt screen, no modes"
+    assert "\x1b[?25l" in out and "\x1b[?25h" in out, "cursor hidden while drawing"
+    assert "uploading" in out and "\x1b[K" in out, "rich's line, placed by our drawer"
+    assert "\x1b[1F\x1b[J" in out, "erased at the end, so only the summary line stays"
 
 
-def test_ticker_sheds_columns_when_the_window_narrows(monkeypatch) -> None:
-    import os
-
+def test_ticker_sheds_columns_when_the_window_narrows() -> None:
     from rich.progress import Progress, TimeRemainingColumn, TransferSpeedColumn
 
     bar = Progress(
         *cli._progress_columns(120), console=Console(file=io.StringIO(), force_terminal=True)
     )
-    assert any(isinstance(c, TransferSpeedColumn) for c in bar.columns)
-    widths = iter([120, 60])
-    monkeypatch.setattr(
-        cli.shutil, "get_terminal_size", lambda fb=None: os.terminal_size((next(widths), 24))
-    )
     tick = cli._Ticker(bar, "rec.db", width=120)
-    tick("upload", 1, 10)  # still wide: keeps speed and ETA
+    tick.fit(120)  # still wide: keeps speed and ETA
     assert any(isinstance(c, TransferSpeedColumn) for c in bar.columns)
-    tick("upload", 2, 10)  # window narrowed: sheds them so the line stays one row
+    tick.fit(60)  # window narrowed: sheds them so the line stays one row
     assert not any(isinstance(c, (TransferSpeedColumn, TimeRemainingColumn)) for c in bar.columns)
+    tick.fit(120)  # and widened again: restores them
+    assert any(isinstance(c, TransferSpeedColumn) for c in bar.columns)
 
 
-def test_bar_is_silent_off_a_terminal(monkeypatch) -> None:
+def test_bar_is_silent_off_a_terminal(monkeypatch, capsys) -> None:
     """Piped or in CI there is no bar at all, so a log gets just the summary line."""
-    import rich.live
-
     from dimos.cli import theme
 
-    built: list = []
-    monkeypatch.setattr(rich.live, "Live", lambda *a, **kw: built.append(kw) or None)
     monkeypatch.setattr(theme, "enabled", lambda: False)
     with cli._bar("rec.db") as tick:
         tick("upload", 1, 2)  # a no-op, must not raise
-    assert built == [], "no Live, no alt screen, nothing drawn"
+    assert capsys.readouterr().out == ""
+
+
+def test_render_line_is_one_row_under_the_width() -> None:
+    """A row that wraps makes the inline redraw drift down the screen."""
+    from rich.progress import Progress
+
+    from dimos.cli import theme
+
+    bar = Progress(
+        *cli._progress_columns(50), console=Console(file=io.StringIO(), force_terminal=True)
+    )
+    cli._Ticker(bar, "recording_go2_office_2026-09-08.db", width=50)("upload", 3, 10)
+    line = cli._render_line(bar, 50)
+    assert "\n" not in line and theme.visible_len(line) <= 49
+    assert "uploading" in line
