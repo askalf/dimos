@@ -236,3 +236,40 @@ def test_signed_in_card_abbreviates_the_home_dir(tty: None) -> None:
     rows = plain(cloud._signed_in_card("a@b", "k", str(Path.home() / ".config/dimos/credentials")))
     text = " ".join(rows)
     assert "~/.config/dimos/credentials" in text and str(Path.home()) not in text
+
+
+def test_fullscreen_live_uses_the_alternate_screen(
+    tty: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wait takes the alt screen so it leaves no trace in scrollback."""
+    with theme.Live(fullscreen=True) as live:
+        live.update(["hello"])
+    out = capsys.readouterr().out
+    assert "\x1b[?1049h" in out and "\x1b[?1049l" in out, "enter and leave the alt screen"
+    assert "\x1b[?25l" in out and "\x1b[?25h" in out, "cursor hidden during, restored after"
+
+
+def test_fullscreen_live_repaints_from_a_fixed_origin(
+    tty: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Why a resize is safe here and not in-place: every frame homes and clears
+    below, so nothing the terminal did to the previous frame can persist. The
+    in-place path instead moves up a logical-line count, which desyncs the
+    instant the terminal reflows a wide line into two rows on a resize."""
+    with theme.Live(fullscreen=True) as live:
+        live.update(["a wide row " * 6])  # as if the terminal were wide
+        live.update(["narrow"])  # then made narrow — a resize between frames
+    frames = capsys.readouterr().out
+    assert not re.search(r"\x1b\[\d+F", frames), "fullscreen must never move by a row count"
+    assert frames.count("\x1b[H") >= 2, "each frame repaints from home"
+    assert "\x1b[J" in frames, "and clears everything below the frame"
+
+
+def test_fullscreen_live_is_silent_off_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(theme, "enabled", lambda: False)
+    with theme.Live(fullscreen=True) as live:
+        live.update(["Signed in", "you@x"])
+    out = capsys.readouterr().out
+    assert "\x1b[" not in out and "Signed in" in out, "no alt screen, just the words"

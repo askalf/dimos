@@ -265,7 +265,13 @@ def login() -> None:
     """Sign this machine in to Dimensional cloud."""
     d = _post("/auth/device", label=socket.gethostname())
     deadline = time.time() + d["expires_in"]
-    with theme.Live() as live:
+
+    # The wait runs on the alternate screen, so resizing the window repaints the
+    # card cleanly instead of smearing it. The outcome is carried back out and
+    # rendered on the normal screen below, where it stays in the scrollback.
+    signed_in: tuple[str, str, str] | None = None
+    outcome = "expired"
+    with theme.Live(fullscreen=True) as live:
         spin = live.spinner()
 
         def frame() -> list[str]:
@@ -279,34 +285,35 @@ def login() -> None:
             live.pause(d["interval"], frame)
             r = _post("/auth/token", device_code=d["device_code"])
             if r["status"] == "ok":
-                where = _store(r["api_key"])
-                live.clear()
-                _reveal(_wordmark())
-                theme.show(_signed_in_card(r["email"], r["key_id"], where))
-                return
+                signed_in = (r["email"], r["key_id"], _store(r["api_key"]))
+                outcome = "ok"
+                break
             if r["status"] in ("denied", "expired"):
-                denied = r["status"] == "denied"
-                live.clear()
-                theme.show(
-                    _refused_card(
-                        "Denied" if denied else "Code expired",
-                        "The code was rejected in the browser."
-                        if denied
-                        else f"{d['user_code']} was never approved.",
-                        "No key was created." if denied else "Codes are valid for 15 minutes.",
-                    ),
-                    err=True,
-                )
-                raise typer.Exit(1)
-        live.clear()
-    theme.show(
-        _refused_card(
-            "Code expired",
-            f"{d['user_code']} was never approved.",
-            "Codes are valid for 15 minutes.",
-        ),
-        err=True,
-    )
+                outcome = r["status"]
+                break
+
+    if outcome == "ok" and signed_in is not None:
+        _reveal(_wordmark())
+        theme.show(_signed_in_card(*signed_in))
+        return
+    if outcome == "denied":
+        theme.show(
+            _refused_card(
+                "Denied",
+                "The code was rejected in the browser.",
+                "No key was created.",
+            ),
+            err=True,
+        )
+    else:
+        theme.show(
+            _refused_card(
+                "Code expired",
+                f"{d['user_code']} was never approved.",
+                "Codes are valid for 15 minutes.",
+            ),
+            err=True,
+        )
     raise typer.Exit(1)
 
 

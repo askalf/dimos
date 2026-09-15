@@ -370,19 +370,27 @@ class Live:
     content exactly once instead of a flipbook of spinner frames.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, fullscreen: bool = False) -> None:
         self._rows = 0
         self._static = not enabled()
         self._done = False
+        self._fullscreen = fullscreen
 
     def __enter__(self) -> Live:
         if not self._static:
-            sys.stdout.write("\033[?25l")
+            # Fullscreen redraws survive a window resize; the in-place path below
+            # does not, because it moves up a logical-line count that desyncs the
+            # moment the terminal reflows. Use fullscreen for a wait that stays on
+            # screen long enough to be resized, in-place for a brief animation.
+            sys.stdout.write(
+                "\033[?1049h\033[2J\033[H\033[?25l" if self._fullscreen else "\033[?25l"
+            )
+            sys.stdout.flush()
         return self
 
     def __exit__(self, *exc: object) -> None:
         if not self._static:
-            sys.stdout.write("\033[?25h")
+            sys.stdout.write("\033[?25h\033[?1049l" if self._fullscreen else "\033[?25h")
             sys.stdout.flush()
 
     def update(self, rows: list[str]) -> None:
@@ -391,17 +399,18 @@ class Live:
                 self._done = True
                 print("\n".join(_ESC.sub("", r) for r in rows))
             return
+        if self._fullscreen:
+            # Repaint the whole frame from a fixed origin and clear everything
+            # below it. A resize is self-correcting: the next frame homes and
+            # redraws, so nothing the terminal did to the old frame can persist.
+            sys.stdout.write("\033[H" + "\r\n".join(r + "\033[K" for r in rows) + "\033[J")
+            sys.stdout.flush()
+            return
         if self._rows:
             sys.stdout.write(f"\033[{self._rows}F")
         sys.stdout.write("\n".join("\033[K" + r for r in rows) + "\n")
         sys.stdout.flush()
         self._rows = len(rows)
-
-    def clear(self) -> None:
-        if not self._static and self._rows:
-            sys.stdout.write(f"\033[{self._rows}F\033[J")
-            sys.stdout.flush()
-            self._rows = 0
 
     def spinner(self) -> Iterator[str]:
         i = 0
