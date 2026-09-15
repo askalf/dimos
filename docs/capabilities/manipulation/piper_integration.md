@@ -1,7 +1,4 @@
----
-title: "Piper Integration"
-description: "Connect and run a Piper arm with dimOS manipulation and teleoperation blueprints."
----
+# Piper Integration
 
 ## Optional SLCAN setup
 
@@ -51,10 +48,10 @@ For keyboard Cartesian teleoperation, use:
 dimos --can-port can0 run keyboard-teleop-piper
 ```
 
-The Quest teleoperation composition is available as:
+The WebXR teleoperation composition is available as:
 
 ```bash
-dimos --can-port can0 run teleop-quest-piper
+dimos --can-port can0 run teleop-webxr-piper
 ```
 
 Note that ommitting the `--can-port` argument will fallback the control coordinator to use fake hardware adapter. This is good for testing.

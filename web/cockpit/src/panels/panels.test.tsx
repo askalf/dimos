@@ -3,13 +3,14 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { FrameHeader, PanelSpec } from "@dimos/shared";
-import type { CostmapValue } from "../session/decoders/costmap.ts";
-import { ChannelStore } from "../session/store.ts";
+import type { CostmapValue } from "@dimos/sdk";
+import { ChannelStore } from "@dimos/sdk";
+import type { DrawHealth } from "../layout/PanelFrame.tsx";
 import { MapPanel, startMapSink } from "./MapPanel.tsx";
 import { fitTransform, posePath } from "./mapRenderer.ts";
-import { PanelGrid } from "./PanelGrid.tsx";
-import { getPanel } from "./registry.ts";
-import { type DrawHealth, startVideoSink, VideoPanel } from "./VideoPanel.tsx";
+import { ChatPanel } from "./ChatPanel.tsx";
+import { getPanel, UnknownPanel } from "./registry.tsx";
+import { startVideoSink, VideoPanel } from "./VideoPanel.tsx";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -192,7 +193,7 @@ describe("startVideoSink", () => {
 });
 
 describe("VideoPanel", () => {
-  const SPEC: PanelSpec = { id: "cam", kind: "video", channels: [CH] };
+  const SPEC: PanelSpec = { id: "cam", kind: "video", title: "", channels: [CH], params: {} };
   let container: HTMLElement;
   let root: Root;
   let now: number;
@@ -219,6 +220,7 @@ describe("VideoPanel", () => {
     act(() => root.render(<VideoPanel spec={SPEC} store={store} />));
     expect(container.textContent).toContain("waiting for data");
     expect(badge().textContent).toBe("waiting");
+    expect(badge().getAttribute("data-state")).toBe("waiting");
     expect(badge().getAttribute("role")).toBe("status");
     const canvas = container.querySelector("canvas")!;
     expect(canvas.getAttribute("role")).toBe("img");
@@ -231,6 +233,7 @@ describe("VideoPanel", () => {
     });
     expect(container.textContent).not.toContain("waiting for data");
     expect(badge().textContent).toMatch(/fps$/);
+    expect(badge().getAttribute("data-state")).toBe("live");
     expect(badge().getAttribute("data-stale")).toBeNull();
 
     // Silence: source age climbs past the threshold on a later UI tick.
@@ -240,6 +243,7 @@ describe("VideoPanel", () => {
     });
     expect(badge().textContent).toMatch(/^stale/);
     expect(badge().getAttribute("data-stale")).toBe("true");
+    expect(badge().getAttribute("data-state")).toBe("stale");
   });
 
   it("flags decode failures in the badge and recovers", async () => {
@@ -259,6 +263,7 @@ describe("VideoPanel", () => {
     });
     expect(badge().textContent).toBe("decode failing");
     expect(badge().getAttribute("data-error")).toBe("true");
+    expect(badge().getAttribute("data-state")).toBe("error");
 
     await act(async () => {
       frame(store, 3, now / 1000);
@@ -289,6 +294,7 @@ describe("VideoPanel", () => {
     expect(badge().textContent).toBe("stalled");
     expect(badge().textContent).not.toMatch(/^stale/);
     expect(badge().getAttribute("data-stale")).toBe("true");
+    expect(badge().getAttribute("data-state")).toBe("stale");
   });
 
   it("surfaces a createImageBitmap rejection as decode failing", async () => {
@@ -301,12 +307,16 @@ describe("VideoPanel", () => {
     });
     expect(badge().textContent).toBe("decode failing");
     expect(badge().getAttribute("data-error")).toBe("true");
+    expect(badge().getAttribute("data-state")).toBe("error");
   });
 
   it("renders a visible note instead of a canvas when no channel is bound", () => {
     act(() =>
       root.render(
-        <VideoPanel spec={{ id: "cam", kind: "video", channels: [] }} store={store} />,
+        <VideoPanel
+          spec={{ id: "cam", kind: "video", title: "", channels: [], params: {} }}
+          store={store}
+        />,
       )
     );
     expect(container.textContent).toContain("no channel bound");
@@ -314,13 +324,12 @@ describe("VideoPanel", () => {
   });
 });
 
-describe("PanelGrid", () => {
+describe("registry", () => {
   let container: HTMLElement;
   let root: Root;
   let store: ChannelStore;
 
   beforeEach(() => {
-    vi.stubGlobal("createImageBitmap", () => Promise.resolve(bitmap()));
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -330,28 +339,30 @@ describe("PanelGrid", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
-    vi.unstubAllGlobals();
   });
 
-  it("renders known panel kinds in manifest order and skips unknown ones", () => {
-    const panels: PanelSpec[] = [
-      { id: "cam", kind: "video", channels: [CH] },
-      { id: "mystery", kind: "hologram", channels: [] },
-    ];
-    act(() => root.render(<PanelGrid panels={panels} store={store} />));
-    expect(container.querySelector('[data-testid="panel-cam"]')).not.toBeNull();
-    expect(container.textContent).not.toContain("mystery");
-
-    // No known panels: the grid contributes nothing (ChannelList still shows
-    // the channels).
-    act(() => root.render(<PanelGrid panels={[panels[1]]} store={store} />));
-    expect(container.innerHTML).toBe("");
-  });
-
-  it("has the video and map2d panels registered", () => {
+  it("has the video and map2d panels registered; unknown kinds stay undefined", () => {
+    // The subscription gate depends on getPanel returning undefined here: an
+    // UnknownPanel fallback in the registry itself would subscribe every
+    // channel of a newer bridge (see channelSubscribable in session.ts).
     expect(getPanel("video")).toBe(VideoPanel);
     expect(getPanel("map2d")).toBe(MapPanel);
+    expect(getPanel("chat")).toBe(ChatPanel);
     expect(getPanel("hologram")).toBeUndefined();
+  });
+
+  it("UnknownPanel renders visible chrome and binds nothing", () => {
+    const spec: PanelSpec = {
+      id: "mystery",
+      kind: "hologram",
+      title: "",
+      channels: [],
+      params: {},
+    };
+    act(() => root.render(<UnknownPanel spec={spec} store={store} />));
+    expect(container.querySelector('[data-testid="panel-mystery"]')).not.toBeNull();
+    expect(container.textContent).toContain("unknown panel kind hologram");
+    expect(container.querySelector("canvas")).toBeNull();
   });
 });
 
@@ -646,7 +657,13 @@ describe("startMapSink", () => {
 });
 
 describe("MapPanel", () => {
-  const SPEC: PanelSpec = { id: "map", kind: "map2d", channels: [MAP_CH, POSE_CH] };
+  const SPEC: PanelSpec = {
+    id: "map",
+    kind: "map2d",
+    title: "",
+    channels: [MAP_CH, POSE_CH],
+    params: {},
+  };
   let container: HTMLElement;
   let root: Root;
   let now: number;
@@ -690,6 +707,7 @@ describe("MapPanel", () => {
     act(() => root.render(<MapPanel spec={SPEC} store={store} />));
     expect(container.textContent).toContain("waiting for data");
     expect(badge().textContent).toBe("waiting");
+    expect(badge().getAttribute("data-state")).toBe("waiting");
     expect(badge().getAttribute("role")).toBe("status");
     const canvas = container.querySelector("canvas")!;
     expect(canvas.getAttribute("role")).toBe("img");
@@ -703,6 +721,7 @@ describe("MapPanel", () => {
     });
     expect(container.textContent).not.toContain("waiting for data");
     expect(badge().textContent).toMatch(/Hz$/);
+    expect(badge().getAttribute("data-state")).toBe("live");
     expect(badge().getAttribute("data-stale")).toBeNull();
 
     // Silence: source age climbs past the threshold on a later UI tick.
@@ -712,6 +731,7 @@ describe("MapPanel", () => {
     });
     expect(badge().textContent).toMatch(/^stale/);
     expect(badge().getAttribute("data-stale")).toBe("true");
+    expect(badge().getAttribute("data-state")).toBe("stale");
   });
 
   it("flags a failing inflate in the badge and recovers on the next grid", async () => {
@@ -730,6 +750,7 @@ describe("MapPanel", () => {
     });
     expect(badge().textContent).toBe("decode failing");
     expect(badge().getAttribute("data-error")).toBe("true");
+    expect(badge().getAttribute("data-state")).toBe("error");
 
     await act(async () => {
       realGridFrame(2, now / 1000);
@@ -744,7 +765,10 @@ describe("MapPanel", () => {
   it("renders without a pose binding (single-channel spec)", async () => {
     act(() =>
       root.render(
-        <MapPanel spec={{ id: "map", kind: "map2d", channels: [MAP_CH] }} store={store} />,
+        <MapPanel
+          spec={{ id: "map", kind: "map2d", title: "", channels: [MAP_CH], params: {} }}
+          store={store}
+        />,
       )
     );
     await act(async () => {
@@ -757,7 +781,12 @@ describe("MapPanel", () => {
 
   it("renders a visible note instead of a canvas when no channel is bound", () => {
     act(() =>
-      root.render(<MapPanel spec={{ id: "map", kind: "map2d", channels: [] }} store={store} />)
+      root.render(
+        <MapPanel
+          spec={{ id: "map", kind: "map2d", title: "", channels: [], params: {} }}
+          store={store}
+        />,
+      )
     );
     expect(container.textContent).toContain("no channel bound");
     expect(container.querySelector("canvas")).toBeNull();
