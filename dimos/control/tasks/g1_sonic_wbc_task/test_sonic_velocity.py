@@ -81,6 +81,82 @@ def _step(pipeline: SonicPipeline, *, measured_yaw: float = 0.0) -> None:
     )
 
 
+@pytest.mark.parametrize("mode", ["IDEL_SQUAT", "IDEL_KNEEL_TWO_LEGS", "IDEL_KNEEL"])
+def test_static_floor_modes_request_zero_speed(velocity_pipeline, planner_requests, mode):
+    velocity_pipeline.set_mode(mode)
+    velocity_pipeline.set_velocity(0.3, 0.2, 0.0)
+    for _ in range(120):
+        _step(velocity_pipeline)
+
+    inputs = planner_requests.call_args.args[2]
+    assert inputs["target_vel"].item() == 0.0
+    assert inputs["height"].item() == pytest.approx(0.4)
+    np.testing.assert_array_equal(inputs["movement_direction"], [[0.0, 0.0, 0.0]])
+
+
+@pytest.mark.parametrize(
+    "mode, mode_id, height", [("CRAWLING", 8, 0.4), ("ELBOW_CRAWLING", 14, 0.3)]
+)
+def test_crawl_release_stops_replanning_without_leaving_posture(
+    velocity_pipeline, planner_requests, mode, mode_id, height
+):
+    velocity_pipeline.set_mode(mode)
+    velocity_pipeline.set_velocity(0.2, 0.0, 0.0)
+    for _ in range(220):
+        _step(velocity_pipeline)
+    assert planner_requests.call_args.args[2]["target_vel"].item() == pytest.approx(0.7)
+
+    velocity_pipeline.set_velocity(0.0, 0.0, 0.0)
+    _step(velocity_pipeline)
+
+    inputs = planner_requests.call_args.args[2]
+    assert inputs["mode"].item() == mode_id
+    assert inputs["target_vel"].item() == 0.0
+    assert inputs["height"].item() == pytest.approx(height)
+    np.testing.assert_array_equal(inputs["movement_direction"], [[0.0, 0.0, 0.0]])
+    planner_requests.reset_mock()
+    for _ in range(150):
+        _step(velocity_pipeline)
+    planner_requests.assert_not_called()
+
+    velocity_pipeline.set_velocity(0.2, 0.0, 0.0)
+    _step(velocity_pipeline)
+    assert planner_requests.call_args.args[2]["mode"].item() == mode_id
+    assert planner_requests.call_args.args[2]["target_vel"].item() == pytest.approx(0.7)
+
+
+@pytest.mark.parametrize("mode", ["IDEL_LYING_FACE_DOWN", "idel_lying_face_down", 7])
+def test_unavailable_face_down_mode_preserves_current_request(velocity_pipeline, mode):
+    velocity_pipeline.set_mode("CRAWLING")
+
+    with pytest.raises(ValueError, match="face.down"):
+        velocity_pipeline.set_mode(mode)
+
+    assert velocity_pipeline.target_mode == 8
+
+
+@pytest.mark.parametrize("vx, vy", [(0.04, 0.04), (0.06, 0.0), (0.0, 0.06)])
+def test_crawl_deadzone_crossing_replans_even_for_small_velocity_changes(
+    velocity_pipeline, planner_requests, vx, vy
+):
+    velocity_pipeline.set_mode("CRAWLING")
+    velocity_pipeline.set_velocity(vx, vy, 0.0)
+    for _ in range(120):
+        _step(velocity_pipeline)
+    planner_requests.reset_mock()
+
+    velocity_pipeline.set_velocity(vx / 2, vy / 2, 0.0)
+    _step(velocity_pipeline)
+
+    assert planner_requests.call_count == 1
+    assert planner_requests.call_args.args[2]["target_vel"].item() == 0.0
+    planner_requests.reset_mock()
+    velocity_pipeline.set_velocity(vx, vy, 0.0)
+    _step(velocity_pipeline)
+    assert planner_requests.call_count == 1
+    assert planner_requests.call_args.args[2]["target_vel"].item() == pytest.approx(0.7)
+
+
 @pytest.mark.parametrize(
     ("forward", "yaw_rate"),
     [(0.3, 0.0), (0.0, 0.3), (0.0, -0.3), (0.0, 0.06), (0.0, -0.06), (0.3, 0.3)],

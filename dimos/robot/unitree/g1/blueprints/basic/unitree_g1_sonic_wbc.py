@@ -14,15 +14,15 @@
 
 """Unitree G1 SONIC (GEAR-SONIC) whole-body-control blueprint.
 
-Unified 29-DOF policy: planner + encoder + decoder. All 27 GEAR locomotion
-modes are reachable at runtime through the coordinator RPC surface:
+Unified 29-DOF policy: planner + encoder + decoder. Selectable GEAR locomotion
+modes are reachable through the coordinator RPC surface:
 
     coordinator.task_invoke("sonic_wbc", "set_locomotion_mode",
                             {"mode": "HAPPY_DANCE_WALK"})
 
 Usage:
-    dimos --simulation mujoco run unitree-g1-sonic-wbc    # sim
-    dimos run unitree-g1-sonic-wbc                        # real hardware
+    dimos --transport zenoh --simulation mujoco run unitree-g1-sonic-wbc
+    dimos --transport zenoh run unitree-g1-sonic-wbc
 
 Real hardware note: SONIC uses armature-derived PD gains (SONIC_KP/KD),
 NOT the GR00T gain table. Never run this blueprint while the C++
@@ -35,29 +35,30 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
-from dimos.control.components import HardwareComponent, HardwareType
-from dimos.control.coordinator import ControlCoordinator, TaskConfig
-from dimos.control.tasks.g1_groot_wbc_task.g1_groot_wbc_task import g1_joints
-from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import SONIC_KD, SONIC_KP
+from dimos.control.components import HardwareComponent, HardwareType, make_humanoid_joints
+from dimos.control.coordinator import TaskConfig
+from dimos.control.tasks.g1_sonic_wbc_task.coordinator import SonicCoordinator
+from dimos.control.tasks.g1_sonic_wbc_task.model_sources import sonic_model_directory
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import (
+    DEFAULT_ANGLES_DDS,
+    SONIC_KD,
+    SONIC_KP,
+    SONIC_V1_1_PIPELINE,
+    sonic_model_profile,
+)
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import COMMAND_TIMEOUT_SECONDS
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
-from dimos.core.stream import Out
-from dimos.core.transport import LCMTransport
 from dimos.hardware.whole_body.spec import WholeBodyConfig
+from dimos.hardware.whole_body.transport.adapter import zenoh_latest_transport
 from dimos.mapping.costmapper import CostMapper
 from dimos.mapping.pointclouds.occupancy import HeightCostConfig
-from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.sensor_msgs.MotorCommandArray import MotorCommandArray
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.replanning_a_star.module import ReplanningAStarPlanner
 from dimos.robot.unitree.g1.config import G1
-from dimos.robot.unitree.g1.g1_rerun import (
-    G1_RERUN_ROOT,
-    g1_urdf_joint_state,
-    g1_urdf_static_robot,
-)
 from dimos.utils.data import LfsPath
 from dimos.visualization.vis_module import vis_module
 
@@ -90,18 +91,17 @@ _MUJOCO_LIDAR_KWARGS: dict[str, Any] = {
     "mujoco_lidar_robot_exclusion_radius": G1.width_clearance,
 }
 
-# SONIC model files ship in the LFS data archive (data/sonic: encoder,
-# decoder, 774 MB planner, reference motion clips). LfsPath pulls lazily on
-# first access; SONIC_MODEL_DIR / SONIC_PLANNER_PATH override for machines
-# with a gear_sonic_deploy checkout.
-_env_model_dir = os.environ.get("SONIC_MODEL_DIR")
-_SONIC_RELEASE_DIR = Path(_env_model_dir) if _env_model_dir else LfsPath("sonic")
+# Download models explicitly with dimos-sonic-models; blueprint discovery
+# must not contact model hosts or materialize the old LFS archive.
+_SONIC_RELEASE_DIR = sonic_model_directory()
 _env_planner = os.environ.get("SONIC_PLANNER_PATH")
-_SONIC_PLANNER_PATH = Path(_env_planner) if _env_planner else LfsPath("sonic/planner_sonic.onnx")
+_SONIC_PLANNER_PATH = (
+    Path(_env_planner) if _env_planner else _SONIC_RELEASE_DIR / "planner_sonic.onnx"
+)
 
 _MJCF_PATH = LfsPath("mujoco_sim/g1_gear_wbc.xml")
+g1_joints = make_humanoid_joints("g1")
 _G1_NUM_MOTORS = len(g1_joints)
-_cmd_vel_topic = "/cmd_vel" if global_config.simulation else "/g1/cmd_vel"
 
 _adapter_address: str | Path
 
@@ -148,6 +148,8 @@ if global_config.simulation == "mujoco":
         dof=_G1_NUM_MOTORS,
         inject_legacy_assets=True,
         robot_sim_spec=_g1_sim_spec,
+        reset_joint_positions=DEFAULT_ANGLES_DDS.tolist(),
+        wait_for_control_command=True,
         **_MUJOCO_LIDAR_KWARGS,
     )
     _adapter_type = "sim_mujoco_g1"
@@ -178,14 +180,14 @@ if global_config.simulation == "mujoco":
 else:
     from dimos.robot.unitree.g1.wholebody_connection import G1WholeBodyConnection
 
-    _backend = G1WholeBodyConnection.blueprint(release_sport_mode=True)
-    _adapter_type = "transport_lcm"
+    _backend = G1WholeBodyConnection.blueprint(command_timeout_seconds=COMMAND_TIMEOUT_SECONDS)
+    _adapter_type = "transport_zenoh"
     _adapter_address = ""
-    _tick_rate = 100.0
+    _tick_rate = 50.0
     _auto_arm = False
     _auto_dry_run = True
-    _default_ramp_seconds = 10.0
-    _decimation = 2  # 100 Hz tick / 2 = 50 Hz policy
+    _default_ramp_seconds = 3.0
+    _decimation = 1
     _n_workers = 10
     from dimos.hardware.sensors.lidar.pointlio.module import PointLio
     from dimos.mapping.ray_tracing.module import RayTracingVoxelMap
@@ -216,11 +218,7 @@ else:
     _nav_remap = []
 
 
-class _G1SonicCoordinator(ControlCoordinator):
-    g1_joints: Out[JointState]
-
-
-_coordinator = _G1SonicCoordinator.blueprint(
+_coordinator = SonicCoordinator.blueprint(
     instance_name="ControlCoordinator",
     publish_robot_joint_states=True,
     tick_rate=_tick_rate,
@@ -242,8 +240,16 @@ _coordinator = _G1SonicCoordinator.blueprint(
             priority=50,
             auto_start=True,
             params={
-                "encoder_onnx": str(_SONIC_RELEASE_DIR / "model_encoder.onnx"),
-                "decoder_onnx": str(_SONIC_RELEASE_DIR / "model_decoder.onnx"),
+                "encoder_onnx": str(
+                    _SONIC_RELEASE_DIR
+                    / sonic_model_profile(SONIC_V1_1_PIPELINE).model_subdir
+                    / "model_encoder.onnx"
+                ),
+                "decoder_onnx": str(
+                    _SONIC_RELEASE_DIR
+                    / sonic_model_profile(SONIC_V1_1_PIPELINE).model_subdir
+                    / "model_decoder.onnx"
+                ),
                 "planner_onnx": str(_SONIC_PLANNER_PATH),
                 "hardware_id": "g1",
                 "auto_arm": _auto_arm,
@@ -255,74 +261,36 @@ _coordinator = _G1SonicCoordinator.blueprint(
     ],
 )
 
-# Real hardware speaks LCM to G1WholeBodyConnection on fixed topics. In sim,
-# leave transports to the runtime default (works under both lcm and zenoh);
-# pinning LCMTransport here would silently break under DIMOS_TRANSPORT=zenoh.
-if not global_config.simulation:
-    _coordinator = _coordinator.transports(
-        {
-            ("joint_command", JointState): LCMTransport("/g1/joint_command", JointState),
-            ("g1_joints", JointState): LCMTransport("/g1/joints", JointState),
-            ("cmd_vel", Twist): LCMTransport(_cmd_vel_topic, Twist),
-            ("motor_states", JointState): LCMTransport("/g1/motor_states", JointState),
-            ("imu", Imu): LCMTransport("/g1/imu", Imu),
-            ("motor_command", MotorCommandArray): LCMTransport(
-                "/g1/motor_command", MotorCommandArray
-            ),
-        }
-    )
-
-_G1_JOINTS_ENTITY = "world/g1_joints"
-
-
-def _g1_sonic_rerun_blueprint():
-    import rerun as rr
-    import rerun.blueprint as rrb
-
-    return rrb.Blueprint(
-        rrb.Spatial3DView(
-            origin="world",
-            name="G1 SONIC WBC",
-            background=rrb.Background(kind="SolidColor", color=[0, 0, 0]),
-            line_grid=rrb.LineGrid3D(
-                plane=rr.components.Plane3D.XY.with_distance(0.0),
-            ),
+# A backlog of motor targets is not useful to a 50 Hz controller.
+_coordinator = _coordinator.transports(
+    {
+        ("joint_command", JointState): zenoh_latest_transport("/g1/joint_command", JointState),
+        ("g1_joints", JointState): zenoh_latest_transport("/g1/joints", JointState),
+        ("motor_states", JointState): zenoh_latest_transport("/g1/motor_states", JointState),
+        ("imu", Imu): zenoh_latest_transport("/g1/imu", Imu),
+        ("motor_command", MotorCommandArray): zenoh_latest_transport(
+            "/g1/motor_command", MotorCommandArray
         ),
-        rrb.TimePanel(state="collapsed"),
-    )
+    }
+)
 
 
-_rerun_config: dict[str, Any] = {
-    "blueprint": _g1_sonic_rerun_blueprint,
-    "visual_override": {
-        "world/color_image": None,
-        "world/camera_info": None,
-        "world/depth_image": None,
-        "world/depth_camera_info": None,
-        _G1_JOINTS_ENTITY: g1_urdf_joint_state(root_path=G1_RERUN_ROOT),
-    },
-    "max_hz": {
-        _G1_JOINTS_ENTITY: 25.0,
-        "world/g1/imu": 10.0,
-        "world/odometry": 15.0,
-    },
-    "static": {G1_RERUN_ROOT: g1_urdf_static_robot(root_path=G1_RERUN_ROOT)},
-}
+def _require_zenoh() -> str | None:
+    if global_config.transport == "zenoh":
+        return None
+    return "G1 SONIC requires --transport zenoh"
 
-_remappings = [*_nav_remap, (_G1SonicCoordinator, "twist_command", "cmd_vel")]
+
+_remappings = [*_nav_remap, (SonicCoordinator, "twist_command", "cmd_vel")]
 
 unitree_g1_sonic_wbc = (
     autoconnect(
         _backend,
         _coordinator,
         _nav_stack,
-        # rerun_config with callable factories does not survive the zenoh
-        # deploy path (msgpack turns them into dicts); pass it only under LCM.
-        vis_module(
-            viewer_backend=global_config.viewer,
-            rerun_config=None if global_config.transport == "zenoh" else _rerun_config,
-        ),
+        vis_module(viewer_backend=global_config.viewer),
     )
     .remappings(cast("Any", _remappings))
+    .requirements(_require_zenoh)
     .global_config(robot_model="unitree_g1", n_workers=_n_workers)
 )

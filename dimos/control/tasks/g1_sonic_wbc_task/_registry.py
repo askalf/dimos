@@ -25,6 +25,7 @@ TASK_EXPOSES: dict[str, list[str]] = {
         "arm",
         "disarm",
         "set_dry_run",
+        "set_estop",
         "reset_runtime_state",
         "start",
         "set_velocity_command",

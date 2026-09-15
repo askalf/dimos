@@ -21,7 +21,7 @@ servoing is not this task's job (upper-body targets are encoder hints,
 per sonic-notebook DECISIONS.md D3) - pair with the decoupled task and
 hot-swap when manipulation accuracy matters.
 
-Locomotion modes (the 27 GEAR modes: squat, kneel, crawl, boxing, dances,
+Supported locomotion modes (squat, kneel, crawl, boxing, dances,
 carrying, jump...) are RPC-reachable via coordinator.task_invoke:
 
     task_invoke("sonic_wbc", "set_locomotion_mode", {"mode": "HAPPY_DANCE_WALK"})
@@ -30,7 +30,11 @@ carrying, jump...) are RPC-reachable via coordinator.task_invoke:
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
+import math
 from pathlib import Path
 import threading
 import time
@@ -38,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
+from pydantic import Field
 
 from dimos.control.hardware_interface import ConnectedWholeBody
 from dimos.control.task import (
@@ -51,8 +56,17 @@ from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import (
     DEFAULT_ANGLES_DDS,
     LOCOMOTION_MODES,
     NUM_JOINTS,
+    SONIC_V1_1_PIPELINE,
     SonicPipeline,
+    SonicTeleopPipeline,
 )
+from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import (
+    JOINT_VELOCITY_LIMIT,
+    SonicSafetyError,
+    check_joint_velocities,
+    damping_commands,
+)
+from dimos.control.tasks.g1_sonic_wbc_task.streamed_motion import StreamedMotion
 from dimos.protocol.service.spec import BaseConfig
 from dimos.utils.logging_config import setup_logger
 
@@ -80,15 +94,32 @@ class G1SonicWBCTaskConfig:
     timeout: float = 1.0
     auto_arm: bool = False
     auto_dry_run: bool = False
-    default_ramp_seconds: float = 10.0
+    default_ramp_seconds: float = 3.0
+    sonic_pipeline: SonicTeleopPipeline = SONIC_V1_1_PIPELINE
+    pose_transition_seconds: float = 0.5
+    joint_velocity_limit: float = JOINT_VELOCITY_LIMIT
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.pose_transition_seconds) or self.pose_transition_seconds <= 0.0:
+            raise ValueError("pose transition duration must be positive and finite")
+        if not math.isfinite(self.joint_velocity_limit) or self.joint_velocity_limit <= 0.0:
+            raise ValueError("joint velocity limit must be positive and finite")
+
+
+class SonicControlState(str, Enum):
+    STOPPED = "stopped"
+    UNARMED = "unarmed"
+    INITIALIZING = "initializing"
+    READY = "ready"
+    CONTROL = "control"
+    FAULT = "fault"
 
 
 class G1SonicWBCTask(BaseControlTask):
     """GEAR-SONIC unified 29-DOF whole-body policy as a coordinator task.
 
-    State machine, caches, and safety semantics mirror G1GrootWBCTask:
-    active-but-unarmed echoes measured positions (pure damping), arm()
-    ramps to the SONIC default pose, dry-run computes without emitting.
+    Startup holds the measured pose. arm() snapshots that pose on the next
+    control tick, ramps to SONIC's default, then runs the balancing policy.
     """
 
     def __init__(
@@ -115,6 +146,7 @@ class G1SonicWBCTask(BaseControlTask):
             encoder_path=config.encoder_onnx,
             decoder_path=config.decoder_onnx,
             planner_path=config.planner_onnx,
+            profile=config.sonic_pipeline,
         )
 
         self._default_29 = DEFAULT_ANGLES_DDS.copy()
@@ -130,19 +162,27 @@ class G1SonicWBCTask(BaseControlTask):
         self._state_seen = False
 
         self._active = False
-        self._armed = False
-        self._arming = False
+        self._control_state = SonicControlState.STOPPED
         self._arm_pending = False
         self._dry_run = bool(config.auto_dry_run)
-        self._arming_duration = 0.0
-        self._arming_start_t = 0.0
+        self._arming_duration = max(0.0, float(config.default_ramp_seconds))
+        self._initialization_start_t = 0.0
+        self._initialization_started = False
         self._ramp_start: NDArray[np.float32] | None = None
+        self._stream_source_requested = False
         self._last_dry_run_log_t = 0.0
         self._last_diag_log_t = 0.0
+        self._policy_durations_ms: deque[float] = deque(maxlen=500)
+        self._policy_intervals_ms: deque[float] = deque(maxlen=500)
+        self._last_policy_started_at: float | None = None
 
         self._cmd_lock = threading.Lock()
         self._cmd = np.zeros(3, dtype=np.float32)
         self._last_cmd_time = 0.0
+        self._fault_lock = threading.Lock()
+        self._fault_reason: str | None = None
+        self._fault_publisher: Callable[[str], None] | None = None
+        self._hold_targets: list[float] | None = None
 
     # -- ControlTask protocol ----------------------------------------------
 
@@ -155,6 +195,14 @@ class G1SonicWBCTask(BaseControlTask):
 
     def is_active(self) -> bool:
         return self._active
+
+    @property
+    def control_state(self) -> SonicControlState:
+        return SonicControlState.FAULT if self.fault_reason is not None else self._control_state
+
+    @property
+    def policy_active(self) -> bool:
+        return self.control_state is SonicControlState.CONTROL
 
     def _refresh_state_caches(self, state: CoordinatorState) -> bool:
         all_present = True
@@ -176,66 +224,100 @@ class G1SonicWBCTask(BaseControlTask):
     def compute(self, state: CoordinatorState) -> JointCommandOutput | None:
         if not self._active:
             return None
+        if self.fault_reason is not None:
+            self._write_damping()
+            return None
+        try:
+            output = self._compute_policy(state)
+        except Exception as exc:
+            # The control boundary must fail closed on any policy/observation
+            # exception; the coordinator otherwise logs and repeats targets.
+            logger.exception("SONIC control fault", task=self._name)
+            self._trip_fault(str(exc))
+            return None
+        # An operator may have stopped us during inference. Do not return the
+        # completed policy result after that stop.
+        if self.fault_reason is not None:
+            self._write_damping()
+            return None
+        return output
+
+    def _compute_policy(self, state: CoordinatorState) -> JointCommandOutput | None:
+        if not self._active:
+            return None
 
         fresh = self._refresh_state_caches(state)
         if not self._state_seen and not fresh:
             return None
+        if not fresh:
+            raise SonicSafetyError("incomplete robot joint feedback")
+        check_joint_velocities(self._cached_dq_29.tolist(), self._config.joint_velocity_limit)
+        if not np.isfinite(self._cached_q_29).all():
+            raise SonicSafetyError("non-finite robot joint positions")
 
         current_29 = self._cached_q_29.copy()
 
-        if self._arm_pending:
-            self._ramp_start = current_29.copy()
-            self._arming_start_t = state.t_now
-            if self._arming_duration > 0.0:
-                self._arming = True
-                self._armed = False
+        if self._control_state is SonicControlState.UNARMED:
+            if not self._arm_pending:
+                self._last_targets = current_29.tolist()
+                self._hold_targets = self._last_targets.copy()
+                return JointCommandOutput(
+                    joint_names=self._joint_names_list,
+                    positions=self._last_targets,
+                    mode=ControlMode.SERVO_POSITION,
+                )
+            self._arm_pending = False
+            self._control_state = SonicControlState.INITIALIZING
+
+        if self._control_state is SonicControlState.INITIALIZING:
+            if not self._initialization_started:
+                self._initialization_started = True
+                self._ramp_start = current_29.copy()
+                self._initialization_start_t = state.t_now
                 logger.info(
-                    "G1SonicWBCTask arming: ramp to SONIC default pose",
+                    "G1SonicWBCTask initializing to SONIC default pose",
                     task=self._name,
                     ramp_seconds=self._arming_duration,
                 )
-            else:
-                self._arming = False
-                self._armed = True
-                self._reset_policy_state()
-                logger.info("G1SonicWBCTask armed (no ramp)", task=self._name)
-            self._arm_pending = False
 
-        if not self._armed and not self._arming:
-            self._last_targets = current_29.tolist()
-            return JointCommandOutput(
-                joint_names=self._joint_names_list,
-                positions=self._last_targets,
-                mode=ControlMode.SERVO_POSITION,
-            )
-
-        if self._arming:
             assert self._ramp_start is not None
-            elapsed = state.t_now - self._arming_start_t
+            elapsed = state.t_now - self._initialization_start_t
             alpha = (
                 1.0 if self._arming_duration <= 0.0 else min(1.0, elapsed / self._arming_duration)
             )
             target = self._ramp_start + alpha * (self._default_29 - self._ramp_start)
             self._last_targets = target.tolist()
+            self._hold_targets = self._last_targets.copy()
             if alpha >= 1.0:
-                self._arming = False
-                self._armed = True
+                self._control_state = SonicControlState.READY
                 self._reset_policy_state()
-                logger.info(
-                    "G1SonicWBCTask ramp complete - policy armed",
-                    task=self._name,
-                    mode="dry-run" if self._dry_run else "live",
-                )
+                logger.info("G1SonicWBCTask initialization complete", task=self._name)
+                self._enter_control()
             return JointCommandOutput(
                 joint_names=self._joint_names_list,
                 positions=self._last_targets,
                 mode=ControlMode.SERVO_POSITION,
             )
 
-        # Armed: run the pipeline at the decimated rate.
+        if self._control_state is SonicControlState.READY:
+            self._last_targets = self._default_29.tolist()
+            self._hold_targets = self._last_targets.copy()
+            self._enter_control()
+            return JointCommandOutput(
+                joint_names=self._joint_names_list,
+                positions=self._last_targets,
+                mode=ControlMode.SERVO_POSITION,
+            )
+
+        if self._control_state is not SonicControlState.CONTROL:
+            return None
+
+        # CONTROL: run the balancing policy continuously at the decimated rate.
         self._tick_count += 1
         if self._tick_count % self._config.decimation != 0:
-            if self._dry_run or self._last_targets is None:
+            if self._dry_run:
+                return self._hold_output()
+            if self._last_targets is None:
                 return None
             return JointCommandOutput(
                 joint_names=self._joint_names_list,
@@ -265,6 +347,7 @@ class G1SonicWBCTask(BaseControlTask):
                 cmd = self._cmd.copy()
         self._pipeline.set_velocity(float(cmd[0]), float(cmd[1]), float(cmd[2]))
 
+        policy_started_at = time.perf_counter()
         targets_29 = self._pipeline.step(
             q_dds=q_29,
             dq_dds=dq_29,
@@ -272,6 +355,9 @@ class G1SonicWBCTask(BaseControlTask):
             gyro_body=gyro,
             gravity_body=gravity,
         )
+        self._record_policy_timing(time.perf_counter() - policy_started_at, policy_started_at)
+        if targets_29.shape != (NUM_JOINTS,) or not np.isfinite(targets_29).all():
+            raise SonicSafetyError("invalid SONIC motor targets")
         self._last_targets = targets_29.tolist()
 
         if (state.t_now - self._last_diag_log_t) >= 5.0:
@@ -287,13 +373,69 @@ class G1SonicWBCTask(BaseControlTask):
                     max_dq_rad=max_delta,
                 )
                 self._last_dry_run_log_t = state.t_now
-            return None
+            # Continue publishing the fixed hold so the hardware watchdog can
+            # distinguish healthy dry-run inference from a stalled task.
+            return self._hold_output()
 
+        self._hold_targets = self._last_targets.copy()
         return JointCommandOutput(
             joint_names=self._joint_names_list,
             positions=self._last_targets,
             mode=ControlMode.SERVO_POSITION,
         )
+
+    def _hold_output(self) -> JointCommandOutput:
+        if self._hold_targets is None:
+            raise SonicSafetyError("dry-run has no prepared hold target")
+        return JointCommandOutput(
+            joint_names=self._joint_names_list,
+            positions=self._hold_targets.copy(),
+            mode=ControlMode.SERVO_POSITION,
+        )
+
+    @property
+    def fault_reason(self) -> str | None:
+        with self._fault_lock:
+            return self._fault_reason
+
+    def set_fault_publisher(self, publisher: Callable[[str], None]) -> None:
+        """Connect the latched task fault to the robot-side motor publisher."""
+        with self._fault_lock:
+            self._fault_publisher = publisher
+
+    def _trip_fault(self, reason: str) -> None:
+        reason = reason or "SONIC control failure"
+        with self._fault_lock:
+            if self._fault_reason is not None:
+                return
+            self._fault_reason = reason[:256]
+        self._control_state = SonicControlState.FAULT
+        self._arm_pending = False
+        logger.error("SONIC damping stop latched; restart required", task=self._name, reason=reason)
+        self._write_damping()
+
+    def on_hardware_fault(self, reason: str) -> None:
+        """Mirror the final publisher's fault in policy lifecycle/status."""
+        self._trip_fault(reason)
+
+    def _write_damping(self) -> None:
+        # Also exercises the physical stop command in MuJoCo, using the same
+        # adapter API as hardware. The real DDS connection independently latches.
+        with self._fault_lock:
+            publisher, reason = self._fault_publisher, self._fault_reason
+        if publisher is not None and reason is not None:
+            # The hardware owns takeover and the final latch. Sending an
+            # ordinary damping target here could itself trigger takeover.
+            publisher(reason)
+        else:
+            self._adapter.write_motor_commands(damping_commands(NUM_JOINTS))
+
+    def set_estop(self, estopped: bool) -> None:
+        """Latch a damping stop; button release and runtime resets cannot clear it."""
+        if estopped:
+            self._trip_fault("operator stop")
+        elif self.fault_reason is not None:
+            raise RuntimeError("SONIC damping stop is latched; restart the stack to recover")
 
     def on_preempted(self, by_task: str, joints: frozenset[str]) -> None:
         if joints & self._joint_names_set:
@@ -326,12 +468,10 @@ class G1SonicWBCTask(BaseControlTask):
         Clips are 50 Hz CSVs in SONIC's reference layout (joint_pos.csv,
         joint_vel.csv, body_quat.csv - IsaacLab joint order, header row).
         """
-        import numpy as np
-
-        from dimos.control.tasks.g1_sonic_wbc_task.streamed_motion import StreamedMotion
-        from dimos.utils.data import get_data
-
-        clip_dir = Path(get_data("sonic")) / "motions" / name
+        motions = Path(self._config.planner_onnx).parent / "motions"
+        if name not in self.list_motion_clips():
+            raise ValueError(f"unknown or uninstalled motion clip: {name}")
+        clip_dir = motions / name
         if not clip_dir.is_dir():
             raise FileNotFoundError(f"no such clip: {name} ({clip_dir})")
         jp = np.loadtxt(clip_dir / "joint_pos.csv", delimiter=",", dtype=np.float32, skiprows=1)
@@ -347,6 +487,7 @@ class G1SonicWBCTask(BaseControlTask):
             timesteps=len(jp),
         )
         self._pipeline.play_clip(motion)
+        self._stream_source_requested = True
         logger.info(
             "G1SonicWBCTask playing clip",
             task=self._name,
@@ -374,8 +515,6 @@ class G1SonicWBCTask(BaseControlTask):
         end-effector tracking. Stale data (> 0.5 s) reverts to planner obs;
         re-send at teleop rate.
         """
-        import numpy as np
-
         self._pipeline.set_vr_3point(
             np.asarray(positions, dtype=np.float32),
             np.asarray(orientations, dtype=np.float32),
@@ -388,19 +527,17 @@ class G1SonicWBCTask(BaseControlTask):
         return True
 
     def stop_motion_clip(self) -> bool:
-        self._pipeline.stop_clip()
+        self._return_to_planner_reference()
         return True
 
     def list_motion_clips(self) -> list[str]:
-        from dimos.utils.data import get_data
-
-        motions = Path(get_data("sonic")) / "motions"
+        motions = Path(self._config.planner_onnx).parent / "motions"
         if not motions.is_dir():
             return []
         return sorted(p.name for p in motions.iterdir() if p.is_dir())
 
     def set_locomotion_mode(self, mode: int | str | None) -> dict[str, Any]:
-        """Force one of the 27 GEAR locomotion modes; None = speed-auto."""
+        """Select a supported GEAR locomotion mode; None = speed-auto."""
         applied = self._pipeline.set_mode(mode)
         logger.info(
             "G1SonicWBCTask locomotion mode",
@@ -429,81 +566,122 @@ class G1SonicWBCTask(BaseControlTask):
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
+        if self.fault_reason is not None:
+            raise RuntimeError("SONIC damping stop is latched; restart the stack to recover")
         self._active = True
-        self._armed = False
-        self._arming = False
+        self._control_state = SonicControlState.UNARMED
         self._arm_pending = False
         self._dry_run = bool(self._config.auto_dry_run)
+        self._arming_duration = max(0.0, float(self._config.default_ramp_seconds))
+        self._initialization_start_t = 0.0
+        self._initialization_started = False
+        self._ramp_start = None
+        self._stream_source_requested = False
         self._last_targets = None
+        self._hold_targets = None
+        self._state_seen = False
         self._reset_policy_state()
         with self._cmd_lock:
             self._cmd[:] = 0.0
             self._last_cmd_time = 0.0
+        if self._config.auto_arm:
+            self.arm()
         logger.info(
             "G1SonicWBCTask started",
             task=self._name,
-            armed=False,
+            control_state=self._control_state.value,
+            auto_arm=self._config.auto_arm,
             dry_run=self._dry_run,
         )
-        if self._config.auto_arm:
-            self.arm(self._config.default_ramp_seconds)
 
     def stop(self) -> None:
         self._active = False
-        self._armed = False
-        self._arming = False
+        self._control_state = SonicControlState.STOPPED
         self._arm_pending = False
+        self._initialization_started = False
+        self._ramp_start = None
+        self._stream_source_requested = False
         self._last_targets = None
+        self._pipeline.close()
         logger.info("G1SonicWBCTask stopped", task=self._name)
 
     def arm(self, ramp_seconds: float | None = None) -> bool:
+        if self.fault_reason is not None:
+            raise RuntimeError("SONIC damping stop is latched; restart the stack to recover")
         if not self._active:
             logger.warning("G1SonicWBCTask arm() before start(); ignoring", task=self._name)
             return False
-        if self._armed or self._arming or self._arm_pending:
+        if (
+            self._control_state
+            in (
+                SonicControlState.INITIALIZING,
+                SonicControlState.READY,
+                SonicControlState.CONTROL,
+            )
+            or self._arm_pending
+        ):
             return False
-        ramp = ramp_seconds if ramp_seconds is not None else self._config.default_ramp_seconds
-        self._arming_duration = max(0.0, float(ramp))
+        if ramp_seconds is not None:
+            self._arming_duration = max(0.0, float(ramp_seconds))
+        else:
+            self._arming_duration = max(0.0, float(self._config.default_ramp_seconds))
         self._arm_pending = True
         logger.info(
             "G1SonicWBCTask arm requested",
             task=self._name,
-            ramp_seconds=self._arming_duration,
+            control_state=self._control_state.value,
         )
         return True
 
     def disarm(self) -> bool:
-        if not self._armed and not self._arming and not self._arm_pending:
+        if self.fault_reason is not None:
             return False
-        self._armed = False
-        self._arming = False
+        if not self._arm_pending and self._control_state not in (
+            SonicControlState.INITIALIZING,
+            SonicControlState.READY,
+            SonicControlState.CONTROL,
+        ):
+            return False
         self._arm_pending = False
+        self._stream_source_requested = False
+        self._control_state = SonicControlState.UNARMED
+        self._initialization_started = False
         self._ramp_start = None
+        self._last_targets = None
         self._reset_policy_state()
-        logger.info("G1SonicWBCTask disarmed (holding current pose)", task=self._name)
+        logger.info(
+            "G1SonicWBCTask policy stopped",
+            task=self._name,
+            control_state=self._control_state.value,
+        )
         return True
 
     def reset_runtime_state(self, reactivate: bool | None = None) -> bool:
-        was_armed = self._armed or self._arming or self._arm_pending
+        if self.fault_reason is not None:
+            return False
+        was_armed = self._arm_pending or self._control_state in (
+            SonicControlState.INITIALIZING,
+            SonicControlState.READY,
+            SonicControlState.CONTROL,
+        )
         should_reactivate = was_armed if reactivate is None else bool(reactivate)
 
-        self._armed = False
-        self._arming = False
-        self._arm_pending = False
+        self._control_state = (
+            SonicControlState.UNARMED if self._active else SonicControlState.STOPPED
+        )
+        self._arm_pending = self._active and should_reactivate
         self._ramp_start = None
-        self._arming_start_t = 0.0
+        self._initialization_start_t = 0.0
+        self._initialization_started = False
         self._last_targets = None
         self._state_seen = False
+        self._stream_source_requested = False
         self._cached_q_29[:] = self._default_29
         self._cached_dq_29[:] = 0.0
         self._reset_policy_state()
         with self._cmd_lock:
             self._cmd[:] = 0.0
             self._last_cmd_time = 0.0
-
-        if self._active and should_reactivate:
-            self._arming_duration = 0.0
-            self._arm_pending = True
 
         logger.info(
             "G1SonicWBCTask runtime state reset",
@@ -521,17 +699,22 @@ class G1SonicWBCTask(BaseControlTask):
         logger.info("G1SonicWBCTask dry_run changed", task=self._name, dry_run=new_val)
 
     def state_snapshot(self) -> dict[str, Any]:
-        snap = {
+        control_state = self.control_state
+        snap: dict[str, Any] = {
             "active": self._active,
-            "armed": self._armed,
-            "arming": self._arming,
+            "armed": control_state is SonicControlState.CONTROL,
+            "arming": control_state is SonicControlState.INITIALIZING,
             "arm_pending": self._arm_pending,
-            "dry_run": self._dry_run,
             "arming_duration": self._arming_duration,
+            "control_state": control_state.value,
+            "dry_run": self._dry_run,
+            "fault_reason": self.fault_reason,
         }
         snap.update(self._pipeline.snapshot())
+        snap["reference_source"] = "stream" if snap.get("stream_active") else "planner"
         snap["debug_q_leg"] = [round(float(v), 4) for v in self._cached_q_29[:6]]
         snap["debug_dq_leg"] = [round(float(v), 4) for v in self._cached_dq_29[:6]]
+        snap["policy_timing"] = self._policy_timing_snapshot()
         try:
             imu = self._adapter.read_imu()
             snap["debug_quat"] = [round(float(v), 4) for v in imu.quaternion]
@@ -545,6 +728,68 @@ class G1SonicWBCTask(BaseControlTask):
     def _reset_policy_state(self) -> None:
         self._pipeline.reset()
         self._tick_count = 0
+        self._policy_durations_ms.clear()
+        self._policy_intervals_ms.clear()
+        self._last_policy_started_at = None
+
+    def _record_policy_timing(self, duration_seconds: float, started_at: float) -> None:
+        duration_ms = duration_seconds * 1000.0
+        self._policy_durations_ms.append(duration_ms)
+        if self._last_policy_started_at is not None:
+            self._policy_intervals_ms.append((started_at - self._last_policy_started_at) * 1000.0)
+        self._last_policy_started_at = started_at
+
+    def _policy_timing_snapshot(self) -> dict[str, Any]:
+        def summary(samples: deque[float]) -> dict[str, float | int]:
+            if not samples:
+                return {"samples": 0, "mean": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0}
+            values = np.asarray(samples, dtype=np.float64)
+            return {
+                "samples": len(samples),
+                "mean": round(float(np.mean(values)), 3),
+                "p95": round(float(np.percentile(values, 95)), 3),
+                "p99": round(float(np.percentile(values, 99)), 3),
+                "max": round(float(np.max(values)), 3),
+            }
+
+        return {
+            "step_ms": summary(self._policy_durations_ms),
+            "start_interval_ms": summary(self._policy_intervals_ms),
+        }
+
+    def _enter_control(self) -> None:
+        self._control_state = SonicControlState.CONTROL
+        self._reset_policy_state()
+        self._pipeline.set_source_stream(self._stream_source_requested)
+        logger.info(
+            "G1SonicWBCTask policy control active",
+            task=self._name,
+            reference_source="stream" if self._stream_source_requested else "planner",
+            mode="dry-run" if self._dry_run else "live",
+        )
+
+    def _select_stream_reference(self, use_stream: bool) -> None:
+        self._stream_source_requested = bool(use_stream)
+        if self.policy_active:
+            self._pipeline.set_source_stream(self._stream_source_requested)
+
+    def _begin_stream_reference_transition(self, duration_seconds: float) -> bool:
+        if not self.policy_active:
+            return False
+        started = self._pipeline.begin_stream_transition(duration_seconds)
+        self._stream_source_requested = started
+        return started
+
+    def _begin_planner_reference_transition(self, duration_seconds: float) -> bool:
+        if not self.policy_active:
+            return False
+        started = self._pipeline.begin_planner_transition(duration_seconds)
+        self._stream_source_requested = False
+        return started
+
+    def _return_to_planner_reference(self) -> None:
+        self._stream_source_requested = False
+        self._pipeline.stop_clip()
 
     @staticmethod
     def _projected_gravity(quaternion: tuple[float, ...]) -> NDArray[np.float32]:
@@ -562,12 +807,33 @@ class G1SonicWBCTaskParams(BaseConfig):
     hardware_id: str
     auto_arm: bool = False
     auto_dry_run: bool = False
-    default_ramp_seconds: float = 10.0
+    default_ramp_seconds: float = 3.0
     decimation: int | None = None
+    sonic_pipeline: SonicTeleopPipeline = SONIC_V1_1_PIPELINE
+    pose_transition_seconds: float = Field(default=0.5, gt=0.0, allow_inf_nan=False)
+    joint_velocity_limit: float = Field(default=JOINT_VELOCITY_LIMIT, gt=0.0, allow_inf_nan=False)
 
 
-def create_task(cfg: Any, hardware: Any) -> G1SonicWBCTask:
+def _create_task(
+    cfg: Any,
+    hardware: Any,
+    task_class: type[G1SonicWBCTask],
+) -> G1SonicWBCTask:
     params = G1SonicWBCTaskParams.model_validate(cfg.params)
+    model_paths = (
+        Path(params.encoder_onnx),
+        Path(params.decoder_onnx),
+        Path(params.planner_onnx),
+    )
+    missing_models = [str(path) for path in model_paths if not path.is_file()]
+    if missing_models:
+        raise FileNotFoundError(
+            "SONIC model files are missing: "
+            f"{', '.join(missing_models)}. Run "
+            "`dimos-sonic-models "
+            f"--profile {params.sonic_pipeline}` from the active DimOS environment "
+            "before starting SONIC."
+        )
     hw = hardware.get(params.hardware_id) if hardware else None
     if hw is None:
         raise ValueError(
@@ -590,11 +856,18 @@ def create_task(cfg: Any, hardware: Any) -> G1SonicWBCTask:
         auto_arm=params.auto_arm,
         auto_dry_run=params.auto_dry_run,
         default_ramp_seconds=params.default_ramp_seconds,
+        sonic_pipeline=params.sonic_pipeline,
+        pose_transition_seconds=params.pose_transition_seconds,
+        joint_velocity_limit=params.joint_velocity_limit,
     )
     if params.decimation is not None:
         kwargs["decimation"] = params.decimation
-    return G1SonicWBCTask(
+    return task_class(
         cfg.name,
         G1SonicWBCTaskConfig(**kwargs),
         adapter=hw.adapter,
     )
+
+
+def create_task(cfg: Any, hardware: Any) -> G1SonicWBCTask:
+    return _create_task(cfg, hardware, G1SonicWBCTask)
