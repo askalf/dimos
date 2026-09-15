@@ -136,6 +136,28 @@ class DetectConfig:
     # The trade, stated because it is real: a frame only the expensive members would
     # have found is never seen, since nothing looks there.
     rank_with: str = ""
+    # How many of the ranking member's best frames the others confirm. MEASURED on
+    # bike.db: leaving this at "all of them" saves NOTHING and costs a little -- the cheap
+    # member's 4000 hot patches for one query land on 1335 distinct frames of 2308, so
+    # there is nothing to narrow, and paying for the gather made "a stop sign" SLOWER than
+    # not doing it at all (2.27 s to first answer against 2.01 s). The cut is the whole
+    # point. 0 means no cut, which is now only useful for showing that.
+    #
+    # Where 400 comes from, warm passes on the Mac, first answer and places kept:
+    #
+    #                    stop sign      traffic light    trash can
+    #   all models       2.01 s / 13    2.15 s / 12      1.72 s / 11
+    #   every frame      2.27 s / 13    2.54 s / 12      2.09 s / 11
+    #   top 400          2.03 s / 12    1.35 s / 11      1.08 s / 11
+    #   top 200          0.98 s / 12    1.04 s /  7      0.85 s / 11
+    #   top 60           0.79 s / 11    0.73 s /  7      0.72 s / 11
+    #
+    # 400 stays within one place of searching everything on all three. Below it there is a
+    # CLIFF rather than a slope -- traffic light falls from 12 places to 7 between 400 and
+    # 200 and does not recover at 60 -- so the default does not sit next to the edge of it.
+    # 200 is the setting to reach for when the wait matters more than the last place, and
+    # it is the only one that got "a stop sign" under a second here.
+    rank_frames: int = 400
     # Group candidate episodes by roughly where they are and give every group a look
     # before any group gets a second one. Off means strongest-first, which spends the
     # detector on four looks at the nearest chair before it has seen the far one.
@@ -1187,6 +1209,7 @@ def find(
         contrast=config.contrast,
         background_prompts=background_prompts,
         rank_with=config.rank_with,
+        rank_frames=config.rank_frames,
     )
     if timings is not None:
         timings["search"] = time.monotonic() - at

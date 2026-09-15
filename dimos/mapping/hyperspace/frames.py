@@ -239,6 +239,7 @@ def hot_frames(
     contrast: bool = True,
     background_prompts: Sequence[str] | None = None,
     rank_with: str = "",
+    rank_frames: int = 0,
 ) -> list[Frame]:
     """Frames that matched *text*, in time order.
 
@@ -316,7 +317,16 @@ def hot_frames(
                     )
                 )
             if rank_with and tag == rank_with:
-                allowed = set(frames)
+                # The ranking member's BEST frames, not all of them. MEASURED on bike.db:
+                # its 4000 hot patches for "a stop sign" land on 1335 distinct frames of
+                # 2308, so narrowing by "every frame it touched" narrows to 58% and saves
+                # nothing -- search went 0.81 s -> 0.83 s, which is noise. The cut is what
+                # makes this worth having; the frames are ranked by total match, the same
+                # order the episode step would have put them in.
+                keep = sorted(frames.values(), key=lambda frame: -frame.weight)
+                if rank_frames > 0:
+                    keep = keep[:rank_frames]
+                allowed = {(frame.frame, frame.ts) for frame in keep}
                 if not allowed:
                     # Nothing to confirm. Leaving `allowed` empty would have the other
                     # members score nothing and the query answer nothing, which is the
