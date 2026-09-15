@@ -617,12 +617,30 @@ class WorldAnswers:
         turn_done = threading.Event()
 
         def on_agent(message: Any) -> None:
-            # langchain messages on the wire; a ToolMessage is the tool's own return and a
-            # chunk with no content is the model calling a tool, so neither is an answer.
+            # Only the assistant's own messages; a ToolMessage is the tool's return value.
+            if type(message).__name__ not in ("AIMessage", "AIMessageChunk"):
+                return
             content = getattr(message, "content", None)
-            if isinstance(content, str) and content.strip():
-                if type(message).__name__ in ("AIMessage", "AIMessageChunk"):
-                    replies.append(content.strip())
+            # `content` is a plain string on some models and a LIST OF BLOCKS on others --
+            # measured, gpt-5.6-luna answers with
+            # `[{'type': 'text', 'text': 'A route was drawn...'}]`, alongside `reasoning`
+            # and `function_call` blocks that are not the answer. Reading only the string
+            # form dropped every reply this agent has ever sent and fell back to the skill
+            # on a turn that had done exactly the right thing.
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(
+                    block["text"]
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                )
+            else:
+                text = ""
+            if text.strip():
+                replies.append(text.strip())
 
         def on_idle(flag: Any) -> None:
             # False at the start of a turn, True at its end. A turn that never starts
@@ -655,9 +673,16 @@ class WorldAnswers:
                     logger.debug("agent transport did not stop cleanly", exc_info=True)
 
         if not finished or not replies:
+            # Said apart, because they mean different things: a turn that never finished is
+            # a missing or wedged agent, while a finished turn with nothing to say is this
+            # code failing to read the reply -- which is what a content-block answer did.
             logger.warning(
-                "no agent turn within %.0fs (started=%s, replies=%d); using the skill",
-                self.config.agent_timeout_s,
+                "%s; answering with the skill instead (started=%s, replies=%d)",
+                (
+                    f"no agent turn finished within {self.config.agent_timeout_s:.0f}s"
+                    if not finished
+                    else "the agent turn finished but carried no readable reply"
+                ),
                 turn_started.is_set(),
                 len(replies),
             )
