@@ -349,20 +349,16 @@ def test_a_cell_is_scored_by_how_well_it_matches_not_by_how_much_landed_in_it() 
     from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
 
     grazed, matched = (0, 0, 0), (1, 1, 1)
-    weight = {grazed: 0.02 * 40, matched: 0.09 * 6}
-    counted = {grazed: 40, matched: 6}
-    seen = {
-        grazed: {("cam", float(index)) for index in range(20)},
-        matched: {("cam", 100.0), ("cam", 101.0), ("cam", 102.0)},
-    }
+    placed = [(grazed, 0.02, ("cam", float(index % 20))) for index in range(40)]
+    placed += [(matched, 0.09, ("cam", 100.0 + index)) for index in range(6)]
     module = Hyperspace.__new__(Hyperspace)
     module.config = HyperspaceConfig(db_path="unused")
 
-    scored = module._cell_scores(weight, counted, seen, module.config.heat_min_views)
+    scored = module._cells_worth_answering(placed, 0.0, module.config.heat_min_views, 0, 0.25)
     assert max(scored, key=lambda cell: scored[cell]) == matched, (
         "the well-matched cell has to win; summing gives it to the grazed one"
     )
-    assert sum(weight[cell] for cell in (grazed,)) > weight[matched], (
+    assert 0.02 * 40 > 0.09 * 6, (
         "this test is only meaningful while the sum would have picked the other one"
     )
 
@@ -377,14 +373,130 @@ def test_one_stray_patch_cannot_be_a_place() -> None:
     from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
 
     stray, real = (0, 0, 0), (1, 1, 1)
-    weight = {stray: 0.5, real: 0.3}
-    counted = {stray: 1, real: 3}
-    seen = {stray: {("cam", 1.0)}, real: {("cam", 1.0), ("cam", 2.0), ("cam", 3.0)}}
+    placed = [(stray, 0.5, ("cam", 1.0))]
+    placed += [(real, 0.3, ("cam", float(index))) for index in (1.0, 2.0, 3.0)]
     module = Hyperspace.__new__(Hyperspace)
     module.config = HyperspaceConfig(db_path="unused")
 
-    gated = module._cell_scores(weight, counted, seen, module.config.heat_min_views)
+    gated = module._cells_worth_answering(placed, 0.0, module.config.heat_min_views, 0, 0.25)
     assert stray not in gated and real in gated
 
-    everything = module._cell_scores(weight, counted, seen, 1)
+    everything = module._cells_worth_answering(placed, 0.0, 1, 0, 0.25)
     assert stray in everything, "the gate has to be droppable, or a short recording answers nothing"
+
+
+def test_a_lone_cell_on_a_far_wall_is_not_a_place() -> None:
+    """A place is somewhere its neighbours agree about.
+
+    MEASURED on "kitchen" over sf_office_drive1: of 290 answered cells, 268 were outside
+    the kitchen and the strongest of those scored 0.63 of the true one -- strong enough to
+    read as a place on the page and to send a robot across the building. Requiring eight
+    scoring neighbours within half a metre left 7 cells, all 7 in the kitchen.
+    """
+    from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
+
+    module = Hyperspace.__new__(Hyperspace)
+    module.config = HyperspaceConfig(db_path="unused")
+
+    # A patch of space three cells across, and one cell on its own far away.
+    lump = {(x, y, z): 0.5 for x in range(3) for y in range(3) for z in range(3)}
+    alone = {(90, 90, 90): 0.9}
+    kept = module._where_neighbours_agree({**lump, **alone}, 8, 0.25, 0.5)
+    assert (90, 90, 90) not in kept, "one cell by itself cannot be a place"
+    assert len(kept) >= 7, f"the lump has to survive its own company, kept {len(kept)}"
+
+
+def test_the_patch_floor_is_a_fraction_of_this_query_and_gives_way() -> None:
+    """Patch scores are not comparable between words, so the floor cannot be absolute.
+
+    And every gate has to give way: a weak query over a short recording should answer
+    "here, weakly" with a note, not nothing at all. The order matters -- neighbours
+    first, then the floor, then the view gate -- so the answer loses the least it can.
+    """
+    from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
+
+    module = Hyperspace.__new__(Hyperspace)
+    module.config = HyperspaceConfig(db_path="unused")
+    cell = (0, 0, 0)
+    placed = [(cell, 0.004, ("cam", float(index))) for index in range(3)]
+
+    strongest = max(score for _, score, _ in placed)
+    floor = module.config.heat_patch_floor * strongest
+    assert module._cells_worth_answering(placed, floor, 3, 8, 0.25) == {}, (
+        "one cell alone must not pass the neighbour rule"
+    )
+    relaxed = module._cells_worth_answering(placed, floor, 3, 0, 0.25)
+    assert cell in relaxed, "dropping the neighbour rule has to bring the answer back"
+    assert relaxed[cell] == 0.004, "a weak answer keeps its own weak score"
+
+    from pathlib import Path
+
+    source = Path(__file__).with_name("module.py").read_text()
+    assert "nowhere had neighbours that agreed" in source, "the caller has to be told what gave way"
+
+
+def test_the_patch_path_answers_end_to_end_over_a_fake_search() -> None:
+    """Run `_fill_from_patches` for real, because its bugs are never in the arithmetic.
+
+    Twice now this path has been broken by a name rather than a number -- `found.arrived`
+    on a field that does not exist, and a `seen` dictionary that a refactor left behind --
+    and neither showed up in a test that only checked the scoring. This drives the whole
+    method with a search of two frames and a pose that is the identity, so anything the
+    method reads has to exist.
+    """
+    import numpy as np
+
+    from dimos.mapping.hyperspace import frames as frames_module
+    from dimos.mapping.hyperspace.frames import Frame, Hit
+    from dimos.mapping.hyperspace.module import Hyperspace, HyperspaceConfig
+    from dimos.mapping.hyperspace.queries import Query
+
+    def a_frame(name: str, ts: float, ray: tuple[float, float], score: float) -> Frame:
+        frame = Frame(frame=name, ts=ts)
+        frame.hits = [
+            Hit(member="m", frame=name, ts=ts, cell=0, grid=(0, 0), ray=ray, depth=2.0, score=score)
+        ]
+        return frame
+
+    # Three viewpoints of one patch of space, so the view gate has something to pass, and
+    # one stray that nothing agrees with.
+    made = [
+        a_frame("cam", 1.0, (0.0, 0.0), 0.9),
+        a_frame("cam", 2.0, (0.001, 0.0), 0.8),
+        a_frame("cam", 3.0, (0.0, 0.001), 0.85),
+        a_frame("cam", 4.0, (2.0, 2.0), 0.4),
+    ]
+
+    class OneFrame:
+        def pose(self, frame: str, ts: float, world: str):
+            del frame, ts, world
+            return np.eye(4)
+
+    class Live:
+        towers = None
+        held = None
+        frames = OneFrame()
+
+        def members(self):
+            return [("m", "stream")]
+
+    module = Hyperspace.__new__(Hyperspace)
+    module.config = HyperspaceConfig(db_path="unused")
+    # `store` is a property that would open a database; the fake search never reads it.
+    module._store = None
+    module.live = Live()
+
+    original = frames_module.hot_frames
+    frames_module.hot_frames = lambda *args, **kwargs: made
+    try:
+        query = Query(query_id="area-1", text="kitchen", kind="area")
+        module._fill_from_patches(query, "area")
+    finally:
+        frames_module.hot_frames = original
+
+    assert query.places, f"the patch path answered nothing: {query.note!r}"
+    best = query.places[0]
+    assert best.frame == module.config.world_frame
+    assert best.views >= 1 and best.score > 0
+    assert best.kind == "area"
+    assert query.timings.get("search") is not None

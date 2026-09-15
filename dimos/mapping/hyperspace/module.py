@@ -371,6 +371,21 @@ class HyperspaceConfig(MemoryModuleConfig):
     # "mean" or "sum". Sum is what a dense occupancy map wants and it is kept for that.
     heat_score: str = "mean"
     heat_min_views: int = 3
+    # The search hands back the best few thousand patches in the whole building above a
+    # very low bar, and most of them are mediocre matches on walls seen from across a
+    # room. Two rules throw those away, MEASURED on "kitchen" over sf_office_drive1
+    # against the kitchen's real rectangle: of 290 cells, 268 were outside it and the
+    # strongest of those scored 0.63 of the true one -- strong enough to read as a place.
+    # Ignoring patches weaker than 30% of the query's own strongest patch, and then
+    # keeping only cells that have eight neighbours within half a metre, left 7 cells,
+    # all 7 inside the kitchen, none outside at all.
+    # A fraction of the query's own best, not an absolute score: patch scores are not
+    # comparable between words, so an absolute floor is a different filter per question.
+    heat_patch_floor: float = 0.3
+    # A place is somewhere its neighbours agree about; a lone cell on a far wall is what
+    # one mediocre patch looks like. Both give way rather than answering nothing.
+    heat_support_m: float = 0.5
+    heat_min_near: int = 8
     # Subtract generic floor/wall/ceiling prompts from every patch score. See
     # `DetectConfig.contrast`; off is the right answer when the query IS a wall.
     contrast: bool = True
@@ -741,8 +756,9 @@ class Hyperspace(MemoryModule):
         # ray it sat on and how far the depth said that was, which is the same arithmetic
         # the box placer does -- see `object_points`.
         size = self.config.heat_cell_m or self.config.voxel_size
-        weight: dict[tuple[int, int, int], float] = {}
-        counted: dict[tuple[int, int, int], int] = {}
+        placed: list[tuple[tuple[int, int, int], float, tuple[str, float]]] = []
+        # Every viewpoint that put evidence in a cell, gates or no gates: the answer says
+        # how much was looked at, not how much of it survived a filter.
         seen: dict[tuple[int, int, int], set[tuple[str, float]]] = {}
         when: dict[tuple[int, int, int], float] = {}
         for frame in frames:
@@ -766,28 +782,37 @@ class Hyperspace(MemoryModule):
                     int(np.floor(here[1] / size)),
                     int(np.floor(here[2] / size)),
                 )
-                weight[cell] = weight.get(cell, 0.0) + float(hit.score)
-                counted[cell] = counted.get(cell, 0) + 1
+                placed.append((cell, float(hit.score), (frame.frame, frame.ts)))
                 seen.setdefault(cell, set()).add((frame.frame, frame.ts))
                 when[cell] = min(when.get(cell, frame.ts), frame.ts)
-        if not weight:
+        if not placed:
             query.note = (
                 f"{len(frames)} frame(s) scored for {query.text!r} and none of them could "
                 "be placed -- no pose, or no depth behind the patches"
             )
             return
 
-        # How well this patch of space matches, not how much of it there is. See
-        # `heat_score` for the measurement; `scored` is empty when the view gate refuses
-        # everything, which on a short recording it can, and then the gate is dropped
-        # rather than the answer.
-        scored = self._cell_scores(weight, counted, seen, self.config.heat_min_views)
-        if not scored:
-            scored = self._cell_scores(weight, counted, seen, 1)
-            query.note = (
-                f"no place was seen from {self.config.heat_min_views} viewpoints, so the "
-                "answers below rest on fewer -- a single look can be a single mistake"
-            )
+        # How well this patch of space matches, not how much of it there is, and only
+        # where the patches were strong and their neighbours agree. Each rule gives way
+        # in turn rather than answering nothing, because a weak query over a short
+        # recording is a thing that happens and "here, weakly" beats silence.
+        floor = self.config.heat_patch_floor * max(score for _, score, _ in placed)
+        attempts = (
+            (floor, self.config.heat_min_near, self.config.heat_min_views, ""),
+            (floor, 0, self.config.heat_min_views, "nowhere had neighbours that agreed"),
+            (0.0, 0, self.config.heat_min_views, "no patch was strong enough to stand on"),
+            (0.0, 0, 1, f"nothing was seen from {self.config.heat_min_views} viewpoints"),
+        )
+        scored: dict[tuple[int, int, int], float] = {}
+        for at_least, near, views, complaint in attempts:
+            scored = self._cells_worth_answering(placed, at_least, views, near, size)
+            if scored:
+                if complaint:
+                    query.note = (
+                        f"{complaint}, so this answer rests on less than it should -- "
+                        "a single look can be a single mistake"
+                    )
+                break
         ranked = sorted(scored.items(), key=lambda item: -item[1])
         query.places = [
             Place(
@@ -801,19 +826,54 @@ class Hyperspace(MemoryModule):
             for cell, score in ranked[:50]
         ]
 
-    def _cell_scores(
+    def _cells_worth_answering(
         self,
-        weight: dict[tuple[int, int, int], float],
-        counted: dict[tuple[int, int, int], int],
-        seen: dict[tuple[int, int, int], set[tuple[str, float]]],
+        placed: Sequence[tuple[tuple[int, int, int], float, tuple[str, float]]],
+        at_least: float,
         min_views: int,
+        min_near: int,
+        size: float,
     ) -> dict[tuple[int, int, int], float]:
-        """One score per cell, from the patches that landed in it."""
+        """One score per cell, from the patches worth counting that landed in it."""
+        weight: dict[tuple[int, int, int], float] = {}
+        counted: dict[tuple[int, int, int], int] = {}
+        seen: dict[tuple[int, int, int], set[tuple[str, float]]] = {}
+        for cell, score, key in placed:
+            if score < at_least:
+                continue
+            weight[cell] = weight.get(cell, 0.0) + score
+            counted[cell] = counted.get(cell, 0) + 1
+            seen.setdefault(cell, set()).add(key)
         mean = self.config.heat_score != "sum"
-        return {
+        scored = {
             cell: (total / counted[cell] if mean else total)
             for cell, total in weight.items()
             if len(seen[cell]) >= min_views
+        }
+        if not min_near:
+            return scored
+        return self._where_neighbours_agree(scored, min_near, size, self.config.heat_support_m)
+
+    @staticmethod
+    def _where_neighbours_agree(
+        scored: dict[tuple[int, int, int], float], min_near: int, size: float, reach_m: float = 0.5
+    ) -> dict[tuple[int, int, int], float]:
+        """Cells with at least *min_near* other scoring cells within *reach_m*."""
+        reach = max(1, round(reach_m / size))
+        around = [
+            (dx, dy, dz)
+            for dx in range(-reach, reach + 1)
+            for dy in range(-reach, reach + 1)
+            for dz in range(-reach, reach + 1)
+            if dx or dy or dz
+        ]
+        return {
+            cell: value
+            for cell, value in scored.items()
+            if sum(
+                1 for dx, dy, dz in around if (cell[0] + dx, cell[1] + dy, cell[2] + dz) in scored
+            )
+            >= min_near
         }
 
     def _where_the_robot_is(self, at_time: float = 0.0) -> tuple[float, float, float] | None:
