@@ -240,3 +240,19 @@ def test_starting_the_module_does_not_build_the_dense_voxel_path() -> None:
     assert "self.engine" not in code, (
         "touching self.engine in handle_tf builds the dense path on the first transform"
     )
+
+
+def test_start_does_not_read_anything_the_lazy_engine_owns() -> None:
+    """`start()` logged `self.model.tags` after the model stopped being built there.
+
+    Making something lazy means every reference to it is now a construction or a crash,
+    and a leftover log line is the easiest one to miss -- it was the last statement in
+    `start()`, so the module came up and then died on its own success message.
+    """
+    from pathlib import Path
+
+    source = Path(__file__).with_name("module.py").read_text()
+    body = source[source.index("    def start(self) -> None:\n        # What every question") :]
+    body = body[: body.index("    def _load_the_detector")]
+    assert "self.model" not in body, "start() touches the lazily built model"
+    assert "self.engine" not in body, "start() touches the lazily built engine"

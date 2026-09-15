@@ -402,9 +402,7 @@ class Hyperspace(MemoryModule):
         self._lock = threading.Lock()
         self._ids = iter(range(1, 1 << 30))
         self._load_the_detector(specs)
-        logger.info(
-            f"hyperspace query: {self.model.tags} text towers on {device}, db {self.config.db_path}"
-        )
+        logger.info(f"hyperspace query: ready over {self.config.db_path}")
         super().start()
 
     def _load_the_detector(self, specs: list[str]) -> None:
