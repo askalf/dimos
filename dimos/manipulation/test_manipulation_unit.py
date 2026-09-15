@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 import pickle
 import time
-from unittest.mock import ANY, MagicMock, call
+from unittest.mock import ANY, DEFAULT, MagicMock, call
 
 import numpy as np
 import pytest
@@ -38,7 +38,11 @@ from dimos.manipulation.manipulation_module import (
     ManipulationModuleConfig,
     ManipulationState,
 )
-from dimos.manipulation.manipulation_spec import ExecutionStatus, PlanStatus
+from dimos.manipulation.manipulation_spec import (
+    ExecutionResult,
+    ExecutionStatus,
+    PlanStatus,
+)
 from dimos.manipulation.planning.groups.models import PlanningGroupDefinition
 from dimos.manipulation.planning.groups.registry import PlanningGroupRegistry
 from dimos.manipulation.planning.kinematics.config import PinkKinematicsConfig
@@ -82,8 +86,16 @@ def _control_coordinator(
     cancel_status: TrajectoryCancellationStatus = (TrajectoryCancellationStatus.ALREADY_STOPPED),
 ) -> MagicMock:
     coordinator = MagicMock(spec=ControlCoordinator)
-    coordinator.execute_trajectory.return_value = TrajectoryExecutionResult(execute_status)
-    coordinator.cancel_trajectory.return_value = TrajectoryCancellationResult(cancel_status)
+    coordinator.get_joint_positions.return_value = {}
+
+    def invoke(task: str, method: str, args: dict | None = None):
+        if method == "execute":
+            return TrajectoryExecutionResult(execute_status)
+        if method == "cancel":
+            return TrajectoryCancellationResult(cancel_status)
+        return DEFAULT
+
+    coordinator.task_invoke.side_effect = invoke
     coordinator.task_invoke.return_value = TrajectoryStatus(state=TrajectoryState.IDLE)
     return coordinator
 
@@ -450,7 +462,7 @@ class TestStateMachine:
         assert module._state == ManipulationState.EXECUTING
 
         assert module.cancel().status is ExecutionStatus.ABORTED
-        module._control_coordinator.cancel_trajectory.assert_called_once_with()
+        assert _cancelled(module._control_coordinator) == ["joint_trajectory"]
         assert module._state == ManipulationState.IDLE
 
     def test_safe_cancel_clears_fault(self, module_factory):
@@ -462,6 +474,57 @@ class TestStateMachine:
         assert result.status is ExecutionStatus.NO_EXECUTION
         assert module._state == ManipulationState.IDLE
         assert module._error_message == ""
+
+    def test_reset_recovers_from_fault(self, module_factory):
+        """Planning only runs from IDLE or COMPLETED, so FAULT must be escapable."""
+        module = module_factory()
+        module._state = ManipulationState.FAULT
+        module._error_message = "Execution failed"
+
+        result = module.reset()
+
+        assert result.succeeded
+        assert module._state == ManipulationState.IDLE
+        assert module._error_message == ""
+
+    def test_reset_leaves_fault_standing_when_the_stop_is_unconfirmed(
+        self, module_factory, mocker: MockerFixture
+    ) -> None:
+        """Clearing this FAULT hands back a module that accepts motion into a moving arm."""
+        module = module_factory()
+        module._state = ManipulationState.FAULT
+        module._error_message = "cancel outcome uncertain"
+        mocker.patch.object(
+            module,
+            "cancel",
+            return_value=ExecutionResult(ExecutionStatus.UNCERTAIN, "cancel outcome uncertain"),
+        )
+
+        result = module.reset()
+
+        assert not result.succeeded
+        assert module._state == ManipulationState.FAULT
+        assert module._error_message == "cancel outcome uncertain"
+
+    def test_reset_cancels_an_active_trajectory(self, module_factory):
+        """Refusing and asking the caller to cancel first is a dead end."""
+        module = module_factory()
+        config = _one_joint_config()
+        _install_generated_plan(module, config, [0.0], [0.1])
+        module._control_coordinator = _control_coordinator(
+            cancel_status=TrajectoryCancellationStatus.CANCELLED
+        )
+        module._control_coordinator.task_invoke.return_value = TrajectoryStatus(
+            state=TrajectoryState.ABORTED
+        )
+        module._initialize_execution()
+        module.execute(blocking=False)
+
+        result = module.reset()
+
+        assert _cancelled(module._control_coordinator) == ["joint_trajectory"]
+        assert "Cancelled" in result.message
+        assert module._state == ManipulationState.IDLE
 
     def test_fail_sets_fault_state(self, module_factory):
         """_fail helper sets FAULT state and message."""
@@ -1100,7 +1163,7 @@ class TestExecute:
         result = module.execute(plan_id=original.plan_id, blocking=False)
 
         assert result.status is ExecutionStatus.REJECTED
-        coordinator.execute_trajectory.assert_not_called()
+        assert _executed(coordinator) is None
         assert module._last_plan is replacement
         assert (
             module.execute(
@@ -1108,7 +1171,7 @@ class TestExecute:
             ).status
             is ExecutionStatus.ACCEPTED
         )
-        coordinator.execute_trajectory.assert_called_once()
+        assert _executed(coordinator) is not None
 
     def test_execute_requires_trajectory(self, robot_config, module_factory):
         """Execute fails without planned trajectory."""
@@ -1116,3 +1179,16 @@ class TestExecute:
 
         assert module.execute().status is ExecutionStatus.NO_PLAN
         assert module._state == ManipulationState.IDLE
+
+
+def _executed(coordinator, task: str = "joint_trajectory"):
+    """The trajectory a task was asked to execute, or None."""
+    for invocation in coordinator.task_invoke.call_args_list:
+        if invocation.args[0] == task and invocation.args[1] == "execute":
+            return invocation.args[2]["trajectory"]
+    return None
+
+
+def _cancelled(coordinator) -> list[str]:
+    """Tasks that were asked to cancel."""
+    return [c.args[0] for c in coordinator.task_invoke.call_args_list if c.args[1] == "cancel"]
