@@ -1284,22 +1284,27 @@ def test_a_named_device_is_never_second_guessed() -> None:
         assert pick_device(named) == named
 
 
-def test_the_metal_escape_hatch_turns_mps_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`HYPERSPACE_NO_MPS=1` is the way out for a stack whose parent process touches Metal.
+def test_every_module_can_say_no_to_metal_in_its_config() -> None:
+    """`allow_mps=False` is the way out for a stack whose parent process touches Metal.
 
-    There is no probe for that case -- see `pick_device` -- so the hatch has to work, and
-    it has to leave a machine with a real GPU alone.
+    There is no probe for that case -- see `pick_device` -- so the way out has to be a
+    setting, and it has to be one a blueprint can set: all three modules carry it, on by
+    default, and each hands it to the same chooser.
     """
     import torch
 
-    from dimos.mapping.hyperspace.module import pick_device
+    from dimos.mapping.hyperspace.module import (
+        HyperspaceConfig,
+        HyperspacePatchesConfig,
+        pick_device,
+    )
+    from dimos.mapping.hyperspace.segments_module import HyperspaceSegmentsConfig
+
+    for config in [HyperspaceConfig, HyperspacePatchesConfig, HyperspaceSegmentsConfig]:
+        assert config.model_fields["allow_mps"].default is True, config.__name__
 
     if not torch.backends.mps.is_available() or torch.cuda.is_available():
-        pytest.skip("only says anything on an Apple machine with no CUDA")
-    monkeypatch.delenv("HYPERSPACE_NO_MPS", raising=False)
+        pytest.skip("the rest only says anything on an Apple machine with no CUDA")
     assert pick_device("auto") == "mps"
-    for off in ["1", "true", "yes"]:
-        monkeypatch.setenv("HYPERSPACE_NO_MPS", off)
-        assert pick_device("auto") == "cpu"
-    monkeypatch.setenv("HYPERSPACE_NO_MPS", "0")
-    assert pick_device("auto") == "mps"
+    assert pick_device("auto", allow_mps=False) == "cpu"
+    assert pick_device("mps", allow_mps=False) == "mps", "a named device still wins"

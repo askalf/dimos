@@ -106,12 +106,25 @@ class DetectConfig:
     # and every one of those eight scores came back 0.03-0.08 LOW (0.797 -> 0.751,
     # 0.685 -> 0.610), which is enough to drop a box under the 0.5 acceptance cut and
     # lose a real answer. fp16 held seven of the eight within 0.008.
-    dtype: str = ""
+    #
+    # "auto" is fp16 on CUDA and float32 everywhere else. MEASURED on the Mac, sf_office,
+    # four queries: fp16 detect 10.30 / 8.34 / 6.69 / 1.88 s against float32's 10.46 /
+    # 8.36 / 6.21 / 1.86 -- a wash, same places -- so Metal gets nothing for the score
+    # risk and does not take it. "" still means float32, as it always did.
+    dtype: str = "auto"
     # Prepare the images in torch on the card instead of numpy on the CPU. MEASURED on an
-    # RTX 5070 at 1280x720: 347 ms a frame -> 3.5 ms, which is a third of a detection
-    # gone. Not bit-identical -- see `Owlv2Config.gpu_preprocess` -- so it stays off until
-    # a whole run's answers say it changes nothing.
-    gpu_preprocess: bool = False
+    # RTX 5070 at 1280x720: 347 ms a frame -> 3.5 ms, which is a third of a detection gone.
+    #
+    # "auto" is on for CUDA and off for everything else, and Metal is not a judgement call:
+    # torch has no `aten::_upsample_bilinear2d_aa` for MPS, so asking for it there raises
+    # NotImplementedError mid-run. `PYTORCH_ENABLE_MPS_FALLBACK=1` "fixes" it by doing that
+    # very resize on the CPU, which is the expensive step, so there would be nothing left
+    # to win. "on"/"off" say it outright.
+    #
+    # It is not bit-identical -- see `Owlv2Config.gpu_preprocess` -- and every caller here
+    # compares a score against `threshold`, so the CUDA default is the one that needed a
+    # whole run's answers behind it rather than four frames.
+    gpu_preprocess: str = "auto"
     # Subtract the best of a handful of generic prompts -- floor, wall, ceiling, shelf,
     # a room -- from every patch's score. On by default because CLIP scores almost
     # everything somewhat highly, so without it a wall answers most questions moderately
@@ -663,6 +676,29 @@ def _holes_as_zero(metres: NDArray[np.float32]) -> NDArray[np.float32]:
     return metres
 
 
+def detector_dtype_for(setting: str, device: str) -> str:
+    """The precision to run the detector at, once the device is known.
+
+    "auto" means fp16 on CUDA, where it halves the forward pass, and float32 everywhere
+    else, where it buys nothing -- measured on MPS, four queries, detect within noise and
+    the same places. Anything else is taken at its word, including "" for float32.
+    """
+    if setting != "auto":
+        return setting
+    return "fp16" if device.startswith("cuda") else ""
+
+
+def gpu_preprocess_for(setting: str, device: str) -> bool:
+    """Whether to prepare the detector's images on the card, once the device is known.
+
+    "auto" is CUDA only. MPS is excluded because torch has no antialiased bilinear resize
+    there and the run would raise partway through, not because of the score question.
+    """
+    if setting == "auto":
+        return device.startswith("cuda")
+    return setting.lower() in {"1", "on", "true", "yes"}
+
+
 class Owlv2Boxes:
     """Core's OWLv2 detector, loaded once and asked about whole rounds of frames."""
 
@@ -680,9 +716,13 @@ class Owlv2Boxes:
             settings: dict[str, Any] = {"model_name": self.config.checkpoint}
             if self.config.device:
                 settings["device"] = self.config.device
-            if self.config.dtype:
-                settings["dtype"] = _torch_dtype(self.config.dtype)
-            if self.config.gpu_preprocess:
+            from dimos.mapping.hyperspace.module import pick_device
+
+            chosen = settings.get("device") or pick_device("auto")
+            dtype = detector_dtype_for(self.config.dtype, chosen)
+            if dtype:
+                settings["dtype"] = _torch_dtype(dtype)
+            if gpu_preprocess_for(self.config.gpu_preprocess, chosen):
                 settings["gpu_preprocess"] = True
             self._detector = Owlv2Detector(**settings)
         return self._detector

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -73,10 +72,12 @@ if TYPE_CHECKING:
 logger = setup_logger()
 
 
-def pick_device(device: str) -> str:
+def pick_device(device: str, *, allow_mps: bool = True) -> str:
     """The fastest device this process can actually use. One answer for the whole package.
 
     Anything but "auto" is returned verbatim, so a caller can always name its own device.
+    `allow_mps=False` keeps "auto" off Metal without naming a device -- see the last
+    paragraph for the one stack that needs it.
 
     APPLE SILICON IS INCLUDED, and it used to be excluded. MEASURED 2026-09-15: the query
     module runs OWLv2 on MPS inside a real dimos forkserver worker and answers sf_office's
@@ -94,9 +95,10 @@ def pick_device(device: str) -> str:
     There is deliberately no probe. The failure is an abort rather than an exception, so it
     cannot be caught, and a forked probe cannot answer it either: a fork of a worker cannot
     reach MTLCompilerService whether the worker is poisoned or not, so such a probe says
-    "no" even when MPS would have worked (measured, both directions). Hence an escape hatch
-    instead: set `HYPERSPACE_NO_MPS=1` in a stack whose parent process touches Metal, or
-    name the device outright.
+    "no" even when MPS would have worked (measured, both directions). So a stack whose
+    parent process does touch Metal says so with `allow_mps=False`, which every module
+    carries as a config field -- or names its device outright, which still wins over all
+    of this.
     """
     if device != "auto":
         return device
@@ -104,9 +106,8 @@ def pick_device(device: str) -> str:
 
     if torch.cuda.is_available():
         return "cuda"
-    if os.environ.get("HYPERSPACE_NO_MPS", "").lower() in {"", "0", "false", "no"}:
-        if torch.backends.mps.is_available():
-            return "mps"
+    if allow_mps and torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -130,6 +131,11 @@ class HyperspacePatchesConfig(MemoryModuleConfig):
     model_name: str = SIGLIP2_MODEL_NAME
     # "auto" = cuda if available, else cpu (never mps inside a worker, see start()).
     device: str = "auto"
+    # Let "auto" pick Metal on Apple silicon. Off is for the one stack that breaks it: a
+    # parent process that compiles a Metal kernel before its workers start leaves every
+    # worker unable to reach MTLCompilerService, and the worker aborts rather than raising.
+    # `pick_device` has the measurement. Naming `device` outright ignores this entirely.
+    allow_mps: bool = True
     # Frame the quality gate measures camera motion against.
     motion_reference_frame: str = "odom"
     # Never embed frames closer together than this (s), which is also the ceiling on
@@ -227,7 +233,7 @@ class HyperspacePatches(MemoryModule):
     def start(self) -> None:
         # Everything the handlers need exists before Module.start binds them:
         # frames arrive the moment the ports connect.
-        device = pick_device(self.config.device)
+        device = pick_device(self.config.device, allow_mps=self.config.allow_mps)
         specs = self.config.models or [self.config.model_name]
         logger.info(f"hyperspace patches: loading {specs} on {device}")
         self.model = self.register_disposable(PatchEnsemble(specs, device=device, towers="vision"))
@@ -317,6 +323,11 @@ class HyperspaceConfig(MemoryModuleConfig):
     model_name: str = SIGLIP2_MODEL_NAME
     # "auto" = cuda if available, else cpu (never mps, see start()).
     device: str = "auto"
+    # Let "auto" pick Metal on Apple silicon. Off is for the one stack that breaks it: a
+    # parent process that compiles a Metal kernel before its workers start leaves every
+    # worker unable to reach MTLCompilerService, and the worker aborts rather than raising.
+    # `pick_device` has the measurement. Naming `device` outright ignores this entirely.
+    allow_mps: bool = True
     # Ensemble stores: how the members' cell scores combine ("min", "2nd",
     # "mean") and the threshold on the pooled score. See QueryConfig.
     pool: str = "min"
@@ -485,7 +496,7 @@ class Hyperspace(MemoryModule):
         """
         from dimos.mapping.hyperspace.detect import DetectConfig
 
-        device = pick_device(self.config.owl_device)
+        device = pick_device(self.config.owl_device, allow_mps=self.config.allow_mps)
         self.live = LiveQuery(
             self.store,
             LiveConfig(
@@ -616,7 +627,7 @@ class Hyperspace(MemoryModule):
         if built is not None:
             return built
 
-        device = pick_device(self.config.device)
+        device = pick_device(self.config.device, allow_mps=self.config.allow_mps)
         logger.info(f"hyperspace query: loading text towers {self._specs} on {device}")
         self.model = self.register_disposable(
             PatchEnsemble(self._specs, device=device, towers="text")

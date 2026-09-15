@@ -137,17 +137,19 @@ def main(
     dtype: str = typer.Option(
         DetectConfig.dtype,
         "--dtype",
-        help="detector precision: '' for float32, or fp16 (2x on CUDA). bf16 moves scores",
+        help="detector precision: 'auto' is fp16 on CUDA and float32 elsewhere; "
+        "'' forces float32. bf16 moves scores and is not worth it",
     ),
     contrast: bool = typer.Option(
         DetectConfig.contrast,
         "--contrast/--no-contrast",
         help="subtract generic floor/wall/ceiling prompts from every patch score",
     ),
-    gpu_preprocess: bool = typer.Option(
+    gpu_preprocess: str = typer.Option(
         DetectConfig.gpu_preprocess,
-        "--gpu-preprocess/--cpu-preprocess",
-        help="prepare the detector's images on the card; 347 ms a frame becomes 3.5 ms",
+        "--gpu-preprocess",
+        help="prepare the detector's images on the card (347 ms a frame becomes 3.5 ms): "
+        "'auto' on CUDA only, or on/off. MPS has no antialiased resize, so 'on' raises there",
     ),
 ) -> None:
     """Answer each query the way the live module would, and write a page per query."""

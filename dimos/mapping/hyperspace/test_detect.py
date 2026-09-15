@@ -1162,30 +1162,56 @@ def test_a_detector_precision_is_named_or_refused() -> None:
 
     from dimos.mapping.hyperspace.detect import DetectConfig, _torch_dtype
 
-    assert DetectConfig.dtype == "", "float32 stays the default until fp16 is validated"
+    assert DetectConfig.dtype == "auto", "the device decides; '' still forces float32"
     assert _torch_dtype("fp16") is torch.float16
     assert _torch_dtype("bf16") is torch.bfloat16
     with pytest.raises(ValueError, match="unknown detector dtype"):
         _torch_dtype("float8")
 
 
-def test_gpu_preprocessing_is_off_until_a_run_says_otherwise() -> None:
-    """The fast image path is opt-in, because it is not bit-identical.
+def test_the_fast_image_path_is_cuda_only_and_never_metal() -> None:
+    """The fast image path is not bit-identical, and on MPS it does not exist at all.
 
-    `Owlv2ImageProcessor` resizes with a gaussian pre-filter and an order-1 zoom; the
-    torch version uses an antialiased bilinear. Same intent, different kernel, so the
-    pixels differ a little and the scores move with them. Anything comparing a score to a
-    threshold has to check its own answers before turning this on, so the default must
-    stay off and the flag must reach the detector when it is asked for.
+    `Owlv2ImageProcessor` resizes with a gaussian pre-filter and an order-1 zoom; the torch
+    version uses an antialiased bilinear. Same intent, different kernel, so the pixels
+    differ a little and the scores move with them -- which is why it took a whole run's
+    answers to turn on, and only where it was measured.
+
+    MPS is a harder no: torch has no `aten::_upsample_bilinear2d_aa` there, so "on" raises
+    NotImplementedError partway through a run rather than being slightly wrong. "auto" must
+    never pick it there, whatever the score question says.
     """
-    from dimos.mapping.hyperspace.detect import DetectConfig
+    from dimos.mapping.hyperspace.detect import DetectConfig, gpu_preprocess_for
     from dimos.perception.detection.detectors.owlv2 import Owlv2Config
 
-    assert DetectConfig.gpu_preprocess is False
+    assert DetectConfig.gpu_preprocess == "auto"
+    assert gpu_preprocess_for("auto", "cuda") is True
+    assert gpu_preprocess_for("auto", "cuda:1") is True
+    assert gpu_preprocess_for("auto", "mps") is False
+    assert gpu_preprocess_for("auto", "cpu") is False
+    assert gpu_preprocess_for("on", "mps") is True, "an explicit ask is still obeyed"
+    assert gpu_preprocess_for("off", "cuda") is False
+
     # Owlv2Config is a pydantic model, so the default lives in the field, not on the class.
     assert Owlv2Config().gpu_preprocess is False, (
-        "every caller of the shared detector, not just hyperspace, opts in deliberately"
+        "every other caller of the shared detector still opts in deliberately"
     )
+
+
+def test_half_precision_is_taken_only_where_it_was_measured_to_pay() -> None:
+    """fp16 halves the forward pass on an RTX 5070 and is a wash on Metal.
+
+    Measured on the Mac over sf_office's four queries: detect 10.30 / 8.34 / 6.69 / 1.88 s
+    at fp16 against 10.46 / 8.36 / 6.21 / 1.86 at float32, same places both ways. So Metal
+    carries the score risk of three fewer mantissa bits for nothing, and "auto" declines.
+    """
+    from dimos.mapping.hyperspace.detect import detector_dtype_for
+
+    assert detector_dtype_for("auto", "cuda") == "fp16"
+    assert detector_dtype_for("auto", "mps") == ""
+    assert detector_dtype_for("auto", "cpu") == ""
+    assert detector_dtype_for("", "cuda") == "", "'' still means float32 outright"
+    assert detector_dtype_for("bf16", "mps") == "bf16"
 
 
 def test_the_first_answer_is_timed_from_the_question(recording: SqliteStore, monkeypatch) -> None:

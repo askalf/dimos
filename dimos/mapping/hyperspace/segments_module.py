@@ -58,6 +58,9 @@ class HyperspaceSegmentsConfig(MemoryModuleConfig):
     # SigLIP2 text tower for the per-segment label embedding; "" = no embedding.
     model_name: str = SIGLIP2_MODEL_NAME
     device: str = "auto"
+    # Let "auto" pick Metal on Apple silicon; see `pick_device` for the one stack that
+    # has to turn this off.
+    allow_mps: bool = True
     world_frame: str = "odom"
     min_frame_interval_s: float = 0.5
     max_depth_m: float = 10.0
@@ -91,7 +94,7 @@ class HyperspaceSegments(MemoryModule):
 
     @rpc
     def start(self) -> None:
-        device = pick_device(self.config.device)
+        device = pick_device(self.config.device, allow_mps=self.config.allow_mps)
         logger.info(f"hyperspace segments: loading {self.config.segmenter_name} on {device}")
         segmenter = seg.SegFormerSegmenter(
             seg.SegmenterConfig(
