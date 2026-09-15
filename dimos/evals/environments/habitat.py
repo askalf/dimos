@@ -120,7 +120,8 @@ class HabitatEnvironment(Sim):
             )
         proc.simulator = None
         # Keep RGB, the derived point cloud, pose, maps and navigation
-        # traces. Raw depth is used internally, not stored by this eval.
+        # traces. Navigation topics come from the composed blueprint, not
+        # HabitatConnection itself. Raw depth is used internally, not recorded.
         proc.global_args = [
             "--record-topics",
             ",".join(
@@ -150,6 +151,8 @@ class HabitatEnvironment(Sim):
 
     def wait_ready(self, recording: Store, *, deadline: float) -> None:
         """Wait for fresh observations; Sim separately checks the MCP endpoint."""
+        # Message timestamps are Unix wall-clock seconds. Use wall time for
+        # freshness and monotonic time only for the elapsed launch deadline.
         while time.monotonic() < deadline:
             try:
                 pose = self.latest_pose(recording)
@@ -191,6 +194,7 @@ class HabitatEnvironment(Sim):
                     "publish_semantic",
                 },
             ),
+            # Describes the scan generation method, not publication state.
             "point_cloud_source": "depth_unprojection",
             "initial_observed_position_ros": list(self._spawn.position) if self._spawn else None,
         }
