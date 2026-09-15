@@ -132,9 +132,34 @@ def test_full_map_load_yields_to_a_covering_live_region() -> None:
     assert sorted(map(tuple, tiled.surface_map())) == sorted(map(tuple, clean.surface_map()))
 
 
+def test_full_map_load_yields_to_an_overlapping_live_region() -> None:
+    ground = flat_floor(half_extent=12.0)
+    box = np.asarray(
+        [
+            (8.0 + dx, dy, z)
+            for dx in np.arange(-0.3, 0.3, 0.1)
+            for dy in np.arange(-0.3, 0.3, 0.1)
+            for z in (0.1, 0.2, 0.3, 0.4, 0.5)
+        ],
+        dtype=np.float32,
+    )
+    tiled = MLSPlanner(voxel_size=0.2, robot_height=1.0, full_map_tile_m=4.0)
+    tiled.start_full_map_load(np.concatenate([ground, box]), (0.0, 0.0))
+    # The box is gone when a live region straddling its tiles lands mid-load.
+    live = ground[np.hypot(ground[:, 0], ground[:, 1]) <= 9.0]
+    tiled.update_region(live, (0.0, 0.0), 9.0, -1.0, 3.0, 0.3)
+    while tiled.apply_full_map_tile():
+        pass
+
+    ghosts = [
+        r for r in tiled.voxel_map() if abs(r[0] - 8.0) < 0.6 and abs(r[1]) < 0.6 and r[2] > 0.25
+    ]
+    assert ghosts == []
+
+
 def test_clear_drops_a_pending_load() -> None:
     planner = make_planner()
     assert planner.start_full_map_load(flat_floor(), (0.0, 0.0)) > 1
     planner.clear()
-    assert planner.apply_full_map_tile() == 0
+    assert planner.apply_full_map_tile() is None
     assert planner.voxel_count() == 0

@@ -31,15 +31,11 @@ from numpy.typing import NDArray
 import typer
 
 from dimos.mapping.ray_tracing.module import TF_MATCH_TOLERANCE_S
-from dimos.mapping.ray_tracing.utils.loaded_map import (
-    first_loaded_map,
-    log_loaded_map,
-    place_loaded_map,
-)
+from dimos.mapping.ray_tracing.utils.loaded_map import first_loaded_map, place_loaded_map
 from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF
-from dimos.memory.vis.utils import DEFAULT_RENDER_VOXEL, default_render_voxel
+from dimos.memory.vis.utils import DEFAULT_RENDER_VOXEL, default_render_voxel, log_loaded_map
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.data import resolve_named_path
 

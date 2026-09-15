@@ -18,21 +18,14 @@ dimos run unitree-go2-nav-3d-relocalization-replay --map-file=<premap stem>
 """
 
 from dimos.core.coordination.blueprints import autoconnect
-from dimos.core.global_config import global_config
 from dimos.hardware.sensors.lidar.pointlio.module import PointLio
 from dimos.mapping.relocalization.blueprints import RecordingPlayer
 from dimos.navigation.basic_path_follower.module import BasicPathFollower
 from dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_nav_3d import (
-    mls_planner,
-    nav_rerun_config,
     unitree_go2_nav_3d_relocalization,
 )
 from dimos.robot.unitree.go2.connection import GO2Connection
 from dimos.robot.unitree.go2.go2_mid360_static_transforms import Go2Mid360StaticTf
-from dimos.visualization.vis_module import vis_module
-
-# The viewer bridge renders the seeded surface in Python, so a higher rate starves it.
-planner_viz_hz = 0.2
 
 # The recording carries the mount tf chain, so the static publisher would
 # write base_link a second time.
@@ -41,6 +34,4 @@ unitree_go2_nav_3d_relocalization_replay = autoconnect(
         GO2Connection, PointLio, Go2Mid360StaticTf, BasicPathFollower
     ),
     RecordingPlayer.blueprint(),
-    vis_module(viewer_backend=global_config.viewer, rerun_config=nav_rerun_config(planner_viz_hz)),
-    mls_planner(planner_viz_hz),
 ).global_config(n_workers=8)

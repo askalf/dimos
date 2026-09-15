@@ -46,9 +46,3 @@ def place_loaded_map(
             "to place the loaded map"
         )
     return loaded_map.data.transform(placement).points_f32()
-
-
-def log_loaded_map(points: NDArray[np.float32]) -> None:
-    import rerun as rr
-
-    rr.log("world/loaded_map", rr.Points3D(points, colors=[[130, 130, 130]], radii=0.008))

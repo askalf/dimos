@@ -15,11 +15,7 @@
 
 """Replay a recording through the lidar relocalizer's decision path, with no planner.
 
-The live map grows from the recording's lidar the way the ray tracer builds it. Each
-attempt is scored the way the module scores it, and the accepted fix is compared with
-the one the robot published, when the recording carries it.
-
-    python -m dimos.mapping.relocalization.lidar.tune replay <recording.db> --premap <map>
+python -m dimos.mapping.relocalization.lidar.tune replay <recording.db> --premap <map>
 """
 
 from __future__ import annotations
@@ -32,14 +28,13 @@ import numpy as np
 import typer
 
 from dimos.mapping.ray_tracing.transformer import RayTraceMap, pose_from_tf
-from dimos.mapping.ray_tracing.utils.loaded_map import log_loaded_map
 from dimos.mapping.relocalization.lidar.module import LidarConfig
 from dimos.mapping.relocalization.lidar.relocalize import PRESETS, LidarRelocalizer
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF
+from dimos.memory.vis.utils import log_loaded_map, voxel_map_points
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, register_colormap_annotation
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
-from dimos.navigation.nav_3d.mls_planner.viz import voxel_map_points
 from dimos.utils.data import resolve_named_path
 
 if TYPE_CHECKING:
@@ -52,7 +47,7 @@ MAP_FRAME = "map"
 LOADED_MAP_STREAM = "loaded_map"
 RECORDED_MAP_COLOR = [255, 120, 120]
 
-_DEFAULTS = LidarConfig.model_fields
+_FIELDS = LidarConfig.model_fields
 
 
 class Attempt(NamedTuple):
@@ -85,7 +80,7 @@ def place_premap(premap: NDArray[np.float32], fix: Transform) -> NDArray[np.floa
     return placed
 
 
-def recorded_fix(store: SqliteStore, world_frame: str, map_frame: str) -> Transform | None:
+def _recorded_fix(store: SqliteStore, world_frame: str, map_frame: str) -> Transform | None:
     """The first ``world -> map`` edge the live run published, if the recording has one."""
     if "tf" not in store.list_streams():
         return None
@@ -147,7 +142,7 @@ def replay(
     frames = lidar.transform(pose_from_tf(tf, world_frame)).transform(ray)
 
     relocalizer = LidarRelocalizer(premap.pointcloud, PRESETS[preset])
-    recorded = recorded_fix(store, world_frame, MAP_FRAME)
+    recorded = _recorded_fix(store, world_frame, MAP_FRAME)
     premap_pts = premap.points_f32()
 
     attempts: list[Attempt] = []
@@ -167,13 +162,13 @@ def replay(
         if fix is not None or obs.ts < next_attempt or len(obs.data) < min_local_points:
             continue
         next_attempt = obs.ts + reloc_interval
-        tf_fix, result = relocalizer.attempt(obs.data.pointcloud, world_frame, MAP_FRAME)
-        attempts.append(Attempt(obs.ts - t0, result.fitness, tf_fix))
-        rr.log("metrics/reloc/fitness", rr.Scalars(result.fitness))
+        fix_attempt = relocalizer.attempt(obs.data.pointcloud, world_frame, MAP_FRAME)
+        attempts.append(Attempt(obs.ts - t0, fix_attempt.result.fitness, fix_attempt.fix))
+        rr.log("metrics/reloc/fitness", rr.Scalars(fix_attempt.result.fitness))
         _print_attempt(attempts[-1], recorded)
-        if tf_fix is None:
+        if fix_attempt.fix is None:
             continue
-        fix, fix_ts = tf_fix, obs.ts
+        fix, fix_ts = fix_attempt.fix, obs.ts
         stop_at = obs.ts + after_s
         log_loaded_map(place_premap(premap_pts, fix))
         if recorded is not None:
@@ -224,12 +219,12 @@ def main(
     world_frame: str = typer.Option("odom", "--world-frame", help="Frame the live map is built in"),
     preset: str = typer.Option("go2-nav", "--preset", help=f"One of {sorted(PRESETS)}"),
     reloc_interval: float = typer.Option(
-        _DEFAULTS["reloc_interval"].default,
+        _FIELDS["reloc_interval"].default,
         "--reloc-interval",
         help="Seconds of recording between attempts",
     ),
     min_local_points: int = typer.Option(
-        _DEFAULTS["min_local_points"].default,
+        _FIELDS["min_local_points"].default,
         "--min-local-points",
         help="Local map points below which an attempt is skipped",
     ),
@@ -255,16 +250,16 @@ def main(
     with store:
         result = replay(
             store,
-            lidar,
-            premap_cloud,
-            preset,
-            world_frame,
-            reloc_interval,
-            min_local_points,
-            voxel_size,
-            after,
-            from_time,
-            to_time,
+            lidar_stream=lidar,
+            premap=premap_cloud,
+            preset=preset,
+            world_frame=world_frame,
+            reloc_interval=reloc_interval,
+            min_local_points=min_local_points,
+            voxel_size=voxel_size,
+            after_s=after,
+            from_time=from_time,
+            to_time=to_time,
         )
         if result.fix is not None and write_loaded_map_stream:
             write_loaded_map(store, premap_cloud, result.fix, result.fix_ts, world_frame)

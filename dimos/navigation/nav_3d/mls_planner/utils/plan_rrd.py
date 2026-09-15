@@ -31,29 +31,27 @@ import typer
 
 from dimos.mapping.ray_tracing.module import TF_MATCH_TOLERANCE_S
 from dimos.mapping.ray_tracing.transformer import RayTraceMap, pose_from_tf
-from dimos.mapping.ray_tracing.utils.loaded_map import (
-    first_loaded_map,
-    log_loaded_map,
-    place_loaded_map,
-)
+from dimos.mapping.ray_tracing.utils.loaded_map import first_loaded_map, place_loaded_map
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF, tf_stream
 from dimos.memory.type.observation import Observation
-from dimos.memory.vis.utils import DEFAULT_RENDER_VOXEL, default_render_voxel
+from dimos.memory.vis.utils import (
+    DEFAULT_RENDER_VOXEL,
+    default_render_voxel,
+    log_loaded_map,
+    voxel_map_points,
+)
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, register_colormap_annotation
 from dimos.msgs.tf2_msgs.TFMessage import TfFrameTree, TFMessage
 from dimos.navigation.nav_3d.mls_planner.mls_planner import MLSPlanner
-from dimos.navigation.nav_3d.mls_planner.viz import (
+from dimos.navigation.nav_3d.mls_planner.viz import graph_edges, graph_nodes, surface_points
+from dimos.navigation.nav_3d.viz import (
     PATH_COLOR,
     goal_point,
-    graph_edges,
-    graph_nodes,
     path_strip,
     robot_body_box,
     robot_clearance,
-    surface_points,
-    voxel_map_points,
 )
 from dimos.robot.unitree.go2.constants import (
     BASE_LINK_HEIGHT,
@@ -327,19 +325,22 @@ def _init_recording(db_path: FsPath, out: FsPath | None, live: bool, crop: Local
 
 def _seed(
     ray: RayTraceMap,
-    planners: list[tuple[str, list[int], MLSPlanner]],
+    planners: list[MLSPlanner],
     seed_pts: NDArray[np.float32],
     start: tuple[float, float, float],
 ) -> int:
-    """Seed the mapper and start the planners' tiled load. Returns the tiles left."""
+    """Seed the mapper and start the planners' tiled load. Returns the most tiles left."""
     created = ray.mapper.seed_points(seed_pts)
     full = ray.mapper.full_map()
-    tiles_left = 0
-    for _, _, planner in planners:
-        tiles_left = planner.start_full_map_load(full, (start[0], start[1]))
+    tiles_left = max(p.start_full_map_load(full, (start[0], start[1])) for p in planners)
     log_loaded_map(seed_pts)
     print(f"\nseeded {created} voxels, loading {tiles_left} tiles")
     return tiles_left
+
+
+def _apply_tile(planners: list[MLSPlanner]) -> int:
+    """Apply one tile on every planner. Returns the most tiles left."""
+    return max(p.apply_full_map_tile() or 0 for p in planners)
 
 
 def _build_planners(
@@ -603,14 +604,14 @@ def main(
         ref_clearance = configs[0][0]
         planners = _build_planners(
             configs,
-            voxel_size,
-            robot_height,
-            max_overhead,
-            surface_closing_radius,
-            node_spacing,
-            step_height,
-            step_penalty_weight,
-            tile_m,
+            voxel_size=voxel_size,
+            robot_height=robot_height,
+            max_overhead=max_overhead,
+            surface_closing_radius=surface_closing_radius,
+            node_spacing=node_spacing,
+            step_height=step_height,
+            step_penalty_weight=step_penalty_weight,
+            full_map_tile_m=tile_m,
         )
 
         rr.log("world/goal", goal_point(goal), static=True)
@@ -658,11 +659,10 @@ def main(
                 )
                 if loaded_map is not None and ray_obs.ts >= loaded_map.ts:
                     seed_pts = place_loaded_map(loaded_map, tf_lookup, world_frame, ray_obs.ts)
-                    tiles_left = _seed(ray, planners, seed_pts, start)
+                    tiles_left = _seed(ray, [p for _, _, p in planners], seed_pts, start)
                     loaded_map = None
                 elif tiles_left:
-                    for _, _, planner in planners:
-                        tiles_left = planner.apply_full_map_tile()
+                    tiles_left = _apply_tile([p for _, _, p in planners])
                     if tiles_left == 0:
                         print("\nfull map load finished")
                 if seeded_run:

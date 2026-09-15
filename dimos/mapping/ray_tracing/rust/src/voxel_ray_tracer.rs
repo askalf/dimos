@@ -1105,20 +1105,15 @@ pub fn seed_tile(
     created
 }
 
-/// Bulk-load a whole world-frame cloud in one call, tile by tile. Returns the
-/// created keys.
-pub fn seed_points(
-    map: &mut VoxelMap,
-    points: &[(f32, f32, f32)],
-    cfg: &Config,
-) -> AHashSet<VoxelKey> {
+/// Bulk-load a whole world-frame cloud in one call, tile by tile. Returns
+/// how many voxels were created.
+pub fn seed_points(map: &mut VoxelMap, points: &[(f32, f32, f32)], cfg: &Config) -> usize {
     let part = partition_seed(points, cfg.voxel_size, (0.0, 0.0, 0.0));
     map.reserve(part.voxels);
-    let mut created = AHashSet::new();
-    for tile in &part.tiles {
-        created.extend(seed_tile(map, tile, cfg));
-    }
-    created
+    part.tiles
+        .iter()
+        .map(|tile| seed_tile(map, tile, cfg).len())
+        .sum()
 }
 
 #[inline]

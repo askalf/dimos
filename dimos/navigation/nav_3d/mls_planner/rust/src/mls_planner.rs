@@ -131,6 +131,7 @@ impl Config {
 }
 
 /// Cylindrical region the planner re-derives from a local map slice.
+#[derive(Clone, Copy)]
 pub struct RegionBounds {
     pub origin_x: f32,
     pub origin_y: f32,
@@ -166,15 +167,15 @@ impl RegionBounds {
         d + other.radius <= self.radius
     }
 
-    /// This cylinder over a different z band.
-    fn with_z(&self, z_min: f32, z_max: f32) -> RegionBounds {
-        RegionBounds {
-            origin_x: self.origin_x,
-            origin_y: self.origin_y,
-            radius: self.radius,
-            z_min,
-            z_max,
-        }
+    /// Whether the two cylinders share any volume.
+    fn intersects(&self, other: &RegionBounds) -> bool {
+        let d = (other.origin_x - self.origin_x).hypot(other.origin_y - self.origin_y);
+        d <= self.radius + other.radius && self.z_min <= other.z_max && other.z_min <= self.z_max
+    }
+
+    /// Whether `other` lies entirely inside this cylinder.
+    fn covers(&self, other: &RegionBounds) -> bool {
+        self.covers_xy(other) && self.z_min <= other.z_min && other.z_max <= self.z_max
     }
 
     fn contains_voxel(&self, (kx, ky, kz): VoxelKey, voxel_size: f32) -> bool {
@@ -278,7 +279,7 @@ fn tile_radius(s: f32, voxel_size: f32) -> f32 {
 }
 
 /// A tiled full-map load in progress. Live regions applied meanwhile are
-/// recorded, and a tile they cover applies only outside their z band.
+/// recorded, and every tile leaves them exactly as the live update did.
 pub struct MapLoad {
     tiles: Vec<MapTile>,
     next: usize,
@@ -317,31 +318,20 @@ impl MapLoad {
     pub fn apply_next_tile(&mut self, planner: &mut Planner, config: &Config) -> bool {
         while let Some(tile) = self.tiles.get(self.next) {
             self.next += 1;
-            let mut bands = vec![(tile.bounds.z_min, tile.bounds.z_max)];
-            for r in self.regions.iter().filter(|r| r.covers_xy(&tile.bounds)) {
-                bands = bands
-                    .iter()
-                    .flat_map(|&b| subtract_band(b, (r.z_min, r.z_max)))
-                    .collect();
-            }
-            if bands.is_empty() {
+            let keep: Vec<RegionBounds> = self
+                .regions
+                .iter()
+                .filter(|r| r.intersects(&tile.bounds))
+                .copied()
+                .collect();
+            if keep.iter().any(|r| r.covers(&tile.bounds)) {
                 continue;
             }
-            for (z_min, z_max) in bands {
-                let bounds = tile.bounds.with_z(z_min, z_max);
-                planner.update_region(&tile.points, &bounds, config);
-            }
+            planner.update_region_keeping(&tile.points, &tile.bounds, &keep, config);
             return true;
         }
         false
     }
-}
-
-/// Band `a` less band `b`.
-fn subtract_band(a: (f32, f32), b: (f32, f32)) -> impl Iterator<Item = (f32, f32)> {
-    let below = (a.0, a.1.min(b.0));
-    let above = (a.0.max(b.1), a.1);
-    [below, above].into_iter().filter(|(lo, hi)| lo < hi)
 }
 
 pub struct Planner {
@@ -404,13 +394,24 @@ impl Planner {
         bounds: &RegionBounds,
         config: &Config,
     ) {
+        self.update_region_keeping(local_points, bounds, &[], config);
+    }
+
+    /// Like update_region, but voxels inside any `keep` region are left as they are.
+    pub fn update_region_keeping(
+        &mut self,
+        local_points: &[(f32, f32, f32)],
+        bounds: &RegionBounds,
+        keep: &[RegionBounds],
+        config: &Config,
+    ) {
         let pool = Arc::clone(&self.pool);
         pool.install(|| {
             let voxel_size = config.voxel_size;
             let clearance = config.headroom_cells();
             let pad = (2 * config.closing_passes()) as i32;
 
-            let changed = self.replace_region_voxels(local_points, bounds, voxel_size);
+            let changed = self.replace_region_voxels(local_points, bounds, keep, voxel_size);
 
             // No voxel changed, so surfaces and the graph are untouched.
             let Some((bx0, bx1, by0, by1)) = changed else {
@@ -563,18 +564,20 @@ impl Planner {
         );
     }
 
-    /// Replace the cylinder's voxels with the local map points, ignoring
-    /// points outside it. Returns the column bbox of changed voxels, or None
-    /// if nothing changed.
+    /// Replace the cylinder's voxels outside `keep` with the local map points,
+    /// ignoring points outside it. Returns the column bbox of changed voxels.
     fn replace_region_voxels(
         &mut self,
         local_points: &[(f32, f32, f32)],
         bounds: &RegionBounds,
+        keep: &[RegionBounds],
         voxel_size: f32,
     ) -> Option<(i32, i32, i32, i32)> {
+        let kept = |k: VoxelKey| keep.iter().any(|r| r.contains_voxel(k, voxel_size));
         let new_set: AHashSet<VoxelKey> = local_points
             .iter()
             .map(|&p| voxelize(p, voxel_size))
+            .filter(|&k| !kept(k))
             .collect();
 
         let (x0, x1, y0, y1) = bounds.column_bbox(voxel_size);
@@ -589,7 +592,8 @@ impl Planner {
                     };
                     for &iz in zs {
                         let k = (ix, iy, iz);
-                        if bounds.contains_voxel(k, voxel_size) && !new_set.contains(&k) {
+                        if bounds.contains_voxel(k, voxel_size) && !new_set.contains(&k) && !kept(k)
+                        {
                             local.push(k);
                         }
                     }
@@ -1891,12 +1895,16 @@ mod region_tests {
     }
 
     #[test]
-    fn subtract_band_keeps_what_the_other_misses() {
-        let bands = |a, b| subtract_band(a, b).collect::<Vec<_>>();
-        assert_eq!(bands((0.0, 3.0), (-1.0, 2.0)), vec![(2.0, 3.0)]);
-        assert_eq!(bands((0.0, 3.0), (1.0, 2.0)), vec![(0.0, 1.0), (2.0, 3.0)]);
-        assert_eq!(bands((0.0, 3.0), (-1.0, 4.0)), vec![]);
-        assert_eq!(bands((0.0, 3.0), (4.0, 5.0)), vec![(0.0, 3.0)]);
+    fn region_intersects_by_footprint_and_band() {
+        let a = cyl(0.0, 0.0, 1.0);
+        assert!(a.intersects(&cyl(1.5, 0.0, 1.0)));
+        assert!(!a.intersects(&cyl(2.5, 0.0, 1.0)), "footprints apart");
+        let above = RegionBounds {
+            z_min: 1.5,
+            z_max: 3.0,
+            ..cyl(0.5, 0.0, 1.0)
+        };
+        assert!(!a.intersects(&above), "bands apart");
     }
 
     #[test]
@@ -1952,6 +1960,97 @@ mod region_tests {
             voxel_set(&p),
             voxel_set(&clean),
             "a tile straddling the live region went unloaded"
+        );
+        assert_eq!(surface_set(&p), surface_set(&clean));
+    }
+
+    /// big_world plus a 3x3 column box, 5 voxels tall, astride (4.0, 4.0).
+    fn boxed_world() -> Vec<(f32, f32, f32)> {
+        let vs = 0.1_f32;
+        let half = vs * 0.5;
+        let mut pts = big_world();
+        for ix in 39..42 {
+            for iy in 39..42 {
+                for iz in 0..5 {
+                    pts.push((
+                        ix as f32 * vs + half,
+                        iy as f32 * vs + half,
+                        iz as f32 * vs + half,
+                    ));
+                }
+            }
+        }
+        pts
+    }
+
+    /// A live region straddling the 2 m tiles around (4.0, 4.0) without
+    /// covering any of them.
+    fn straddling_live() -> RegionBounds {
+        RegionBounds {
+            origin_x: 4.0,
+            origin_y: 4.0,
+            radius: 1.5,
+            z_min: -0.1,
+            z_max: 2.0,
+        }
+    }
+
+    /// A tile only partly under a live region must not paste snapshot
+    /// geometry back where the live update cleared it.
+    #[test]
+    fn tile_straddling_a_live_region_keeps_what_live_cleared() {
+        let cfg = test_config();
+        let vs = cfg.voxel_size;
+        let snapshot = boxed_world();
+        let cleared = big_world();
+
+        let mut p = Planner::new(cfg.worker_threads);
+        let mut load = MapLoad::new(p.partition_full_map(&snapshot, (0.5, 0.5), &cfg));
+        assert!(load.apply_next_tile(&mut p, &cfg));
+
+        let live = straddling_live();
+        assert!(load.tiles.iter().all(|t| !live.covers_xy(&t.bounds)));
+        assert!(load.tiles.iter().any(|t| live.intersects(&t.bounds)));
+        p.update_region(&slice(&cleared, &live, vs), &live, &cfg);
+        load.region_applied(live);
+        while load.apply_next_tile(&mut p, &cfg) {}
+        assert!(load.finished());
+
+        let mut clean = Planner::new(cfg.worker_threads);
+        clean.update_global_map(&cleared, &cfg);
+        assert_eq!(
+            voxel_set(&p),
+            voxel_set(&clean),
+            "a straddling tile pasted the snapshot over the live region"
+        );
+        assert_eq!(surface_set(&p), surface_set(&clean));
+    }
+
+    /// A tile only partly under a live region must not delete what the live
+    /// update saw and the snapshot lacks.
+    #[test]
+    fn tile_straddling_a_live_region_keeps_what_live_saw() {
+        let cfg = test_config();
+        let vs = cfg.voxel_size;
+        let snapshot = big_world();
+        let seen = boxed_world();
+
+        let mut p = Planner::new(cfg.worker_threads);
+        let mut load = MapLoad::new(p.partition_full_map(&snapshot, (0.5, 0.5), &cfg));
+        assert!(load.apply_next_tile(&mut p, &cfg));
+
+        let live = straddling_live();
+        p.update_region(&slice(&seen, &live, vs), &live, &cfg);
+        load.region_applied(live);
+        while load.apply_next_tile(&mut p, &cfg) {}
+        assert!(load.finished());
+
+        let mut clean = Planner::new(cfg.worker_threads);
+        clean.update_global_map(&seen, &cfg);
+        assert_eq!(
+            voxel_set(&p),
+            voxel_set(&clean),
+            "a straddling tile deleted what the live region saw"
         );
         assert_eq!(surface_set(&p), surface_set(&clean));
     }

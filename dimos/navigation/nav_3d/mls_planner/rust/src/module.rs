@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -74,11 +75,6 @@ fn extract_and_partition(msg: &PointCloud2, config: &Config) -> Option<CloudPart
     ))
 }
 
-/// Tiles alone never replan, so a load cannot flood the path topic.
-fn replan_due(woke: bool, live_update: bool, load_finished: bool) -> bool {
-    woke || live_update || load_finished
-}
-
 #[derive(Module)]
 #[module(name = "mls_planner", setup = spawn_worker, teardown = stop_worker)]
 pub struct MlsPlanner {
@@ -128,6 +124,7 @@ pub struct MlsPlanner {
     pending: Shared<MapUpdate>,
     pending_full_map: Shared<CloudPartition>,
     active_goal: Shared<Xyz>,
+    goal_changed: Arc<AtomicBool>,
     wake: Arc<Notify>,
 
     worker: Option<tokio::task::JoinHandle<()>>,
@@ -139,6 +136,7 @@ impl MlsPlanner {
             pending: Arc::clone(&self.pending),
             pending_full_map: Arc::clone(&self.pending_full_map),
             active_goal: Arc::clone(&self.active_goal),
+            goal_changed: Arc::clone(&self.goal_changed),
             wake: Arc::clone(&self.wake),
             tf: self.tf.clone(),
             config: self.config.clone(),
@@ -203,6 +201,7 @@ impl MlsPlanner {
     /// Set or cancel the active goal from a click, then wake the worker.
     async fn on_goal(&mut self, msg: PointStamped) {
         *self.active_goal.lock().expect("goal mutex") = goal_position(&msg.point);
+        self.goal_changed.store(true, Ordering::SeqCst);
         self.wake.notify_one();
     }
 }
@@ -228,6 +227,7 @@ struct Worker {
     pending: Shared<MapUpdate>,
     pending_full_map: Shared<CloudPartition>,
     active_goal: Shared<Xyz>,
+    goal_changed: Arc<AtomicBool>,
     wake: Arc<Notify>,
     tf: Tf,
     config: Config,
@@ -245,12 +245,12 @@ impl Worker {
         let mut last_viz_at: Option<Instant> = None;
         loop {
             // Live updates apply before load tiles.
-            let woke = load.is_none();
-            if woke {
+            if load.is_none() {
                 self.wake.notified().await;
             } else {
                 tokio::task::yield_now().await;
             }
+            let goal_changed = self.goal_changed.swap(false, Ordering::SeqCst);
             let update = self.pending.lock().expect("pending mutex").take();
             let applied = match update {
                 Some(update) => {
@@ -274,7 +274,10 @@ impl Worker {
             if let Some(part) = full {
                 load = Some(self.start_load(&planner, part));
             }
-            let mut load_finished = false;
+            if goal_changed || live_update {
+                self.maybe_replan(&mut planner, &mut last_path_at).await;
+            }
+            // Tiles alone never replan, so a load cannot flood the path topic.
             if let Some(l) = load.as_mut() {
                 let tile_start = Instant::now();
                 let applied =
@@ -290,11 +293,8 @@ impl Worker {
                 if l.finished() {
                     info!(load_s = l.elapsed().as_secs_f64(), "full map load finished");
                     load = None;
-                    load_finished = true;
+                    self.maybe_replan(&mut planner, &mut last_path_at).await;
                 }
-            }
-            if replan_due(woke, live_update, load_finished) {
-                self.maybe_replan(&mut planner, &mut last_path_at).await;
             }
         }
     }
@@ -711,14 +711,6 @@ fn read_f32_le(buf: &[u8], off: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_a_tile_pass_skips_the_replan() {
-        assert!(!replan_due(false, false, false), "tile-only pass");
-        assert!(replan_due(true, false, false), "woken by a goal");
-        assert!(replan_due(false, true, false), "live update");
-        assert!(replan_due(false, false, true), "load finished");
-    }
 
     #[test]
     fn is_at_goal_respects_tolerance_and_ignores_z() {

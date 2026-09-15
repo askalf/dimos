@@ -116,7 +116,7 @@ def test_premap_defines_the_map_frame_and_waits_for_a_fix(module, tmp_path):
 
 
 def test_premap_stem_resolves_from_the_cwd(module, tmp_path, monkeypatch):
-    """A bare stem gets the suffix and is looked up beside the caller before the data dir."""
+    """A bare stem gets the suffix and is looked up in the working directory."""
     (tmp_path / "site.pc2.lcm").write_bytes(
         PointCloud2.from_numpy(np.zeros((5, 3), dtype=np.float32), timestamp=0.0).lcm_encode()
     )

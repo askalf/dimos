@@ -176,20 +176,18 @@ impl MLSPlanner {
         Ok(count)
     }
 
-    /// Apply the next pending tile through the region pipeline, skipping
-    /// what a later update_region covered. Returns how many remain.
-    fn apply_full_map_tile(&mut self, py: Python<'_>) -> usize {
-        let Some(load) = self.load.as_mut() else {
-            return 0;
-        };
+    /// Apply the next pending tile through the region pipeline, leaving what
+    /// a later update_region covered. None when no load is pending.
+    fn apply_full_map_tile(&mut self, py: Python<'_>) -> Option<usize> {
+        let load = self.load.as_mut()?;
         let config = &self.config;
         let planner = &mut self.planner;
         py.allow_threads(|| load.apply_next_tile(planner, config));
+        let remaining = load.remaining();
         if load.finished() {
             self.load = None;
-            return 0;
         }
-        load.remaining()
+        Some(remaining)
     }
 
     fn surface_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {

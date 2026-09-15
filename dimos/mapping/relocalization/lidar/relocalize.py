@@ -62,6 +62,13 @@ class _Prepared(NamedTuple):
     fine: PointCloud  # downsampled at voxel_fine, with normals
 
 
+class RelocAttempt(NamedTuple):
+    """One decided attempt: the ``world -> map`` fix if accepted, and what it was scored on."""
+
+    fix: Transform | None
+    result: RegistrationResult
+
+
 class RelocalizeConfig(BaseConfig):
     """The aligner's knobs for **one rig**. There is no universal setting.
 
@@ -139,9 +146,7 @@ MID360 = RelocalizeConfig(
 
 # A rig's name to its measured settings. Add an entry by running a study for
 # that rig (tune.md); do not retune an existing one for a new sensor.
-# The mid360 scales with the accept policy the go2 nav_3d stack runs: a wrong
-# hypothesis inside the mapped area scores 0.5 to 0.67, a right one 0.85 up, and
-# best of three RANSAC searches lands a right one most attempts.
+# The mid360 scales with the go2 nav_3d accept policy, from the sf office replays.
 GO2_NAV = MID360.model_copy(update={"fitness_threshold": 0.8, "ransac_restarts": 3})
 
 PRESETS: dict[str, RelocalizeConfig] = {"mid360": MID360, "go2-nav": GO2_NAV}
@@ -255,11 +260,9 @@ class LidarRelocalizer:
     def relocalize(
         self, local_map: PointCloud, world_frame: str, map_frame: str
     ) -> Transform | None:
-        return self.attempt(local_map, world_frame, map_frame)[0]
+        return self.attempt(local_map, world_frame, map_frame).fix
 
-    def attempt(
-        self, local_map: PointCloud, world_frame: str, map_frame: str
-    ) -> tuple[Transform | None, RegistrationResult]:
+    def attempt(self, local_map: PointCloud, world_frame: str, map_frame: str) -> RelocAttempt:
         """The ``world_frame -> map_frame`` transform, or ``None`` when nothing was good enough.
 
         Ready to publish: stamped with the frames the TF tree expects, and
@@ -272,8 +275,8 @@ class LidarRelocalizer:
         result = self.align(local_map)
         logger.info(f"align: fitness={result.fitness:.3f} rmse={result.inlier_rmse:.3f}")
         if result.fitness < self.config.fitness_threshold:
-            return None, result
+            return RelocAttempt(None, result)
         placement = Transform.from_matrix(
             np.asarray(result.transformation), frame_id=map_frame, child_frame_id=world_frame
         )
-        return placement.inverse(), result
+        return RelocAttempt(placement.inverse(), result)

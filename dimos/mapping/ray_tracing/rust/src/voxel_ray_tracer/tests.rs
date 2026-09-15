@@ -36,6 +36,16 @@ fn basic_config() -> Config {
     }
 }
 
+/// Seed a whole cloud and collect every created key.
+fn seed_all(map: &mut VoxelMap, points: &[(f32, f32, f32)], cfg: &Config) -> AHashSet<VoxelKey> {
+    let part = partition_seed(points, cfg.voxel_size, (0.0, 0.0, 0.0));
+    let mut created = AHashSet::new();
+    for tile in &part.tiles {
+        created.extend(seed_tile(map, tile, cfg));
+    }
+    created
+}
+
 #[test]
 fn update_map_drops_invalid_and_out_of_range_points() {
     let cfg = Config {
@@ -1474,7 +1484,7 @@ fn seed_matches_from_scratch_build() {
         .collect();
 
     let mut seeded = VoxelMap::default();
-    let created = seed_points(&mut seeded, &points, &cfg);
+    let created = seed_all(&mut seeded, &points, &cfg);
     let (reference, keys) = build_surface(&points, cfg.voxel_size, SEED_HEALTH);
 
     let mut created_sorted: Vec<VoxelKey> = created.iter().copied().collect();
@@ -1525,7 +1535,7 @@ fn seed_leaves_live_voxels_untouched() {
     update_map(&mut map, (0.0, 0.0, 0.0), &[(5.2, 0.2, 0.2)], &cfg);
     let before = map.voxels[&(5, 0, 0)].clone();
 
-    let created = seed_points(&mut map, &[(5.7, 0.7, 0.7), (6.5, 0.5, 0.5)], &cfg);
+    let created = seed_all(&mut map, &[(5.7, 0.7, 0.7), (6.5, 0.5, 0.5)], &cfg);
 
     assert_eq!(created.len(), 1);
     assert!(created.contains(&(6, 0, 0)));
@@ -1547,13 +1557,13 @@ fn second_seed_is_a_no_op() {
     let cfg = basic_config();
     let mut map = VoxelMap::default();
     let points = [(1.5, 1.5, 0.5), (2.5, 1.5, 0.5)];
-    assert_eq!(seed_points(&mut map, &points, &cfg).len(), 2);
+    assert_eq!(seed_points(&mut map, &points, &cfg), 2);
     let num_pts_before = map.voxels[&(1, 1, 0)].num_pts;
     let support_before = map.voxels[&(1, 1, 0)].support;
 
     let again = seed_points(&mut map, &points, &cfg);
 
-    assert!(again.is_empty());
+    assert_eq!(again, 0);
     assert_eq!(map.voxels.len(), 2);
     assert_eq!(map.voxels[&(1, 1, 0)].num_pts, num_pts_before);
     assert_eq!(map.voxels[&(1, 1, 0)].support, support_before);
@@ -1648,7 +1658,7 @@ fn seed_into_live_map_keeps_indexes_consistent() {
         let healths_before: AHashMap<VoxelKey, VoxelHealth> =
             map.voxels.iter().map(|(&k, v)| (k, v.health)).collect();
 
-        let created = seed_points(&mut map, &cloud, &cfg);
+        let created = seed_all(&mut map, &cloud, &cfg);
 
         for (key, health) in healths_before {
             assert_eq!(
@@ -1768,7 +1778,7 @@ fn live_rays_carve_seeded_voxels_they_pass_through() {
         ..basic_config()
     };
     let mut map = VoxelMap::default();
-    let created = seed_points(&mut map, &[(5.5, 0.5, 0.5)], &cfg);
+    let created = seed_all(&mut map, &[(5.5, 0.5, 0.5)], &cfg);
     assert!(created.contains(&(5, 0, 0)));
     let no_live = AHashSet::new();
     assert!(tuples(emit_points(&map, 1.0, None, 0, &no_live)).contains(&(5.5, 0.5, 0.5)));

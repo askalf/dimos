@@ -90,7 +90,6 @@ impl Mapper {
     pub fn seed_points(&mut self, points: &[Point]) -> usize {
         let pool = Arc::clone(&self.pool);
         pool.install(|| seed_points(&mut self.map, points, &self.config))
-            .len()
     }
 
     /// Make room for `additional` voxels ahead of a tiled seed load.
