@@ -44,13 +44,14 @@ HEIGHT_COLOR_STOPS = np.array(
 
 class ReplayServing:
     """Needs, from the module: ``config``, ``_ensure_store``, ``_replay_if_ready``,
-    ``_replay_index``, ``_replay_frames``, ``_tf_tree``, ``_frame_pose_at``,
-    ``_camera_frame``, ``_camera_hfov``, ``_encode_jpeg``."""
+    ``_replay_index``, ``_replay_frames``, ``_sharp_frames``, ``_tf_tree``,
+    ``_frame_pose_at``, ``_camera_frame``, ``_camera_hfov``, ``_encode_jpeg``."""
 
     config: Any
     _replay_index: dict[str, Any] | None
     _replay_lock: Any
     _replay_frames: OrderedDict[float, tuple[bytes, dict[str, Any]]]
+    _sharp_frames: OrderedDict[tuple[float, int, int], tuple[bytes, dict[str, Any]]]
 
     if TYPE_CHECKING:
 
@@ -139,8 +140,25 @@ class ReplayServing:
                 positions = positions + [positions[-1]] * (len(stamps) - len(positions))
         return {"frame": frame, "positions": positions}
 
-    def _replay_frame(self, ts: float) -> tuple[bytes, dict[str, Any]] | None:
-        """JPEG and camera pose of the image nearest *ts*, in a small LRU."""
+    def _replay_frame(
+        self, ts: float, max_size: int | None = None
+    ) -> tuple[bytes, dict[str, Any]] | None:
+        """JPEG and camera pose of the image nearest *ts*, in a small LRU.
+
+        *max_size* larger than the scrub size serves the SHARP re-encode a viewer standing
+        in front of a capture-pose marker asks for, out of its own small cache. The two
+        never share an entry: one stamp has two encodings, and a cache keyed on the stamp
+        alone handed whichever arrived first to both callers.
+        """
+        scrub_size = int(self.config.replay_frame_max_size)
+        size = scrub_size if max_size is None else int(max_size)
+        sharp = size > scrub_size
+        quality = int(
+            self.config.marker_sharp_jpeg_quality
+            if sharp
+            else self.config.replay_frame_jpeg_quality
+        )
+
         images = self._ensure_store().streams[self.config.image_stream_name]
         candidates = list(images.at(ts, tolerance=0.25))
         if not candidates:
@@ -151,15 +169,19 @@ class ReplayServing:
         # and the second one is served the first one's JPEG and pose. The stamp is
         # deterministic for a given observation, so the exact float is already a stable
         # key and rounding bought nothing.
-        key = float(obs.ts)
-        cached = self._replay_frames.get(key)
-        if cached is not None:
-            self._replay_frames.move_to_end(key)
-            return cached
-        jpeg = self._encode_jpeg(
-            obs.data, self.config.replay_frame_max_size, self.config.replay_frame_jpeg_quality
+        stamp = float(obs.ts)
+        cache: OrderedDict[Any, tuple[bytes, dict[str, Any]]] = (
+            self._sharp_frames if sharp else self._replay_frames
         )
-        meta: dict[str, Any] = {"ts": float(obs.ts), "hfov_deg": self._camera_hfov()}
+        key: Any = (stamp, size, quality) if sharp else stamp
+        limit = int(self.config.marker_sharp_cache_size) if sharp else 600
+
+        cached = cache.get(key)
+        if cached is not None:
+            cache.move_to_end(key)
+            return cached
+        jpeg = self._encode_jpeg(obs.data, size, quality)
+        meta: dict[str, Any] = {"ts": stamp, "hfov_deg": self._camera_hfov()}
         camera = self._camera_pose_of(obs)
         if camera is not None:
             meta.update(
@@ -167,7 +189,7 @@ class ReplayServing:
                 forward=[float(v) for v in camera[:3, 2]],
                 up=[float(v) for v in -camera[:3, 1]],
             )
-        self._replay_frames[key] = (jpeg, meta)
-        while len(self._replay_frames) > 600:
-            self._replay_frames.popitem(last=False)
+        cache[key] = (jpeg, meta)
+        while len(cache) > limit:
+            cache.popitem(last=False)
         return jpeg, meta

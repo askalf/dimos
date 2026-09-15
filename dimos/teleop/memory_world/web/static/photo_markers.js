@@ -12,11 +12,24 @@ export const IMAGE_RENDER_DISTANCE_M = 12.0;
 export const IMAGE_QUAD_BUDGET = 24;
 export const IMAGE_LOD_INTERVAL_S = 0.2;     // how often the visible set is recomputed
 
+// A second tier, for the photo you have actually walked up to. The thumbnail is 192 px,
+// which reads fine across the room and is visibly mush at arm's length, so a marker this
+// close is re-fetched from the recording at `MARKER_SHARP_SIZE_PX` and swapped in place.
+export const IMAGE_SHARP_DISTANCE_M = 4.0;
+// Hysteresis: upgrade at 4 m, drop back at 6. Equal thresholds make a viewer standing on
+// the boundary fetch and release the same photo every LOD tick.
+export const IMAGE_SHARP_RELEASE_M = 6.0;
+// Far smaller than IMAGE_QUAD_BUDGET on purpose. Each sharp texture is ~45x the pixels of
+// a thumbnail, so this is what bounds GPU memory, not the quad budget.
+export const IMAGE_SHARP_BUDGET = 6;
+export const MARKER_SHARP_SIZE_PX = 1280;    // the server clamps this to its own ceiling
+
 export const photoMarkerMethods = {
     setImagePoses(header, payloadArrayBuffer) {
         this._releaseAllThumbnails();
         this._thumbnailBytes.clear();
         this._thumbnailUndecodable.clear();
+        this._sharpUnavailable.clear();
         this._imagePoseMeta = [];
 
         const n = header.n | 0;
@@ -37,6 +50,10 @@ export const photoMarkerMethods = {
             ).multiply(faceBackward).multiply(standUpright);
             this._imagePoseMeta.push({
                 id: header.ids?.[i] ?? null,
+                // The recording stamp, which is how the sharp re-fetch names this frame.
+                // Null where the header did not carry one: that marker simply never
+                // upgrades, rather than fetching `t=undefined` and 404ing every tick.
+                ts: header.timestamps?.[i] ?? null,
                 rx: positions[i * 3 + 0],
                 ry: positions[i * 3 + 1],
                 rz: positions[i * 3 + 2],
@@ -111,6 +128,129 @@ export const photoMarkerMethods = {
         for (const index of wanted) {
             if (!this._imageQuadsByIndex.has(index)) this._decodeThumbnail(index);
         }
+
+        this._updateSharpTier(candidates, budget, scale);
+    },
+
+    /** Swap the nearest few quads to the recording's own frame instead of the thumbnail.
+     *
+     *  Runs off the SAME distance list the thumbnail pass just built, so a marker can only
+     *  become sharp if it is already drawn -- there is no second notion of "near", and no
+     *  fetch for a photo that is not on screen.
+     */
+    _updateSharpTier(candidates, budget, scale) {
+        const sharpBudget = Math.min(IMAGE_SHARP_BUDGET, budget);
+        const upgradeAt = IMAGE_SHARP_DISTANCE_M / scale;
+        const releaseAt = IMAGE_SHARP_RELEASE_M / scale;
+
+        const wantSharp = new Set();
+        if (sharpBudget > 0) {
+            // `candidates` is already sorted nearest-first by the thumbnail pass.
+            for (const [dist, index] of candidates) {
+                if (wantSharp.size >= sharpBudget) break;
+                if (dist > upgradeAt) break;
+                if (this._sharpUnavailable.has(index)) continue;
+                wantSharp.add(index);
+            }
+        }
+        // Hysteresis, and only for quads that are still drawn: one that is already sharp
+        // keeps its texture out to the release radius rather than flipping at the edge.
+        const distanceOf = new Map(candidates.map(([dist, index]) => [index, dist]));
+        for (const index of this._sharpByIndex) {
+            if (!this._imageQuadsByIndex.has(index)) continue;
+            const dist = distanceOf.get(index);
+            if (dist !== undefined && dist <= releaseAt && wantSharp.size < sharpBudget) {
+                wantSharp.add(index);
+            }
+        }
+
+        for (const index of Array.from(this._sharpByIndex)) {
+            if (!wantSharp.has(index)) this._downgradeToThumbnail(index);
+        }
+        for (const index of wantSharp) {
+            if (!this._sharpByIndex.has(index)) this._upgradeToSharp(index);
+        }
+    },
+
+    /** Fetch this marker's frame at full size and swap it onto the quad already drawn. */
+    _upgradeToSharp(index) {
+        if (this._sharpFetching.has(index)) return;
+        const meta = this._imagePoseMeta[index];
+        if (!meta || meta.ts === null || meta.ts === undefined) return;
+        if (!this._imageQuadsByIndex.has(index)) return;   // nothing on screen to swap onto
+        const base = this.baseUrl ?? '';
+        this._sharpFetching.add(index);
+        const url = `${base}/replay/frame?t=${meta.ts}&size=${MARKER_SHARP_SIZE_PX}`;
+        fetch(url)
+            .then((response) => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.blob();
+            })
+            .then((blob) => createImageBitmap(blob, { imageOrientation: 'flipY' }))
+            .then((bitmap) => {
+                this._sharpFetching.delete(index);
+                const quad = this._imageQuadsByIndex.get(index);
+                // The viewer can walk away while the fetch is in flight; there is then no
+                // quad to swap onto and the bitmap is dropped. A quad that was released
+                // and rebuilt meanwhile is the SAME marker, so swapping onto it is right.
+                if (!quad) { bitmap.close(); return; }
+                const texture = new THREE.Texture(bitmap);
+                texture.flipY = false;
+                texture.colorSpace = THREE.SRGBColorSpace;
+                texture.generateMipmaps = false;
+                texture.minFilter = THREE.LinearFilter;
+                texture.needsUpdate = true;
+                this._swapQuadTexture(quad, texture);
+                this._sharpByIndex.add(index);
+            })
+            .catch((e) => {
+                this._sharpFetching.delete(index);
+                // A recording can simply have no frame at this stamp (the route answers
+                // 404), and retrying it every 0.2 s would hold a slot in the small sharp
+                // budget for good -- the same failure mode `_thumbnailUndecodable` exists
+                // to stop for decoding. One attempt per marker per recording.
+                this._sharpUnavailable.add(index);
+                this.diag('marker_sharp_failed', { index, error: String(e.message || e) });
+            });
+    },
+
+    /** Put the thumbnail back, so the sharp textures stay bounded by their own budget. */
+    _downgradeToThumbnail(index) {
+        this._sharpByIndex.delete(index);
+        const quad = this._imageQuadsByIndex.get(index);
+        const bytes = this._thumbnailBytes.get(index);
+        if (!quad || !bytes) return;
+        const blob = new Blob([bytes], { type: 'image/jpeg' });
+        createImageBitmap(blob, { imageOrientation: 'flipY' }).then((bitmap) => {
+            // Re-approached while the decode was in flight: the sharp texture is the one
+            // wanted now, so keep it rather than stepping back down onto the thumbnail.
+            if (!this._imageQuadsByIndex.has(index) || this._sharpByIndex.has(index)) {
+                bitmap.close();
+                return;
+            }
+            const texture = new THREE.Texture(bitmap);
+            texture.flipY = false;
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.generateMipmaps = false;
+            texture.minFilter = THREE.LinearFilter;
+            texture.needsUpdate = true;
+            this._swapQuadTexture(this._imageQuadsByIndex.get(index), texture);
+        }).catch(() => {});   // the thumbnail already drew once; leaving the sharp one is fine
+    },
+
+    /** Replace a quad's texture, releasing the one it was showing.
+     *
+     *  `dispose()` alone drops only the GPU copy -- the ImageBitmap behind it stays in
+     *  memory until it is closed, which at 1280x720 is ~3.5 MB a swap.
+     */
+    _swapQuadTexture(quad, texture) {
+        const old = quad.material.map;
+        quad.material.map = texture;
+        quad.material.needsUpdate = true;
+        if (old) {
+            if (old.image && old.image.close) old.image.close();
+            old.dispose();
+        }
     },
 
     _decodeThumbnail(index) {
@@ -158,6 +298,7 @@ export const photoMarkerMethods = {
     },
 
     _releaseThumbnail(index) {
+        this._sharpByIndex.delete(index);
         const quad = this._imageQuadsByIndex.get(index);
         if (!quad) return;
         this._imageQuadGroup.remove(quad);

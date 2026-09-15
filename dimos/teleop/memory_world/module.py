@@ -258,6 +258,16 @@ class MemoryWorldConfig(ModuleConfig):
     # The camera frame shown while scrubbing, fetched one at a time.
     replay_frame_max_size: int = 480
     replay_frame_jpeg_quality: int = 60
+    # A capture-pose marker the viewer has walked up to is re-fetched at this size, so a
+    # photo you are standing in front of is not the 192 px thumbnail that reads fine from
+    # across the room. It is the CEILING the /replay/frame route clamps its `size` to, not
+    # an upscale: a smaller source frame is served at its own size.
+    marker_sharp_max_size: int = 1280
+    marker_sharp_jpeg_quality: int = 85
+    # Sharp frames are far larger than the scrub frames, so they get their OWN small LRU
+    # rather than sharing the 600-entry one -- a walk past two dozen markers would
+    # otherwise evict the whole scrub cache, and 600 sharp frames is most of a gigabyte.
+    marker_sharp_cache_size: int = PydanticField(default=48, gt=0)
 
 
 class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, Module):
@@ -310,6 +320,11 @@ class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, 
         self._replay_error: str | None = None  # a failed build is not retried until a reopen
         self._replay_index: dict[str, Any] | None = None
         self._replay_frames: OrderedDict[float, tuple[bytes, dict[str, Any]]] = OrderedDict()
+        # Keyed by (ts, max_size, quality): the same frame is served at two sizes, and a
+        # cache keyed on the stamp alone would hand a close-up viewer the scrub thumbnail.
+        self._sharp_frames: OrderedDict[tuple[float, int, int], tuple[bytes, dict[str, Any]]] = (
+            OrderedDict()
+        )
         self._camera_hfov_deg: float | None = None
         self._camera_frame_cache: str | None = None
         self._active_query_result: dict[str, Any] | None = None
@@ -433,14 +448,24 @@ class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, 
             return Response(content=content, media_type="application/octet-stream", headers=headers)
 
         @app.get(f"{self.config.client_route}/replay/frame")  # type: ignore[misc]
-        async def memory_world_replay_frame(t: float) -> Response:
-            """The camera frame nearest *t* as JPEG; its pose rides in a header."""
+        async def memory_world_replay_frame(t: float, size: int = 0) -> Response:
+            """The camera frame nearest *t* as JPEG; its pose rides in a header.
+
+            *size* asks for the sharp re-encode a viewer standing in front of a
+            capture-pose marker wants. It is CLAMPED to `marker_sharp_max_size`, so a
+            client cannot make the server re-encode a 1280x720 frame at 8000 px -- the
+            work is done on the request thread and the cost is the operator's, not the
+            caller's. 0, the default, means the ordinary scrub size.
+            """
+            requested = None
+            if size > 0:
+                requested = min(int(size), int(self.config.marker_sharp_max_size))
             # Guarded like its two siblings above. Without this a recording with no image
             # stream -- `image_stream_name` left as "" -- raises KeyError('') out of the
             # handler and FastAPI turns it into a bare 500, where the same route answers
             # a plain 404 when it merely has no frame near *t*.
             try:
-                found = await asyncio.to_thread(self._replay_read, self._replay_frame, t)
+                found = await asyncio.to_thread(self._replay_read, self._replay_frame, t, requested)
             except HTTPException:
                 raise
             except Exception as error:
@@ -792,6 +817,7 @@ class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, 
             self._store = open_recording(self.config.store_path)
             self._replay_index = None
             self._replay_frames.clear()
+            self._sharp_frames.clear()
             self._drop_visual_index()
             self._tf_tree_cache = None  # before naming: the names are picked against the tree
             self._tf_missing = False

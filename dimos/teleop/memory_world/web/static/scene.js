@@ -125,6 +125,9 @@ export class WorldScene {
         this._thumbnailBytes = new Map();             // index -> ArrayBuffer, decoded on demand
         this._thumbnailDecoding = new Set();
         this._thumbnailUndecodable = new Set();       // index -> tried once, will not decode
+        this._sharpByIndex = new Set();               // quads showing the full-size frame
+        this._sharpFetching = new Set();              // a /replay/frame request in flight
+        this._sharpUnavailable = new Set();           // the recording has no frame there
         this._imageQuadGeom = new THREE.PlaneGeometry(IMAGE_QUAD_W, IMAGE_QUAD_H);
         this._imageLodAccumS = IMAGE_LOD_INTERVAL_S;
         this._quality = 0;                            // index into QUALITY_LEVELS
@@ -300,6 +303,7 @@ export class WorldScene {
             textures: info.memory.textures,
             geometries: info.memory.geometries,
             live_quads: this._imageQuadsByIndex.size,
+            sharp_quads: this._sharpByIndex.size,
             images_visible: this._imageQuadGroup.visible,
             cloud_visible: Boolean(this._pointsObj && this._pointsObj.visible),
             quality: this._quality,

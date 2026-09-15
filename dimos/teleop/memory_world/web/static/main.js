@@ -293,6 +293,10 @@ function buildScene() {
     if (scene) scene.dispose();
     try {
         scene = new WorldScene(diag, backgroundMode);
+        // Where the scene fetches a marker's sharp frame from. Set here rather than read
+        // off `window.location` inside the scene, so the one place that already computes
+        // this route prefix stays the only place that computes it.
+        scene.baseUrl = baseUrl;
         diag('scene_constructed');
         tickers = [];
         scene.onTick = (dt) => { for (const tick of tickers) tick(dt); };
