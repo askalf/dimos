@@ -6,6 +6,7 @@
 
 import * as THREE from 'https://esm.sh/three@0.160.0';
 import { desktopLookAngles } from '/static_mw/world_frame.js';
+import { scoreText } from './score_units.js';
 
 const DEFAULT_QUESTION = 'a chair';
 // The windowed question the "Asking about part of it" station runs, and the slice it
@@ -316,8 +317,11 @@ export class Tour {
             return this._asked ? `Nothing in the recording matched "${this.question}".` : 'Asking now…';
         }
         const best = r.clusters[0];
+        // NOT hardcoded "cosine" any more: that word was written when the embedding
+        // engine was the only one, and a hyperspace item answer's number is a detector
+        // confidence, not a cosine. `scoreText` names whichever it actually is.
         return `Just now: ${r.count} place${r.count === 1 ? '' : 's'} for "${r.queryText}",`
-            + ` the closest at cosine ${best.peak.toFixed(3)}.`;
+            + ` the closest at ${scoreText(r.engine, r.kind, best.peak)}.`;
     }
 
     _clusterLine() {
@@ -327,7 +331,8 @@ export class Tour {
             return this._asked ? 'That question matched no place in this recording.' : 'No answer yet.';
         }
         const best = r.clusters[0];
-        return `${r.count} place${r.count === 1 ? '' : 's'} for "${r.queryText}"; the best scores ${best.peak.toFixed(2)}.`;
+        return `${r.count} place${r.count === 1 ? '' : 's'} for "${r.queryText}"; `
+            + `the best is ${scoreText(r.engine, r.kind, best.peak)}.`;
     }
 
     /** What the windowed question came back with, in the station's own words. */

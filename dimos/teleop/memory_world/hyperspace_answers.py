@@ -169,6 +169,10 @@ class HyperspaceAnswers:
 
     def _draw_hyperspace_answer(self, found: FoundObjects) -> None:
         query = found.query or "that"
+        # Read BEFORE `confidence` or `extent`: both mean different things per kind, and
+        # neither field says which. It also rides out on the answer, because `engine`
+        # alone no longer says what scale the scores are on.
+        kind = found.kind or "item"
         objects = list(found.objects)
         if not objects:
             # Refused and empty are different facts, and the one an agent most needs
@@ -182,6 +186,7 @@ class HyperspaceAnswers:
             self._publish_query_result(
                 MemoryQueryResult(
                     engine="hyperspace",
+                    kind=kind,
                     query_text=query,
                     clusters=[],
                     answer=answer,
@@ -193,9 +198,6 @@ class HyperspaceAnswers:
             return
 
         objects = _one_per_place(objects)
-        # Read BEFORE `confidence` or `extent`: both mean different things per kind, and
-        # neither field says which it is.
-        kind = found.kind or "item"
         fallback_radius = float(self.config.place_radius_m)
         clusters: list[ClusterSummary] = []
         points: list[HighlightPoint] = []
@@ -234,6 +236,7 @@ class HyperspaceAnswers:
         query_id = self._publish_query_result(
             MemoryQueryResult(
                 engine="hyperspace",
+                kind=kind,
                 query_text=query,
                 clusters=clusters,
                 answer=answer,

@@ -5,6 +5,7 @@
 import * as THREE from 'https://esm.sh/three@0.160.0';
 import { sightLineFor } from '/static_mw/evidence.js';
 import { desktopLookAngles } from '/static_mw/world_frame.js';
+import { scoreText } from './score_units.js';
 
 const ROUTE_START_COLOR = 0xffd166;
 const ROUTE_COLOR = 0x64ff8f;
@@ -21,6 +22,9 @@ export class ResultsNav {
         this.ui = ui;
         this.clusters = [];
         this.queryText = '';
+        // The pair that says what scale `cluster.peak` is on; see score_units.js.
+        this.engine = 'siglip';
+        this.kind = 'embedding';
         this.current = -1;
         this.route = null;
         this._routeGroup = new THREE.Group();
@@ -52,6 +56,8 @@ export class ResultsNav {
         this.clusters = msg.clusters || [];
         this.queryId = msg.query_id || null;
         this.queryText = msg.query_text || '';
+        this.engine = msg.engine || 'siglip';
+        this.kind = msg.kind || 'embedding';
         this.current = -1;
         this.clearRoute();
         this.scene.clusterFilter = -1;
@@ -320,7 +326,7 @@ export class ResultsNav {
         const seen = views > 0 ? ` · ${views} view${views === 1 ? '' : 's'}` : '';
         ui.label.textContent = k < 0
             ? `${this.queryText} — press ▶ to visit the best`
-            : `${this.queryText} · ${cluster.peak.toFixed(2)}${seen}`;
+            : `${this.queryText} · ${scoreText(this.engine, this.kind, cluster.peak)}${seen}`;
         if (ui.navigateBtn) ui.navigateBtn.textContent = this.route && this.route.cluster === k ? `Route ${this.route.length_m} m` : 'Navigate';
     }
 }

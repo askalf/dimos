@@ -108,4 +108,17 @@ class MemoryQueryResult(BaseModel):
     # are the thing's own measured position. A viewer that described both the same
     # way would be wrong about one of them.
     engine: Literal["siglip", "hyperspace"] = "siglip"
+    # What produced the numbers in `clusters`, because `engine` alone no longer says.
+    # "hyperspace" now covers an item answer, whose score is OWLv2's calibrated box
+    # confidence, AND a heatmap or area answer, whose score is a CELL'S -- two scales
+    # under one engine name. So `(engine, kind)` is what says whether two scores may be
+    # compared, and either alone is a guess.
+    #
+    # It is PROVENANCE, not units, and it sits on the ANSWER rather than on each cluster:
+    # every cluster in one answer came from one engine and one kind, so a per-cluster tag
+    # would be the same fact repeated N times, and repeated facts drift. Two quantities
+    # can share a range and still not be comparable, which is exactly the [0, 1] case
+    # here -- `ClusterSummary.score` has already meant two incomparable things once, and
+    # the bounds written for the first rejected every answer from the second.
+    kind: Literal["embedding", "item", "heatmap", "area"] = "embedding"
     query_text: str = Field(default="", max_length=400)
