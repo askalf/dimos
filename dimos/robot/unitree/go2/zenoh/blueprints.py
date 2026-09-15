@@ -37,6 +37,7 @@ so a failure can be bisected by dropping down a level:
   for when the MID-360 hangs off this box rather than the robot.
 """
 
+import os
 from typing import Any
 
 from dimos.core.baked_host import baked_host
@@ -471,6 +472,12 @@ go2_zenoh_motion_pointlio = autoconnect(
 # declines to draw what already arrived. The clouds stay on the robot: `lidar` and
 # `lidar_raw` are the raw sweeps, `local_map_fine` and `global_map` the maps the local
 # map already summarises, and `imu` is 200 Hz of something nothing draws.
+# go2web's zenoh router, named rather than scouted: this stack's whole point is
+# that the robot is on the far side of wifi, where multicast scouting finds nothing
+# (docs/usage/transports/zenoh.md). Overridable for another rig, and --robot-ip
+# still adds its own endpoint alongside this one.
+GO2_ROUTER = os.environ.get("DIMOS_GO2_ROUTER", "tcp/go22:7447")
+
 go2_viewer = autoconnect(
     vis_module(
         viewer_backend=global_config.viewer,
@@ -496,4 +503,12 @@ go2_viewer = autoconnect(
             "max_hz": {"world/local_map": 4.0, "world/surface_map": 1.0},
         },
     ),
-).global_config(transport="zenoh", n_workers=3, robot_model="unitree_go2")
+).global_config(
+    transport="zenoh",
+    # A CLIENT of that router, not a peer: the router forwards to its clients and
+    # never between peers, so a peer here links to it and still sees nothing.
+    zenoh_mode="client",
+    zenoh_connect=GO2_ROUTER,
+    n_workers=3,
+    robot_model="unitree_go2",
+)
