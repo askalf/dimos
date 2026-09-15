@@ -72,50 +72,6 @@ def test_progress_columns_shed_speed_and_eta_when_narrow() -> None:
         assert any(isinstance(c, BarColumn) and c.bar_width is None for c in cols)
 
 
-def test_bar_draws_inline_and_erases_itself(monkeypatch, capsys) -> None:
-    """The transfer bar stays inline so the terminal above it stays visible: no
-    alternate screen, no mode changes. Every redraw returns to column one and
-    clears the row, and the bar is erased when the transfer ends so only the
-    summary line printed after it remains."""
-    import time
-
-    from dimos.cli import theme
-
-    monkeypatch.setattr(theme, "enabled", lambda: True)
-    monkeypatch.setattr(theme, "term_width", lambda: 80)
-    with cli._bar("recording_go2_office_2026-09-08.db") as tick:
-        tick("upload", 1, 4)
-        time.sleep(0.3)  # let the refresher draw a few frames
-    out = capsys.readouterr().out
-    assert "\x1b[?1049h" not in out and "?1007" not in out, "inline: no alt screen, no modes"
-    assert "\x1b[?25l" in out and "\x1b[?25h" in out, "cursor hidden while drawing"
-    assert "uploading" in out and "\r" in out and "\x1b[K" in out, "rich's line, drawn with \\r"
-    # The property that survives a resize: never move the cursor up a row count,
-    # never end a frame with a newline. Reflow has nothing to desync.
-    import re as _re
-
-    assert not _re.search(r"\x1b\[\d*F", out), "no cursor-up: that is what smeared on resize"
-    assert "\n" not in out, "no trailing newline: the cursor never leaves the row"
-    assert out.rstrip("\x1b[?25h").endswith("\r\x1b[K"), (
-        "row wiped at the end, summary prints after"
-    )
-
-
-def test_ticker_sheds_columns_when_the_window_narrows() -> None:
-    from rich.progress import Progress, TimeRemainingColumn, TransferSpeedColumn
-
-    bar = Progress(
-        *cli._progress_columns(120), console=Console(file=io.StringIO(), force_terminal=True)
-    )
-    tick = cli._Ticker(bar, "rec.db", width=120)
-    tick.fit(120)  # still wide: keeps speed and ETA
-    assert any(isinstance(c, TransferSpeedColumn) for c in bar.columns)
-    tick.fit(60)  # window narrowed: sheds them so the line stays one row
-    assert not any(isinstance(c, (TransferSpeedColumn, TimeRemainingColumn)) for c in bar.columns)
-    tick.fit(120)  # and widened again: restores them
-    assert any(isinstance(c, TransferSpeedColumn) for c in bar.columns)
-
-
 def test_bar_is_silent_off_a_terminal(monkeypatch, capsys) -> None:
     """Piped or in CI there is no bar at all, so a log gets just the summary line."""
     from dimos.cli import theme
@@ -124,18 +80,3 @@ def test_bar_is_silent_off_a_terminal(monkeypatch, capsys) -> None:
     with cli._bar("rec.db") as tick:
         tick("upload", 1, 2)  # a no-op, must not raise
     assert capsys.readouterr().out == ""
-
-
-def test_render_line_is_one_row_under_the_width() -> None:
-    """A row that wraps makes the inline redraw drift down the screen."""
-    from rich.progress import Progress
-
-    from dimos.cli import theme
-
-    bar = Progress(
-        *cli._progress_columns(50), console=Console(file=io.StringIO(), force_terminal=True)
-    )
-    cli._Ticker(bar, "recording_go2_office_2026-09-08.db", width=50)("upload", 3, 10)
-    line = cli._render_line(bar, 50)
-    assert "\n" not in line and theme.visible_len(line) <= 49
-    assert "uploading" in line

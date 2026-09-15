@@ -21,7 +21,6 @@ import contextlib
 from datetime import datetime, timezone
 import functools
 from pathlib import Path
-import threading
 from typing import Any
 
 import typer
@@ -138,16 +137,9 @@ class _Ticker:
     and a speed and ETA that describe this phase rather than the last one.
     """
 
-    def __init__(self, bar: Any, name: str, width: int | None = None) -> None:
+    def __init__(self, bar: Any, name: str) -> None:
         self.bar, self.name, self.phase = bar, _short(name), "reading"
-        self.wide = None if width is None else width >= _WIDE
         self.task = bar.add_task(f"reading {self.name}", total=None)
-
-    def fit(self, cols: int) -> None:
-        """Shed or restore speed and ETA as the window crosses the threshold."""
-        if self.wide is not None and (cols >= _WIDE) != self.wide:
-            self.bar.columns = tuple(_progress_columns(cols))
-            self.wide = cols >= _WIDE
 
     def __call__(self, phase: str, done: int, total: int) -> None:
         if phase != self.phase:
@@ -158,68 +150,26 @@ class _Ticker:
         self.bar.update(self.task, completed=done, total=total or None)
 
 
-def _render_line(progress: Any, width: int) -> str:
-    """Rich's bar as a single row of text, kept a column short of the width.
-
-    A row that wraps is what makes an inline redraw drift down the screen, and
-    some terminals treat a row exactly as wide as the window as wrapped too.
-    """
-    from rich.console import Console
-    from rich.text import Text
-
-    console = Console(width=max(40, width - 1), force_terminal=True, color_system="truecolor")
-    with console.capture() as cap:
-        console.print(progress.get_renderable(), end="")
-    text = Text.from_ansi(cap.get().split("\n")[0])
-    text.truncate(max(1, width - 1), overflow="ellipsis")
-    with console.capture() as cap:
-        console.print(text, end="", soft_wrap=True)
-    return cap.get()
-
-
 @contextlib.contextmanager
 def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
-    """A transfer bar drawn inline, so the terminal above it stays visible.
-
-    Rich renders the line; our own Live places it, returning to column one and
-    clearing the row on every redraw, and the line is kept under the width so
-    it never wraps. That is what stops a resize from compounding into a smear:
-    a contraction leaves at most one stale fragment above the bar, which the
-    next expansion overwrites. The bar is transient; the summary line printed
-    after it is what stays.
-    """
+    """Rich's own progress bar. Inline and transient; the summary line printed
+    after it is what stays. Note: like any inline bar (rich's, pip's, curl's) it
+    can smear if the window is resized mid-transfer, because the terminal reflows
+    the line it already drew. Only the alternate screen avoids that, at the cost
+    of taking over the terminal."""
     from dimos.cli import theme
 
-    if not theme.enabled():  # piped or CI: no bar to draw, just the line printed after
+    if not theme.enabled():  # piped or CI: draw nothing, just the summary line after
         yield lambda phase, done, total: None
         return
 
+    import shutil
+
     from rich.progress import Progress
 
-    width = theme.term_width()
-    progress = Progress(*_progress_columns(width), auto_refresh=False)  # a model; we draw it
-    ticker = _Ticker(progress, name, width)
-    line, stop = theme.Line(), threading.Event()
-
-    def refresh() -> None:
-        while not stop.is_set():
-            try:
-                cols = theme.term_width()
-                ticker.fit(cols)
-                line.update(_render_line(progress, cols))
-            except Exception:
-                return  # a bar must never break the transfer; go quiet instead
-            stop.wait(0.1)
-
-    with line:
-        thread = threading.Thread(target=refresh, daemon=True, name="dimos-progress")
-        thread.start()
-        try:
-            yield ticker
-        finally:
-            stop.set()
-            thread.join(1.0)
-            line.clear()
+    width = shutil.get_terminal_size((100, 24)).columns
+    with Progress(*_progress_columns(width), transient=True) as bar:
+        yield _Ticker(bar, name)
 
 
 @handle_fail
