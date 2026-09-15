@@ -70,3 +70,70 @@ def test_progress_columns_shed_speed_and_eta_when_narrow() -> None:
     assert not any(isinstance(c, (TransferSpeedColumn, TimeRemainingColumn)) for c in narrow)
     for cols in (wide, narrow):  # the bar flexes at any width, so the line fits
         assert any(isinstance(c, BarColumn) and c.bar_width is None for c in cols)
+
+
+def test_bar_draws_on_the_alternate_screen_and_mutes_echo(monkeypatch) -> None:
+    """The transfer bar must repaint whole on the alt screen. An inline bar cannot
+    survive the terminal reflowing a wide line into two rows on a resize."""
+    import rich.live
+    from rich.progress import Progress
+
+    from dimos.cli import theme
+
+    seen: dict = {}
+
+    class FakeLive:
+        def __init__(self, renderable=None, **kw):
+            seen.update(kw)
+            seen["renderable"] = renderable
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+    monkeypatch.setattr(rich.live, "Live", FakeLive)
+    muted: list = []
+    monkeypatch.setattr(theme, "enabled", lambda: True)
+    monkeypatch.setattr(theme, "_mute_echo", lambda: muted.append("mute") or ("fd", "saved"))
+    monkeypatch.setattr(theme, "_restore_echo", lambda s: muted.append("restore"))
+    with cli._bar("rec.db") as tick:
+        tick("upload", 1, 2)
+    assert seen.get("screen") is True and seen.get("transient") is True
+    assert isinstance(seen["renderable"], Progress)
+    assert muted == ["mute", "restore"], "echo muted for the transfer, restored after"
+
+
+def test_ticker_sheds_columns_when_the_window_narrows(monkeypatch) -> None:
+    import os
+
+    from rich.progress import Progress, TimeRemainingColumn, TransferSpeedColumn
+
+    bar = Progress(
+        *cli._progress_columns(120), console=Console(file=io.StringIO(), force_terminal=True)
+    )
+    assert any(isinstance(c, TransferSpeedColumn) for c in bar.columns)
+    widths = iter([120, 60])
+    monkeypatch.setattr(
+        cli.shutil, "get_terminal_size", lambda fb=None: os.terminal_size((next(widths), 24))
+    )
+    tick = cli._Ticker(bar, "rec.db", width=120)
+    tick("upload", 1, 10)  # still wide: keeps speed and ETA
+    assert any(isinstance(c, TransferSpeedColumn) for c in bar.columns)
+    tick("upload", 2, 10)  # window narrowed: sheds them so the line stays one row
+    assert not any(isinstance(c, (TransferSpeedColumn, TimeRemainingColumn)) for c in bar.columns)
+
+
+def test_bar_is_silent_off_a_terminal(monkeypatch) -> None:
+    """Piped or in CI there is no bar at all, so a log gets just the summary line."""
+    import rich.live
+
+    from dimos.cli import theme
+
+    built: list = []
+    monkeypatch.setattr(rich.live, "Live", lambda *a, **kw: built.append(kw) or None)
+    monkeypatch.setattr(theme, "enabled", lambda: False)
+    with cli._bar("rec.db") as tick:
+        tick("upload", 1, 2)  # a no-op, must not raise
+    assert built == [], "no Live, no alt screen, nothing drawn"

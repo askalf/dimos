@@ -21,6 +21,7 @@ import contextlib
 from datetime import datetime, timezone
 import functools
 from pathlib import Path
+import shutil
 from typing import Any
 
 import typer
@@ -99,6 +100,9 @@ def _short(name: str, n: int = 30) -> str:
     return name[: keep - keep // 2] + "…" + name[len(name) - keep // 2 :]
 
 
+_WIDE = 90  # columns; below this the bar sheds speed and ETA to stay one row
+
+
 def _progress_columns(width: int) -> list[Any]:
     """Columns for the upload/pull bar, shed to fit the terminal.
 
@@ -121,7 +125,7 @@ def _progress_columns(width: int) -> list[Any]:
         TaskProgressColumn(),
         DownloadColumn(),
     ]
-    if width >= 90:
+    if width >= _WIDE:
         cols += [TransferSpeedColumn(), TimeRemainingColumn()]
     return cols
 
@@ -134,11 +138,17 @@ class _Ticker:
     and a speed and ETA that describe this phase rather than the last one.
     """
 
-    def __init__(self, bar: Any, name: str) -> None:
+    def __init__(self, bar: Any, name: str, width: int | None = None) -> None:
         self.bar, self.name, self.phase = bar, _short(name), "reading"
+        self.wide = None if width is None else width >= _WIDE
         self.task = bar.add_task(f"reading {self.name}", total=None)
 
     def __call__(self, phase: str, done: int, total: int) -> None:
+        if self.wide is not None:  # shed or restore speed and ETA as the window changes
+            cols = shutil.get_terminal_size((100, 24)).columns
+            if (cols >= _WIDE) != self.wide:
+                self.bar.columns = tuple(_progress_columns(cols))
+                self.wide = cols >= _WIDE
         if phase != self.phase:
             self.bar.remove_task(self.task)
             label = f"{_PHASE.get(phase, phase)} {self.name}"
@@ -149,13 +159,27 @@ class _Ticker:
 
 @contextlib.contextmanager
 def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
-    import shutil
+    """A transfer bar that survives a window resize.
 
+    Drawn on the alternate screen and repainted whole every frame, the same fix
+    as the login wait. An inline bar cannot be made safe: once the terminal
+    reflows a wide line into two rows, the cursor-up redraw lands under the old
+    frame instead of over it. The bar is transient either way; the line that
+    stays is the summary printed after it.
+    """
+    from dimos.cli import theme
+
+    if not theme.enabled():  # piped or CI: no bar to draw, just the line printed after
+        yield lambda phase, done, total: None
+        return
+
+    from rich.live import Live
     from rich.progress import Progress
 
     width = shutil.get_terminal_size((100, 24)).columns
-    with Progress(*_progress_columns(width), transient=True) as bar:
-        yield _Ticker(bar, name)
+    progress = Progress(*_progress_columns(width), auto_refresh=False)  # the Live below renders it
+    with theme.muted_input(), Live(progress, screen=True, transient=True, refresh_per_second=10):
+        yield _Ticker(progress, name, width)
 
 
 @handle_fail

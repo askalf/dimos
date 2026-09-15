@@ -336,3 +336,12 @@ def test_fullscreen_live_tolerates_a_non_tty_stdin(
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     with theme.Live(fullscreen=True) as live:
         live.update(["x"])  # reaching here without raising is the assertion
+
+
+def test_muted_input_is_a_no_op_off_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(theme, "enabled", lambda: False)
+    calls: list[str] = []
+    monkeypatch.setattr(theme, "_mute_echo", lambda: calls.append("mute"))
+    with theme.muted_input():
+        pass
+    assert calls == [], "nothing to mute when not drawing to a terminal"

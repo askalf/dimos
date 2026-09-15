@@ -27,6 +27,7 @@ this file only for its palette.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+import contextlib
 import os
 from pathlib import Path
 import re
@@ -201,6 +202,17 @@ def _restore_echo(state: object | None) -> None:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
     except Exception:
         pass
+
+
+@contextlib.contextmanager
+def muted_input() -> Iterator[None]:
+    """Mute terminal echo around a fullscreen view, so a touchpad scroll's
+    arrow-key escapes are not painted over it. A no-op off a terminal."""
+    state = _mute_echo() if enabled() else None
+    try:
+        yield
+    finally:
+        _restore_echo(state)
 
 
 def term_width() -> int:
