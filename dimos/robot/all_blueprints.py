@@ -91,6 +91,7 @@ all_blueprints = {
     "learning-collect-webxr-piper": "dimos.imitation.collection.blueprint:learning_collect_webxr_piper",
     "learning-collect-webxr-xarm7": "dimos.imitation.collection.blueprint:learning_collect_webxr_xarm7",
     "memory-world-agent": "dimos.teleop.memory_world.blueprints:memory_world_agent",
+    "memory-world-hyperspace": "dimos.teleop.memory_world.blueprints:memory_world_hyperspace",
     "mid360": "dimos.hardware.sensors.lidar.livox.livox_blueprints:mid360",
     "mid360-fastlio": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio",
     "mid360-fastlio-ray-trace": "dimos.hardware.sensors.lidar.fastlio2.fastlio_blueprints:mid360_fastlio_ray_trace",

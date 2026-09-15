@@ -14,9 +14,12 @@
 
 """Agentic recorded-memory world blueprints."""
 
+from pathlib import Path
+
 from dimos.agents.mcp.mcp_client import McpClient
 from dimos.agents.mcp.mcp_server import McpServer
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.mapping.hyperspace.module import Hyperspace
 from dimos.teleop.memory_world.module import MemoryWorldModule
 
 MEMORY_WORLD_SYSTEM_PROMPT = """You answer questions about a recorded robot memory,
@@ -84,3 +87,103 @@ memory_world_agent = autoconnect(
     McpServer.blueprint(),
     McpClient.blueprint(system_prompt=MEMORY_WORLD_SYSTEM_PROMPT),
 ).global_config(n_workers=4)
+
+
+# ---- the hyperspace variant ------------------------------------------------------
+
+# The recording both modules read: MemoryWorld for the map, the timeline and the
+# photographs, Hyperspace for the index already built inside it. One file, so the world
+# you walk and the world you question cannot drift apart.
+HYPERSPACE_RECORDING = str(Path.home() / "datasets" / "lite_recorder" / "grocery.db")
+
+# TWO of the recording's four members, not all four. The full index is ~31.6 GB at fp32
+# (7.9 billion numbers) and a 30 GB machine does not fail cleanly on that -- it swaps,
+# and every timing taken afterwards is meaningless without looking wrong. These two are
+# ~1.5 GB and still give the agreement step the two members it needs. A machine with room
+# can pass all four back; the ceiling is RAM, not correctness.
+HYPERSPACE_MEMBERS = ["base_patch16_224", "base_patch16_256"]
+
+MEMORY_WORLD_HYPERSPACE_PROMPT = """You answer questions about a recorded robot memory,
+and the person asking is standing inside it in a headset.
+
+You have three ways to look, and they differ in what an ANSWER IS rather than in how they
+search. Every one of them lights the world up where it found something.
+
+`start_item_query` finds THINGS, with a detector that draws a box around each one and can
+say no. Use it for anything countable: "a fire extinguisher", "the red chair". It is the
+one to reach for by default. Because a real detector looked, it is allowed to refuse, and
+a refusal is a real answer -- it means it looked and declined, which is not the same as
+finding nothing.
+
+`start_heatmap_query` finds WHERE SOMETHING IS TRUE, with no detector and nothing to
+refuse. Use it when the thing has no edges to box: "somewhere damp", "where the cables
+run". `within_m` keeps only what is near the robot.
+
+`start_area_query` finds a PLACE rather than a thing: "the kitchen", "a corridor".
+
+`query_results` walks through what a query found; it does not replay it.
+
+Pass the THING to look for, not the sentence. "a fire extinguisher", never "where did I
+see a fire extinguisher".
+
+An answer is WHERE THE THING IS. This is the important difference from the older memory
+world, which could only say where a thing had been seen FROM. Here a box is a measurement
+of the object itself, so you may tell the person the thing is at those coordinates. Two
+limits: a heatmap or area answer has no size, because nothing measured one, so do not
+describe its extent; and how far a thing was from the camera that saw it is its own fact,
+worth saying when it is large, because a box eight metres out is worth less than the same
+box at one metre.
+
+To show someone the way, call `navigate_to_place`. `place` is 1 for the first place the
+last answer listed. `start` is where to walk from.
+
+Being ASKED TO GO somewhere is two steps, not one. "take me to the fire extinguisher"
+means: find it, then navigate to it. Finding it and describing it is only half of what
+was asked -- if the person said to go, the turn is not finished until a route is drawn or
+you have said why none could be.
+
+Where to walk FROM is in the words. "take me to it", "bring me there", "walk me over"
+mean from where the person is standing, so `start` is "viewer". Only an explicit "from
+the start" or "from the beginning" means "recording start". Said neither, prefer
+"viewer": someone standing in the world asking to be shown something means from here.
+
+Report what the tools actually found, and answering "no" is a real answer. Do not claim
+anything was shown in the world unless the call succeeded.
+"""
+
+# One Hyperspace instance, not one per process: the index is the largest thing either
+# module touches, and a second copy of it is the difference between fitting in memory and
+# not. Everything that wants to ask goes through this one.
+memory_world_hyperspace = (
+    autoconnect(
+        MemoryWorldModule.blueprint(
+            ask_via_agent=True,
+            store_path=HYPERSPACE_RECORDING,
+        ),
+        Hyperspace.blueprint(
+            db_path=HYPERSPACE_RECORDING,
+            detect_models=HYPERSPACE_MEMBERS,
+            # Rank frames with the cheapest member over the whole index, then score the rest
+            # only on the frames it liked. Measured by hyperspace's author on bike.db: first
+            # answer 5.98 s -> 4.33 s with every place the full search finds still there.
+            rank_with="auto",
+            # NOT the default 400. Cutting to the ranking member's best N frames is faster
+            # again -- 2.25 s at 200 -- and it loses REAL answers, not duplicates: on "a
+            # traffic light" the 12 baseline places are 8 distinct lights and top200 keeps 5
+            # of the 8. The place COUNT hides it, 12 -> 11 reading as one duplicate leaving
+            # when it was a whole light leaving and a different duplicate arriving. 0 is the
+            # whole index, and this demo is about what it can find, not how fast.
+            rank_frames=0,
+        ),
+        McpServer.blueprint(),
+        McpClient.blueprint(system_prompt=MEMORY_WORLD_HYPERSPACE_PROMPT),
+    )
+    .remappings(
+        # Streams join by EFFECTIVE NAME, so `hyperspace_found` and Hyperspace's `found` do
+        # not meet on their own -- they would both sit there connected to nothing and the
+        # world would simply never light up, with no error to say why. The descriptive name
+        # stays on the module, where `found` alone would say nothing about whose.
+        [(MemoryWorldModule, "hyperspace_found", "found")]
+    )
+    .global_config(n_workers=6)
+)

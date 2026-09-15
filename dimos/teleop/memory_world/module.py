@@ -30,7 +30,6 @@ import json
 import math
 from pathlib import Path
 import threading
-import time
 from typing import Any, Literal
 import uuid
 
@@ -41,16 +40,15 @@ from fastapi.responses import HTMLResponse, Response
 import numpy as np
 from pydantic import Field as PydanticField
 
-from dimos.agents.annotation import skill
-from dimos.agents.skill_result import SkillResult
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.memory.store.base import Store
 from dimos.memory.transform import throttle
-from dimos.teleop.memory_world.answers import NavigateRequest, WorldAnswers
+from dimos.teleop.memory_world.answers import WorldAnswers
 from dimos.teleop.memory_world.clients import ClientConn, RevalidatedStaticFiles
 from dimos.teleop.memory_world.embed import EmbeddingJob
+from dimos.teleop.memory_world.hyperspace_answers import HyperspaceAnswers
 from dimos.teleop.memory_world.messages import (
     MSG_IMAGE_POSES,
     MSG_IMAGE_THUMBNAIL,
@@ -82,12 +80,12 @@ from dimos.teleop.memory_world.replay import (
     sensor_scan,
 )
 from dimos.teleop.memory_world.replay_serving import HEIGHT_COLOR_STOPS, ReplayServing
+from dimos.teleop.memory_world.skills import MemoryWorldSkills
 from dimos.teleop.memory_world.tf_tree import TfTree, body_camera_pose, pose_matrix
 from dimos.teleop.memory_world.visual_answers import VisualAnswers
 from dimos.teleop.memory_world.visual_search import (
     SIGLIP2_MODEL_NAME,
     VisualMemoryIndex,
-    search_phrase,
     sensor_intrinsics,
 )
 from dimos.teleop.memory_world.world_cache import WorldCache
@@ -281,7 +279,15 @@ class MemoryWorldConfig(ModuleConfig):
     marker_sharp_cache_size: int = PydanticField(default=96, gt=0)
 
 
-class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, Module):
+class MemoryWorldModule(
+    WorldAnswers,
+    ReplayServing,
+    VisualAnswers,
+    HyperspaceAnswers,
+    MemoryWorldSkills,
+    WorldCache,
+    Module,
+):
     """VR memory-world module.
 
     See :mod:`dimos.teleop.memory_world` for the architectural overview.
@@ -853,88 +859,6 @@ class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, 
                 old.stop()
         logger.info("reopened %s", self.config.store_path)
 
-    @skill
-    def find_in_memory(
-        self,
-        query: str,
-        from_fraction: float = 0.0,
-        to_fraction: float = 1.0,
-    ) -> SkillResult:
-        """Find where something was seen in the recording and highlight it in the world:
-        "where did I see a car", answered by a vector-database lookup over the recording's
-        CLIP/SigLIP image embeddings. Each result is a place the thing was seen FROM,
-        with the photograph that matched.
-
-        Args:
-            query: What to look for, e.g. "a car" or "a whiteboard". Pass the thing, not
-                the whole sentence.
-            from_fraction: Where in the recording to start looking. 0.0 is the very
-                beginning, 1.0 the very end. Use 0.0 and 0.5 for "the first half".
-            to_fraction: Where to stop looking, on the same 0.0-1.0 scale.
-        """
-        started = time.monotonic()
-        phrase = search_phrase(query)
-        if not phrase:
-            return SkillResult.fail("INVALID_QUERY", "The query text is empty")
-        # Clamped and ordered rather than refused: an LLM that says (0.5, 0.0) means the
-        # second half, and failing the whole question over the argument order teaches it
-        # nothing it can act on.
-        low, high = sorted((float(from_fraction), float(to_fraction)))
-        low, high = max(0.0, min(1.0, low)), max(0.0, min(1.0, high))
-        if high <= low:
-            return SkillResult.fail(
-                "INVALID_QUERY",
-                f"{from_fraction} to {to_fraction} is not a stretch of the recording",
-            )
-        span = None if (low, high) == (0.0, 1.0) else (low, high)
-
-        try:
-            return self._find_with_siglip(phrase, started, span=span)
-        except Exception as error:  # an index built for another model, camera or frame
-            logger.exception("visual index query failed")
-            return SkillResult.fail("QUERY_FAILED", f"The SigLIP index cannot answer: {error}")
-
-    @skill
-    def navigate_to_place(self, place: int = 1, start: str = "recording start") -> SkillResult:
-        """Draw a walking route to one of the places the last `find_in_memory` answer
-        found, and show it in the world.
-
-        Args:
-            place: Which place to walk to. 1 is the first one the answer listed.
-            start: Where to walk FROM. "recording start" is where the robot was when the
-                recording began -- what someone means by "the starting point". "viewer"
-                is where the person asking is standing right now.
-        """
-        # "Where the person is" wins over "start", because one sentence can hold both:
-        # "start from where I am standing now" contains the word `start` and means the
-        # opposite of the recording's beginning.
-        said = start.lower()
-        here = any(word in said for word in ("view", "stand", "here", "current", "now", " me"))
-        begins = any(word in said for word in ("record", "start", "begin", "first"))
-        wanted = "recording_start" if begins and not here else "viewer"
-        try:
-            payload = self._navigate_to(
-                NavigateRequest(cluster=max(0, int(place) - 1), start_at=wanted)
-            )
-        except HTTPException as refused:
-            return SkillResult.fail("NO_ROUTE", str(refused.detail))
-        except Exception as error:
-            logger.exception("navigation failed")
-            return SkillResult.fail("NO_ROUTE", f"Could not plan a route: {error}")
-        return SkillResult(
-            success=True,
-            message=(
-                f"Drew a {payload['length_m']} m route to place #{payload['cluster'] + 1}, "
-                f"starting from "
-                + (
-                    "where the robot was at the start of the recording"
-                    if wanted == "recording_start"
-                    else "where you are standing"
-                )
-            ),
-            metadata=payload,
-        )
-
     # ---- poses: the tf tree ------------------------------------------------
     def _tf_tree(self) -> TfTree | None:
         """The recording's tf tree, loaded once; None when the recording has none."""
@@ -1377,6 +1301,7 @@ class MemoryWorldModule(WorldAnswers, ReplayServing, VisualAnswers, WorldCache, 
         # Belt and braces for a start() that follows a stop() which died before closing.
         self._stopping.clear()
         super().start()
+        self._watch_hyperspace()
         self._web_server = RobotWebInterface(
             host=self.config.listen_host,
             port=self.config.server_port,

@@ -103,5 +103,9 @@ class MemoryQueryResult(BaseModel):
     action: Literal["replace"] = "replace"
     # The places the viewer steps through with next/prev, best first.
     clusters: list[ClusterSummary] = Field(default_factory=list, max_length=MAX_ANSWER_PLACES)
-    engine: Literal["siglip"] = "siglip"
+    # Which engine answered, and it is on the wire because the two mean different
+    # things: "siglip" places are where a thing was SEEN FROM, "hyperspace" places
+    # are the thing's own measured position. A viewer that described both the same
+    # way would be wrong about one of them.
+    engine: Literal["siglip", "hyperspace"] = "siglip"
     query_text: str = Field(default="", max_length=400)

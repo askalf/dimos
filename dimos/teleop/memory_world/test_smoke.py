@@ -217,12 +217,20 @@ def test_a_tf_gap_holds_the_last_position_instead_of_dropping_to_the_origin() ->
 # ---- the wire ---------------------------------------------------------------------
 
 
-def test_one_engine_answers_and_it_is_named_on_the_wire() -> None:
-    """Two engines used to be able to answer, and the client branched on which. One now."""
-    result = MemoryQueryResult(answer="found it")
-    assert result.engine == "siglip"
+def test_the_engine_that_answered_is_named_on_the_wire() -> None:
+    """Which engine answered is a fact the client needs, not decoration.
+
+    This branch has two, and they do not mean the same thing: a siglip place is where a
+    thing was SEEN FROM, a hyperspace place is the thing's own measured position. A
+    viewer that described both the same way would be wrong about one of them, so the
+    name rides on every answer and the default stays siglip for a recording with no
+    Hyperspace connected. Anything else is still refused -- the point of the literal is
+    that a third engine cannot arrive unnamed.
+    """
+    assert MemoryQueryResult(answer="found it").engine == "siglip"
+    assert MemoryQueryResult(answer="found it", engine="hyperspace").engine == "hyperspace"
     with pytest.raises(ValueError):
-        MemoryQueryResult(answer="found it", engine="hyperspace")  # type: ignore[arg-type]
+        MemoryQueryResult(answer="found it", engine="clip")  # type: ignore[arg-type]
 
 
 def test_a_score_that_cannot_be_written_as_json_is_refused_at_the_model() -> None:
