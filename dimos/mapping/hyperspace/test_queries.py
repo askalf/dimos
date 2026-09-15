@@ -130,3 +130,14 @@ def test_the_query_module_can_configure_everything_its_start_reads() -> None:
     known = set(HyperspaceConfig.model_fields)
     missing = sorted(read - known)
     assert not missing, f"Hyperspace reads config fields it does not declare: {missing}"
+
+
+def test_an_item_place_is_built_from_fields_a_found_object_actually_has() -> None:
+    """A Place is assembled by hand from a FoundObject, so a renamed or imagined field
+    is an AttributeError at the moment of answering -- after the detector has already
+    been paid for. `found.arrived` was invented; the real one is `stamp`."""
+    from dimos.mapping.hyperspace.msgs import FoundObject
+
+    fields = set(FoundObject.__dataclass_fields__)
+    for name in ("centre", "frame", "confidence", "depth_m", "extent", "views", "stamp"):
+        assert name in fields, f"_fill_from_detector reads {name!r} and it is gone"

@@ -619,7 +619,7 @@ class Hyperspace(MemoryModule):
                 distance_m=float(found.depth_m),
                 extent=tuple(float(value) for value in found.extent),
                 views=int(found.views),
-                seen_at=float(found.arrived),
+                seen_at=float(found.stamp),
             )
             for found in result.objects
         ]
