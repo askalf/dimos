@@ -1269,3 +1269,79 @@ def test_the_background_contrast_can_be_turned_off() -> None:
 
     assert np.allclose(plain, [1.0, 0.0, 0.6]), "no background rows means the raw similarity"
     assert np.allclose(contrasted, [1.0, -1.0, -0.2]), "the background is subtracted off"
+
+
+def test_narrowing_a_search_returns_row_numbers_into_the_whole_index() -> None:
+    """`rows=` scores a subset, and the indices handed back have to be absolute.
+
+    This is the bookkeeping that puts a patch on the wrong frame if it is wrong: the
+    caller looks `held.frame_of[index]` up directly, so an index that was relative to
+    the subset would silently name a different photograph. The subset here is chosen so
+    that the relative and absolute answers are different numbers -- a test where they
+    coincide would pass either way.
+    """
+    import numpy as np
+
+    from dimos.mapping.hyperspace.resident import ResidentPatches
+
+    vectors = np.array(
+        [[1.0, 0.0], [0.0, 1.0], [0.9, 0.1], [0.0, 1.0], [0.8, 0.2]], dtype=np.float32
+    )
+    held = ResidentPatches(
+        tag="t",
+        stream="s",
+        vectors=vectors,
+        last_id=5,
+        frame_of=np.zeros(5, np.int32),
+        ts=np.arange(5, dtype=np.float64),
+        cell=np.arange(5, dtype=np.int32),
+        grid=np.ones((5, 2), np.int16),
+        ray=np.zeros((5, 2), np.float32),
+        depth=np.ones(5, np.float32),
+        camera_frames=["cam"],
+    )
+    query = np.array([1.0, 0.0], dtype=np.float32)
+    nothing = np.empty((0, 2), np.float32)
+
+    everywhere, _ = held.hot(query, nothing, threshold=0.5)
+    assert sorted(everywhere.tolist()) == [0, 2, 4]
+
+    # Rows 2 and 4 only. As a subset they are positions 0 and 1, so an off-by-subset
+    # bug would answer [0, 1] -- which is also a valid-looking pair of row numbers.
+    narrowed, scored = held.hot(query, nothing, threshold=0.5, rows=np.array([2, 4], np.intp))
+    assert sorted(narrowed.tolist()) == [2, 4], "row numbers are into the index, not the subset"
+    assert np.allclose(sorted(scored.tolist()), [0.8, 0.9])
+
+
+def test_ranking_with_one_model_only_looks_where_that_model_looked() -> None:
+    """`_rows_on` picks the rows of the frames named, and nothing else.
+
+    The whole saving is that the other members never read the vectors of a frame the
+    ranking member did not like, so what this pins is which ROWS come back -- matched on
+    (camera frame, ts) together, because two cameras can share a timestamp and a match
+    on the stamp alone would drag in the other camera's patches.
+    """
+    import numpy as np
+
+    from dimos.mapping.hyperspace.frames import _rows_on
+    from dimos.mapping.hyperspace.resident import ResidentPatches
+
+    held = ResidentPatches(
+        tag="t",
+        stream="s",
+        vectors=np.zeros((6, 2), np.float32),
+        last_id=6,
+        # Two cameras, and both of them saw something at t=1.0.
+        frame_of=np.array([0, 0, 1, 1, 0, 1], np.int32),
+        ts=np.array([1.0, 2.0, 1.0, 3.0, 3.0, 2.0], np.float64),
+        cell=np.arange(6, dtype=np.int32),
+        grid=np.ones((6, 2), np.int16),
+        ray=np.zeros((6, 2), np.float32),
+        depth=np.ones(6, np.float32),
+        camera_frames=["left", "right"],
+    )
+
+    assert _rows_on(held, {("left", 1.0)}).tolist() == [0], "not the right camera's t=1.0"
+    assert _rows_on(held, {("left", 1.0), ("right", 2.0)}).tolist() == [0, 5]
+    assert _rows_on(held, {("left", 9.0)}).tolist() == [], "a frame it never saw"
+    assert _rows_on(held, {("nope", 1.0)}).tolist() == [], "a camera it does not have"

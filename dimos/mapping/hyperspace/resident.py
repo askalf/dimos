@@ -149,12 +149,20 @@ class ResidentPatches:
         return float(self.vectors.nbytes) / 1e6
 
     def scores(
-        self, query: NDArray[np.float32], background: NDArray[np.float32]
+        self,
+        query: NDArray[np.float32],
+        background: NDArray[np.float32],
+        rows: NDArray[np.intp] | None = None,
     ) -> NDArray[np.float32]:
         """Every patch's contrast against the query: how much better than generic room.
 
         Exact, over every patch, rather than over whatever an approximate index would
         have returned.
+
+        *rows* narrows that to a subset, and the answer is then as long as *rows* rather
+        than as long as the index. The cost of a search is reading the vectors, not the
+        handful of dot products per row, so scoring a tenth of the rows costs about a
+        tenth as much -- which is the whole point of `rank_with` in `hot_frames`.
 
         Done a block at a time, and promoted to single precision if it is not already
         stored that way. Numpy has no fast half-precision matrix multiply -- it falls
@@ -173,14 +181,16 @@ class ResidentPatches:
         # rather than one for the words and another for the room.
         background = np.asarray(background, dtype=np.float32).reshape(-1, len(query))
         texts = np.vstack([np.asarray(query, dtype=np.float32)[None, :], background])
-        rows = self.rows
-        out = np.empty(rows, dtype=np.float32)
-        for start in range(0, rows, SCORE_CHUNK):
-            block = np.asarray(
-                self.vectors[start : min(start + SCORE_CHUNK, rows)], dtype=np.float32
-            )
+        count = self.rows if rows is None else len(rows)
+        out = np.empty(count, dtype=np.float32)
+        for start in range(0, count, SCORE_CHUNK):
+            stop = min(start + SCORE_CHUNK, count)
+            # A slice is a view and costs nothing; `rows` gathers, and gathering is the
+            # point -- it touches only the vectors it is about to score.
+            taken = self.vectors[start:stop] if rows is None else self.vectors[rows[start:stop]]
+            block = np.asarray(taken, dtype=np.float32)
             against = block @ texts.T
-            out[start : start + len(block)] = (
+            out[start:stop] = (
                 against[:, 0] - against[:, 1:].max(axis=1) if len(background) else against[:, 0]
             )
         return out
@@ -192,15 +202,22 @@ class ResidentPatches:
         *,
         threshold: float,
         limit: int | None = None,
+        rows: NDArray[np.intp] | None = None,
     ) -> tuple[NDArray[np.intp], NDArray[np.float32]]:
-        """Rows scoring above *threshold*, strongest first, at most *limit* of them."""
-        found = self.scores(query, background)
+        """Rows scoring above *threshold*, strongest first, at most *limit* of them.
+
+        *rows* narrows the search to a subset. The indices handed back are into the
+        index as a whole either way -- a caller that got back positions within its own
+        subset would have to map them home, and that is exactly the kind of bookkeeping
+        that puts a patch on the wrong frame.
+        """
+        found = self.scores(query, background, rows)
         picked = np.flatnonzero(found > threshold)
         order = np.argsort(-found[picked])
         if limit is not None and len(order) > limit:
             order = order[:limit]
         picked = picked[order]
-        return picked, found[picked]
+        return (picked if rows is None else rows[picked]), found[picked]
 
 
 def _warn_if_it_will_not_fit(tag: str, rows: int, width: int) -> None:

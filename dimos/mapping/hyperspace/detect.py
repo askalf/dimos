@@ -128,6 +128,14 @@ class DetectConfig:
     # Ask several models where they agree, and take the candidates from that instead
     # of from time-split episodes. Needs more than one model searched to mean anything.
     agreement: bool = True
+    # Score this member over the whole index, then score the others ONLY on the frames
+    # it liked. A search costs what it reads, and on bike.db the three members are
+    # 19.2 GB of fp32 -- so the cheap member ranking and the expensive ones confirming
+    # is most of a query's search time, while agreement survives because all three still
+    # have hits on the frames that matter. Empty = every model over everything.
+    # The trade, stated because it is real: a frame only the expensive members would
+    # have found is never seen, since nothing looks there.
+    rank_with: str = ""
     # Group candidate episodes by roughly where they are and give every group a look
     # before any group gets a second one. Off means strongest-first, which spends the
     # detector on four looks at the nearest chair before it has seen the far one.
@@ -1178,6 +1186,7 @@ def find(
         resident=resident,
         contrast=config.contrast,
         background_prompts=background_prompts,
+        rank_with=config.rank_with,
     )
     if timings is not None:
         timings["search"] = time.monotonic() - at

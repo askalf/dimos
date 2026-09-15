@@ -238,6 +238,7 @@ def hot_frames(
     resident: Any = None,
     contrast: bool = True,
     background_prompts: Sequence[str] | None = None,
+    rank_with: str = "",
 ) -> list[Frame]:
     """Frames that matched *text*, in time order.
 
@@ -263,10 +264,22 @@ def hot_frames(
     owned = towers is None
     towers = towers or TextTowers(device)
     frames: dict[tuple[str, float], Frame] = {}
+    members = [
+        (tag, name) for tag, name in member_streams(store) if models is None or tag in models
+    ]
+    # With `rank_with`, one member is scored over everything and decides which frames are
+    # worth looking at; the others are then scored ONLY over the rows belonging to those
+    # frames. The whole cost of a search is reading the vectors, so this is most of a
+    # multi-model search's time for a set of frames the cheap member already liked.
+    # It is a real trade and not a free one: a frame only the expensive members would
+    # have found is now never seen, because nothing looks there.
+    if rank_with and len(members) > 1 and any(tag == rank_with for tag, _ in members):
+        members.sort(key=lambda member: member[0] != rank_with)
+    else:
+        rank_with = ""
+    allowed: set[tuple[str, float]] | None = None
     try:
-        for tag, name in member_streams(store):
-            if models is not None and tag not in models:
-                continue
+        for tag, name in members:
             spec = spec_of(tag)
             query = towers.query(spec, text)
             if not contrast:
@@ -279,7 +292,12 @@ def hot_frames(
                 background = np.stack([towers.query(spec, prompt) for prompt in background_prompts])
 
             held = held_by.of(store, tag, name)
-            picked, scored = held.hot(query, background, threshold=threshold, limit=top_k)
+            rows = None if allowed is None else _rows_on(held, allowed)
+            if rows is not None and not len(rows):
+                continue
+            picked, scored = held.hot(
+                query, background, threshold=threshold, limit=top_k, rows=rows
+            )
             for index, score in zip(picked, scored, strict=True):
                 key = (held.camera_frames[held.frame_of[index]], float(held.ts[index]))
                 frame = frames.get(key)
@@ -297,10 +315,45 @@ def hot_frames(
                         score=float(score),
                     )
                 )
+            if rank_with and tag == rank_with:
+                allowed = set(frames)
+                if not allowed:
+                    # Nothing to confirm. Leaving `allowed` empty would have the other
+                    # members score nothing and the query answer nothing, which is the
+                    # right answer here but for the wrong reason -- say it once, loudly,
+                    # rather than have a silent empty set look like a narrow one.
+                    logger.info(
+                        f"hyperspace: {rank_with!r} found nothing for {text!r}, "
+                        "so there is nowhere for the other models to look"
+                    )
+                    break
     finally:
         if owned:
             towers.close()
     return sorted(frames.values(), key=lambda frame: frame.ts)
+
+
+def _rows_on(held: Any, allowed: set[tuple[str, float]]) -> NDArray[np.intp]:
+    """Row numbers of the patches belonging to *allowed* frames.
+
+    Touches the `ts` and `frame_of` columns only -- tens of megabytes -- and never the
+    vectors, which is what makes narrowing cheaper than the search it replaces.
+    """
+    wanted: dict[int, list[float]] = {}
+    for name, ts in allowed:
+        try:
+            at = held.camera_frames.index(name)
+        except ValueError:
+            continue
+        wanted.setdefault(at, []).append(ts)
+    if not wanted:
+        return np.empty(0, dtype=np.intp)
+    mask = np.zeros(held.rows, dtype=bool)
+    stamps = held.ts[: held.rows]
+    frame_of = held.frame_of[: held.rows]
+    for at, times in wanted.items():
+        mask |= (frame_of == at) & np.isin(stamps, np.asarray(times, dtype=stamps.dtype))
+    return np.flatnonzero(mask).astype(np.intp)
 
 
 def episodes(frames: Sequence[Frame], gap_s: float = 1.0) -> list[Episode]:
