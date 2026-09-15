@@ -1473,3 +1473,22 @@ def test_the_pass_count_is_per_episode_not_per_answer() -> None:
         "this is the wrong sum, and it is the one a caller would reach for"
     )
     assert one.detection.attempts == 3, "the episode cost three passes, not nine"
+
+
+def test_the_cheap_member_ranks_by_default_and_can_be_turned_off() -> None:
+    """Ranking with one member and confirming with the rest is the shipped behaviour.
+
+    It was off while it had only three queries of one recording behind it. Eleven queries
+    across all three now say it is faster on every one of them and finds four more places
+    than it loses -- the numbers are written out on the field itself. "" is still the way
+    back to searching every member over everything, which is what the measurements are
+    compared against.
+    """
+    from dimos.mapping.hyperspace.detect import DetectConfig
+    from dimos.mapping.hyperspace.module import HyperspaceConfig
+
+    assert DetectConfig.rank_with == "auto"
+    assert HyperspaceConfig.model_fields["rank_with"].default == "auto", (
+        "the live module and the offline CLI must not disagree about this again"
+    )
+    assert DetectConfig.rank_frames == 400, "the cut is what makes ranking worth anything"

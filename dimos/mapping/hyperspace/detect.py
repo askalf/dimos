@@ -150,9 +150,31 @@ class DetectConfig:
     # have found is never seen, since nothing looks there.
     #
     # "auto" picks the member with the fewest numbers in it -- rows x width, not the
-    # smallest-sounding name. Off by default: it measured well on three queries of one
-    # recording, and that is not enough to change what everyone gets.
-    rank_with: str = ""
+    # smallest-sounding name. ON by default since 2026-09-15, on eleven queries across
+    # all three recordings rather than the three of one that were not enough before.
+    # Baseline -> auto, places and time to first answer, Mac, two members:
+    #
+    #   sf_office  a chair             2 ->  2   1.69 -> 1.66 s   search 0.60 -> 0.51
+    #              a computer monitor  1 ->  1   1.66 -> 1.56     search 0.60 -> 0.49
+    #              a trash can         5 ->  6   1.01 -> 0.94     search 0.57 -> 0.50
+    #              a traffic cone      2 ->  2   0.96 -> 0.89     search 0.57 -> 0.50
+    #   bike       a stop sign        11 -> 11   1.86 -> 1.22     search 1.17 -> 0.64
+    #              a traffic light    12 -> 11   2.87 -> 2.28     search 1.03 -> 0.64
+    #              a bicycle           7 ->  9   2.33 -> 1.54     search 1.02 -> 0.64
+    #              a traffic cone     17 -> 17   1.62 -> 1.23     search 0.65 -> 0.65
+    #   grocery    a shopping basket   5 ->  6   2.13 -> 1.37     search 1.43 -> 0.71
+    #              a can of soda       4 ->  4   2.10 -> 1.58     search 1.45 -> 0.92
+    #              a shopping cart     8 ->  9   2.64 -> 2.28     search 1.29 -> 0.74
+    #
+    # Faster on all eleven, and the answers move BOTH WAYS -- +1 trash can, +2 bicycle,
+    # +1 basket, +1 cart, -1 traffic light. So this is not recall traded for seconds; it
+    # is a different set of mistakes that happens to be cheaper and slightly larger. The
+    # lost light is the honest cost and is why the trade is written out here rather than
+    # summarised. "" is the way back to searching every member over everything.
+    #
+    # It matters far more on a machine whose memory is slower: search is 4.7-5.2 s of a
+    # 7.5 s first answer on the CudaLaptop against 1.0-1.4 s of 2.1 s on the Mac.
+    rank_with: str = "auto"
     # How many of the ranking member's best frames the others confirm. MEASURED on
     # bike.db: leaving this at "all of them" saves NOTHING and costs a little -- the cheap
     # member's 4000 hot patches for one query land on 1335 distinct frames of 2308, so

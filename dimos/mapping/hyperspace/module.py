@@ -388,7 +388,7 @@ class HyperspaceConfig(MemoryModuleConfig):
     # Search this member over the whole index and score the others only on the frames it
     # liked; "auto" picks the cheapest member. See `DetectConfig.rank_with` for the
     # measurements and `rank_frames` for the cut that makes it worth anything.
-    rank_with: str = ""
+    rank_with: str = "auto"
     rank_frames: int = 400
     # Episodes to spend a detector call on, frames of each to try, and frames per
     # forward pass. The detector is ~90% of a query, so these are the cost.
