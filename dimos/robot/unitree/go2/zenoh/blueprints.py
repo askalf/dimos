@@ -480,8 +480,8 @@ go2_zenoh_motion_pointlio_reloc = autoconnect(
 # `topics` is what makes it cheap. It is one zenoh subscription per name, so anything
 # unlisted never crosses the link at all -- unlike `visual_override: None`, which only
 # declines to draw what already arrived. The clouds stay on the robot: `lidar` and
-# `lidar_raw` are the raw sweeps, `local_map_fine` and `global_map` the maps the local
-# map already summarises, and `imu` is 200 Hz of something nothing draws.
+# `lidar_raw` are the raw sweeps, `local_map_fine` is the local map again at twice the
+# resolution, and `imu` is 200 Hz of something nothing draws.
 # go2web's zenoh router, named rather than scouted: this stack's whole point is
 # that the robot is on the far side of wifi, where multicast scouting finds nothing
 # (docs/usage/transports/zenoh.md). Overridable for another rig, and --robot-ip
@@ -497,6 +497,11 @@ go2_viewer = autoconnect(
                 "tf",
                 "odometry",
                 "local_map",
+                # The whole map, at its own cadence, and the one-shot merged snapshot
+                # the raytracer emits after seeding from a premap -- alignment is
+                # judged on that one.
+                "global_map",
+                "full_map",
                 "path",
                 "planner_path",
                 "nodes",
@@ -510,7 +515,7 @@ go2_viewer = autoconnect(
             ],
             # The map is the one heavy thing left. Its own emit rate is the lidar's,
             # which is more than a screen needs and more than a bad link carries.
-            "max_hz": {"world/local_map": 4.0, "world/surface_map": 1.0},
+            "max_hz": {"world/local_map": 4.0, "world/global_map": 0.5, "world/surface_map": 1.0},
         },
     ),
 ).global_config(
