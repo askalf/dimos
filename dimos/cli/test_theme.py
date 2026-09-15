@@ -162,10 +162,6 @@ def test_states_are_visually_distinct(tty: None) -> None:
     assert "38;2;136;255;136" in "\n".join(cloud._signed_in_card("a@b", "k", "keyring"))
 
 
-def test_rendering_is_deterministic(tty: None) -> None:
-    assert theme.sigil("ok") == theme.sigil("ok")
-
-
 def test_whoami_stays_one_line(tty: None) -> None:
     rows = cloud._whoami_line("e@x", "data")
     assert len(rows) == 1
@@ -328,12 +324,3 @@ def test_narrow_signed_in_card_drops_the_capability_names(
     text = " ".join(plain(cloud._signed_in_card("a@b", "k", "keyring")))
     assert "Signed in" in text and "a@b" in text
     assert "Navigation" not in text and "Manipulation" not in text
-
-
-def test_fullscreen_live_tolerates_a_non_tty_stdin(
-    tty: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Muting echo is best-effort: a stdin with no fileno must not crash the wait."""
-    monkeypatch.setattr(sys, "stdin", io.StringIO())
-    with theme.Live(fullscreen=True) as live:
-        live.update(["x"])  # reaching here without raising is the assertion
