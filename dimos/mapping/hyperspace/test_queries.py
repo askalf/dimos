@@ -98,15 +98,24 @@ def test_a_heatmap_place_does_not_claim_a_size_it_never_measured() -> None:
     assert box.as_dict()["extent"] == [0.5, 0.5, 1.0]
 
 
-def test_an_area_is_contrasted_against_objects_not_against_a_room() -> None:
-    """Measured on "kitchen" over sf_office_drive1, top six frames judged by eye:
-    this set gave 6 of 6 and favoured wide shots of the space, while NO contrast gave
-    2 of 6 -- luggage and a pile of boxes. The floor/wall/ceiling set used for objects
-    would subtract the room an area query is asking for."""
-    assert AREA_PROMPTS, "an area query still needs something to contrast against"
-    assert not any(
-        word in prompt for prompt in AREA_PROMPTS for word in ("floor", "wall", "ceiling", "room")
-    ), f"an area contrast must not subtract the room: {AREA_PROMPTS}"
+def test_an_area_is_contrasted_against_objects_and_surfaces_both() -> None:
+    """This test used to assert the OPPOSITE, on the plausible-sounding grounds that
+    subtracting "a wall" would subtract the room an area query asks for. Judging by the
+    top six frames could not tell the two apart -- they were right either way -- so the
+    claim went untested until the cells were counted against the kitchen's real
+    rectangle: object-ness alone gave 22 cells inside it and 268 outside, the surface set
+    alone 20 and 40, and both together 20 and 29. Subtracting object-ness alone left
+    nothing subtracting walls, and the false positives were walls.
+
+    So an area contrast needs BOTH halves, and a set missing either one is the bug this
+    test exists to catch."""
+    assert any("object" in prompt or "equipment" in prompt for prompt in AREA_PROMPTS), (
+        f"an area contrast needs the object-ness terms that favour a wide shot: {AREA_PROMPTS}"
+    )
+    for surface in ("floor", "wall", "ceiling"):
+        assert any(surface in prompt for prompt in AREA_PROMPTS), (
+            f"an area contrast must subtract {surface!r} or walls answer: {AREA_PROMPTS}"
+        )
 
 
 def test_the_query_module_can_configure_everything_its_start_reads() -> None:

@@ -32,19 +32,29 @@ run the same `run_query` underneath:
 * **heatmap** -- no detector at all. The hot patches go into voxels and an answer is a
   place with a score. Nothing refuses, so this answers where a box cannot: a query the
   detector has no word for, or one that is not an object.
-* **area** -- a room rather than a thing, contrasted against objects instead of against
-  the room. MEASURED on "kitchen" over sf_office_drive1 (2026-09-14), top six frames
-  judged by eye: contrasting against "a close-up of an object / a single object / a piece
-  of equipment" gave 6 of 6 and favoured the wide shots that show a space; the object
-  contrast also gave 6 of 6 but prefers close ones; "an item" and naming other rooms gave
-  5 of 6; and **no contrast at all gave 2 of 6** -- mostly luggage and a pile of boxes.
-  Dropping the contrast for an area query is the one thing that clearly does not work.
+* **area** -- a room rather than a thing, contrasted against objects AND surfaces.
+  MEASURED on "kitchen" over sf_office_drive1 (2026-09-14), top six frames judged by eye:
+  contrasting against "a close-up of an object / a single object / a piece of equipment"
+  gave 6 of 6 and favoured the wide shots that show a space; the object contrast also
+  gave 6 of 6 but prefers close ones; "an item" and naming other rooms gave 5 of 6; and
+  **no contrast at all gave 2 of 6** -- mostly luggage and a pile of boxes. Dropping the
+  contrast for an area query is the one thing that clearly does not work.
 
-  Which of the working sets is used matters much less than how a cell is scored. Asked
-  for "kitchen" and measured against the kitchen's real rectangle, four different
-  contrasts all answered 7.5-9.7 m outside it while cells were scored by summing the
-  patches that landed in them, and all four answered inside it once they were scored by
-  the mean over 25 cm cells seen three times. See `HyperspaceConfig.heat_cell_m`.
+  Judging by the top frames hid a bug for a day, because the frames were right either
+  way. **Counted at the CELL level against the kitchen's real rectangle (2026-09-15),
+  cells with 3+ viewpoints, in/out:** object-ness alone 22 in / **268 out**; the surface
+  set alone 20 / 40; **both together 20 / 29**; "a wall" and "a floor" by themselves
+  37 / 235; no contrast 29 / 242. Subtracting object-ness alone -- which is what this
+  was -- left nothing subtracting walls, and the false positives were walls. Both
+  together costs two in-box cells and removes nine tenths of the rest. Note also that
+  the two bare surface words do far worse than the full surface set: it is not "a wall"
+  doing the work.
+
+  How a cell is SCORED still matters more than which set is used. Asked for "kitchen"
+  and measured against the same rectangle, four different contrasts all answered
+  7.5-9.7 m outside it while cells were scored by summing the patches that landed in
+  them, and all four answered inside it once they were scored by the mean over 25 cm
+  cells seen three times. See `HyperspaceConfig.heat_cell_m`.
 
 A caller that knows better than any of these can say so: every query skill takes
 `negative_terms`, and what it names replaces the default rather than adding to it.
@@ -61,9 +71,20 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-# What an area is contrasted against: objects, so that a room does not have itself
-# subtracted. See the module docstring for the measurement behind these five words.
-AREA_PROMPTS = ("a close-up of an object", "a single object", "a piece of equipment")
+# What an area is contrasted against: objects AND surfaces, both. The object-ness terms
+# are what favour a wide shot of a space over a close-up; the surface terms are what stop
+# a wall from answering. Subtracting only the first three was a real bug -- see the
+# module docstring for the counts.
+AREA_PROMPTS = (
+    "a close-up of an object",
+    "a single object",
+    "a piece of equipment",
+    "a floor",
+    "a wall",
+    "a ceiling",
+    "a shelf",
+    "a photo of a room",
+)
 
 
 @dataclass
