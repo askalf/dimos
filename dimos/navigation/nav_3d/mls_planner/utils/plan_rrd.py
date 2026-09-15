@@ -74,15 +74,15 @@ DEFAULT_VOXEL_SIZE = 0.08
 SENSOR_PATH_COLOR = [80, 160, 255]
 
 # Different colors for each path when running with multiple configs
-PATH_PALETTE = [
-    list(PATH_COLOR),
-    [255, 0, 255],
-    [0, 200, 255],
-    [255, 180, 0],
-    [255, 80, 80],
-    [160, 120, 255],
-    [120, 255, 200],
-    [255, 255, 120],
+PATH_PALETTE: list[tuple[int, int, int]] = [
+    PATH_COLOR,
+    (255, 0, 255),
+    (0, 200, 255),
+    (255, 180, 0),
+    (255, 80, 80),
+    (160, 120, 255),
+    (120, 255, 200),
+    (255, 255, 120),
 ]
 
 # Sampled from the turbo colormap, low to high. Shared across both metric plots
@@ -353,8 +353,8 @@ def _build_planners(
     step_height: float,
     step_penalty_weight: float,
     full_map_tile_m: float,
-) -> list[tuple[str, list[int], MLSPlanner]]:
-    planners: list[tuple[str, list[int], MLSPlanner]] = []
+) -> list[tuple[str, tuple[int, int, int], MLSPlanner]]:
+    planners: list[tuple[str, tuple[int, int, int], MLSPlanner]] = []
     for i, (clr, buf, wgt) in enumerate(configs):
         planner = MLSPlanner(
             voxel_size=voxel_size,
@@ -378,7 +378,7 @@ def _build_planners(
 
 def _process_frame(
     ray_obs: Observation[PointCloud2],
-    planners: list[tuple[str, list[int], MLSPlanner]],
+    planners: list[tuple[str, tuple[int, int, int], MLSPlanner]],
     goal: tuple[float, float, float],
     start: tuple[float, float, float],
     sensor_z: float,
@@ -403,7 +403,7 @@ def _process_frame(
         t1 = perf_counter()
         waypoints = planner.plan(start, goal)
         t2 = perf_counter()
-        rr.log(f"world/paths/{label}", path_strip(waypoints, tuple(color)))
+        rr.log(f"world/paths/{label}", path_strip(waypoints, color))
         if j == 0:
             ref_timing = {
                 "update_ms": (t1 - t0) * 1000,
