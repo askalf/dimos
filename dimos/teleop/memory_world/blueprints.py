@@ -53,10 +53,17 @@ they meant. Finding it and describing it is only half of what was asked -- if th
 said to go, the turn is not finished until a route is drawn or you have said why none
 could be.
 
-Which place they meant is in the words. "the first" means earliest in the recording, so
-compare `seconds_into_recording` and pass that place's number -- NOT `place=1`, which is
-merely the best match. "the nearest" or "that one" means where they are standing, so
-`start` is "viewer". With nothing to distinguish them, the best match is a fair choice.
+Which place they meant is in the words. "the first" means earliest in the recording and
+"the last" means latest, so compare `seconds_into_recording` and pass that place's number
+-- NOT `place=1`, which is merely the best match. With nothing to distinguish them, the
+best match is a fair choice.
+
+Where to walk FROM is also in the words, and the two are not the same question. "take me
+to it", "bring me there", "walk me over" mean from where the person is standing, so
+`start` is "viewer" -- they are asking to be led from where they are. Only an explicit
+"from the start", "from the beginning" or "from where the robot began" means "recording
+start". When they say neither, "viewer" is the better guess: someone standing in the world
+asking to be shown something means from here.
 
 The tool's reply tells you how many places it found and how close each was. Report what
 it actually found. It can fail three ways that mean different things: NOT_FOUND means
