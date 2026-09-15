@@ -39,6 +39,15 @@ run the same `run_query` underneath:
   contrast also gave 6 of 6 but prefers close ones; "an item" and naming other rooms gave
   5 of 6; and **no contrast at all gave 2 of 6** -- mostly luggage and a pile of boxes.
   Dropping the contrast for an area query is the one thing that clearly does not work.
+
+  Which of the working sets is used matters much less than how a cell is scored. Asked
+  for "kitchen" and measured against the kitchen's real rectangle, four different
+  contrasts all answered 7.5-9.7 m outside it while cells were scored by summing the
+  patches that landed in them, and all four answered inside it once they were scored by
+  the mean over 25 cm cells seen three times. See `HyperspaceConfig.heat_cell_m`.
+
+A caller that knows better than any of these can say so: every query skill takes
+`negative_terms`, and what it names replaces the default rather than adding to it.
 """
 
 from __future__ import annotations
