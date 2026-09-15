@@ -198,6 +198,17 @@ class TextTowers:
         self._background: dict[str, NDArray[np.float32]] = {}
         self._queries: dict[tuple[str, str], NDArray[np.float32]] = {}
 
+    def place(self, device: str) -> None:
+        """Name the device before the first tower is built.
+
+        Loading is lazy, which is what makes this possible: `warm` can put the detector
+        and the index where they go and only then ask what is left, instead of choosing
+        a device for the towers before anything else has taken its share.
+        """
+        if self._towers:
+            raise RuntimeError("the towers are already loaded; place them before using them")
+        self.device = device
+
     def _tower(self, spec: str) -> Any:
         from dimos.mapping.hyperspace.embedder import PatchEnsemble
 

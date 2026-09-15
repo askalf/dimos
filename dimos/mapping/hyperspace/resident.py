@@ -81,6 +81,13 @@ DEVICE_AS = "float16"
 # so it stayed in RAM over a 250 MB margin that was never needed.
 CUDA_RESERVE_BYTES = 1_500_000_000
 
+# Free VRAM below which the text towers stay on the CPU. They are small -- about 1.5 GB
+# for two members -- but they load BESIDE the detector and the index, and the failure is
+# not graceful: MEASURED on an 8 GB RTX 5070, three towers on the card held 6.0 GiB of
+# 7.5, so OWLv2's warm-up asked for 594 MiB, found 217, and the query died before it
+# looked at a frame. Asked AFTER both of those are placed, so this is what is really left.
+TOWER_ROOM_BYTES = 3_000_000_000
+
 
 @dataclass
 class ResidentPatches:
@@ -310,6 +317,25 @@ class ResidentPatches:
             order = order[:limit]
         picked = picked[order]
         return (picked if rows is None else rows[picked]), found[picked]
+
+
+def towers_fit_on(device: str) -> bool:
+    """Whether the text towers should go on *device*, asked once the rest is placed.
+
+    Unified memory says yes whenever Metal is usable at all -- the towers are a
+    gigabyte or so against a machine's whole RAM, and there is no separate pool to run
+    out of. A card has to show `TOWER_ROOM_BYTES` still free.
+    """
+    if not device or device == "cpu":
+        return False
+    if device == "mps":
+        return True
+    import torch
+
+    if device.startswith("cuda"):
+        free, _total = torch.cuda.mem_get_info(device if ":" in device else None)
+        return int(free) >= TOWER_ROOM_BYTES
+    return False
 
 
 def room_on(device: str) -> int:

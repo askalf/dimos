@@ -79,15 +79,17 @@ class LiveConfig:
     depth_stream: str = ""
     color_info_stream: str = ""
     depth_info_stream: str = ""
-    # Where the text towers live, and the CPU is the right answer even when there is a
-    # GPU. They encode one short string per query; the detector is the thing that needs
-    # the card. MEASURED on an 8 GB RTX 5070 (2026-09-14): three towers on the GPU hold
-    # 6.0 GiB of 7.5, so OWLv2's warm-up asks for 594 MiB, finds 217 MiB, and the whole
-    # query dies before it looks at a single frame. On the CPU the same three cost
-    # 0.21 + 0.21 + 0.75 = ~1.2 s per NEW query string (cached after that) against a
-    # 6-14 s query -- about a tenth of the time for six gigabytes.
-    # Set it to the detector's device on a card with room to spare.
-    tower_device: str = "cpu"
+    # Where the text towers live. "auto" asks AFTER the detector and the index are
+    # placed, so it answers from what is really left rather than from a guess.
+    #
+    # It used to be "cpu" for everyone, on the strength of an 8 GB RTX 5070 where three
+    # towers on the card held 6.0 GiB of 7.5 and OWLv2's warm-up then asked for 594 MiB,
+    # found 217, and the query died before it looked at a frame. True, and it was costing
+    # every machine the thing that dominates a first answer: MEASURED on the Mac,
+    # sf_office, two members, encoding ONE new query string on the CPU takes ~350 ms
+    # while the index search it feeds takes 28-45 ms. A query nobody has asked before
+    # pays that every time, which is most of the wait a person actually feels.
+    tower_device: str = "auto"
     # Where the PATCH INDEX itself lives. "auto" means the accelerator this process can
     # use, with whatever does not fit staying in RAM; "cpu" is the numpy path.
     #
@@ -123,6 +125,8 @@ class LiveQuery:
         }
         self.frames = RecordingFrames(store, config=self.config.detect, **named)
         self.boxes = Owlv2Boxes(self.config.detect)
+        # "auto" is resolved in `warm`, once the detector and the index have taken their
+        # share; until then the towers are unloaded and the device is just a label.
         self.towers = TextTowers(self.config.tower_device or self.config.detect.device or "cpu")
         # Its own index, not the process-wide `RESIDENT` -- and the device has to be
         # named HERE rather than in `warm`, because `ask` loads the index too and a
@@ -139,17 +143,33 @@ class LiveQuery:
         "the detector is slow" are different problems and the split is what tells them
         apart.
         """
-        at = time.monotonic()
-        for spec in specs:
-            self.towers.background(spec)
-        self.loaded["towers"] = time.monotonic() - at
+        # ORDER MATTERS, and it is the reason "auto" can be honest: the detector and the
+        # index are placed first, and the towers then ask what is actually left. Loading
+        # them first is what made "towers on the card" unsafe on an 8 GB machine.
         self.loaded["detector"] = self.boxes.warm()
         self.loaded["recording"] = self.frames.warm()
         at = time.monotonic()
         self.loaded["index"] = float(self.catch_up())
         self.loaded["index_s"] = time.monotonic() - at
+
+        at = time.monotonic()
+        self.towers.place(self.tower_device())
+        for spec in specs:
+            self.towers.background(spec)
+        self.loaded["towers"] = time.monotonic() - at
         self.loaded["first_pass_s"] = self._touch_the_index(specs)
         return dict(self.loaded)
+
+    def tower_device(self) -> str:
+        """Where the text towers should run, answered after everything else is placed."""
+        from dimos.mapping.hyperspace.module import pick_device
+        from dimos.mapping.hyperspace.resident import towers_fit_on
+
+        asked = self.config.tower_device
+        if asked and asked != "auto":
+            return asked
+        device = pick_device("auto")
+        return device if towers_fit_on(device) else "cpu"
 
     def _touch_the_index(self, specs: Sequence[str]) -> float:
         """Score one throwaway query, so the first real one is not the first pass.

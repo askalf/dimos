@@ -406,9 +406,12 @@ class HyperspaceConfig(MemoryModuleConfig):
     # by name. Live there usually is one -- the depth2depth module writes it as the
     # robot drives -- and then this costs nothing.
     detect_depth2depth: str = "auto"
-    # Where the text towers run. "cpu" by default: on an 8 GB card three of them leave
-    # the detector no room at all. See `LiveConfig.tower_device` for the measurement.
-    tower_device: str = "cpu"
+    # Where the text towers run. "auto" by default: on an 8 GB card three of them leave
+    # the detector no room at all -- which is why "auto" asks AFTER the detector and the
+    # index are placed rather than guessing. See `LiveConfig.tower_device`, which also
+    # carries what the CPU choice was costing: ~350 ms to encode each new query string
+    # against a 28-45 ms search.
+    tower_device: str = "auto"
     # How a heatmap or area cell is scored, and how big a cell is. MEASURED on "kitchen"
     # over sf_office_drive1 (2026-09-14) against the kitchen's real rectangle, under four
     # different contrasts: summing every patch that lands in a 10 cm cell -- what this

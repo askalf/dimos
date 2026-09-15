@@ -1241,28 +1241,31 @@ def test_a_kept_frame_comes_back_the_colour_it_went_in(store: SqliteStore) -> No
     )
 
 
-def test_the_text_towers_stay_off_the_card_the_detector_needs(store: SqliteStore) -> None:
-    """Three text towers plus OWLv2 does not fit in 8 GB, so the towers go on the CPU.
+def test_the_text_towers_never_just_follow_the_detector_onto_its_card(
+    store: SqliteStore,
+) -> None:
+    """The towers must not inherit the detector's device by accident.
 
-    Measured on an RTX 5070 (2026-09-14): the towers held 6.0 GiB of 7.5 and OWLv2's
-    warm-up then asked for 594 MiB against 217 MiB free, so every query died before it
-    reached a frame. The towers encode one short string per question -- about a second
-    of CPU -- and the detector is what actually needs the card. A `device="cuda"` that
-    silently took the towers with it is the bug this pins down.
+    Measured on an RTX 5070 (2026-09-14): three towers on the card held 6.0 GiB of 7.5
+    and OWLv2's warm-up then asked for 594 MiB against 217 MiB free, so every query died
+    before it reached a frame. A `device="cuda"` that silently took the towers with it is
+    the bug this pins down, and it stays pinned now that the default is "auto" -- "auto"
+    is answered by `LiveQuery.tower_device()` from what is free AFTER the detector and
+    the index are placed, never by copying `detect.device`.
     """
     from dimos.mapping.hyperspace.detect import DetectConfig
     from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
 
-    assert LiveConfig.tower_device == "cpu", "the default has to keep the card free"
+    assert LiveConfig.tower_device == "auto"
 
     live = LiveQuery(store, LiveConfig(detect=DetectConfig(device="cuda")))
-    assert live.towers.device == "cpu", (
-        f"the towers followed the detector onto {live.towers.device!r}"
+    assert live.config.tower_device == "auto", (
+        f"the towers followed the detector onto {live.config.tower_device!r}"
     )
 
     # And an explicit choice still wins, for a card with room to spare.
     shared = LiveQuery(store, LiveConfig(detect=DetectConfig(device="cuda"), tower_device="cuda"))
-    assert shared.towers.device == "cuda"
+    assert shared.tower_device() == "cuda"
 
 
 def test_one_device_chooser_for_the_cli_and_the_modules() -> None:
@@ -1445,3 +1448,36 @@ def test_a_named_index_device_reaches_the_index_that_is_actually_used(store: Sql
         assert query.held.device == named
         assert query.held.chosen_device() == named
     assert LiveQuery(store, LiveConfig()).held.device == "auto", "and auto still means auto"
+
+
+def test_the_towers_are_placed_after_everything_else_has_taken_its_share() -> None:
+    """ "auto" for the text towers has to be answered LAST, and here is why it is worth it.
+
+    Encoding one new query string on the CPU takes ~350 ms on this Mac against a 28-45 ms
+    search, so the CPU default was most of the wait a person feels. It was chosen because
+    three towers on an 8 GB card left OWLv2 nothing -- so the answer is not "put them on
+    the card", it is "ask once the detector and the index are already placed". Loading is
+    lazy, which is what makes that ordering possible.
+    """
+    from dimos.mapping.hyperspace.frames import TextTowers
+    from dimos.mapping.hyperspace.live import LiveConfig
+    from dimos.mapping.hyperspace.resident import towers_fit_on
+
+    assert LiveConfig.tower_device == "auto"
+    assert towers_fit_on("cpu") is False
+    assert towers_fit_on("") is False
+    assert towers_fit_on("mps") is True, "unified memory has no separate pool to exhaust"
+
+    towers = TextTowers("cpu")
+    towers.place("mps")
+    assert towers.device == "mps"
+    towers._towers["pretend"] = object()
+    with pytest.raises(RuntimeError, match="already loaded"):
+        towers.place("cpu")
+
+
+def test_a_named_tower_device_still_wins(store: SqliteStore) -> None:
+    from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
+
+    assert LiveQuery(store, LiveConfig(tower_device="cpu")).tower_device() == "cpu"
+    assert LiveQuery(store, LiveConfig(tower_device="cuda:1")).tower_device() == "cuda:1"

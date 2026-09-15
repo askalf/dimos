@@ -142,7 +142,8 @@ def main(
     tower_device: str = typer.Option(
         LiveConfig.tower_device,
         "--tower-device",
-        help="where the text towers run; 'cpu' keeps the card for the detector",
+        help="where the text towers run; 'auto' asks what is left once the detector and "
+        "the index are placed, 'cpu' keeps the card for the detector",
     ),
     dtype: str = typer.Option(
         DetectConfig.dtype,
@@ -227,6 +228,7 @@ def main(
         f"{detector_dtype_for(detect.dtype, detect.device) or 'float32'} "
         f"gpu_preprocess {gpu_preprocess_for(detect.gpu_preprocess, detect.device)} "
         f"index_device {live.config.index_device} "
+        f"towers {live.tower_device()} "
         f"rank_with {detect.rank_with or 'every member'} rank_frames {detect.rank_frames}"
     )
     loaded = live.warm([spec_of(tag) for tag in wanted])
