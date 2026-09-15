@@ -43,10 +43,11 @@ from dimos.mapping.hyperspace.embedder import (
     SIGLIP2_MODEL_NAME,
     PatchEnsemble,
 )
+from dimos.mapping.hyperspace.FoundObject import FoundObject
+from dimos.mapping.hyperspace.FoundObjects import FoundObjects
 from dimos.mapping.hyperspace.frames import spec_of
 from dimos.mapping.hyperspace.ingest import IngestConfig, PatchIngestor, transform_to_matrix
 from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
-from dimos.mapping.hyperspace.msgs import FoundObject, FoundObjects
 from dimos.mapping.hyperspace.queries import (
     Place,
     Query,

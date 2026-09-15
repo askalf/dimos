@@ -45,8 +45,9 @@ from dimos.mapping.hyperspace.detect import (
     find,
     merge_duplicates,
 )
+from dimos.mapping.hyperspace.FoundObject import FoundObject
+from dimos.mapping.hyperspace.FoundObjects import FoundObjects
 from dimos.mapping.hyperspace.frames import TextTowers, member_streams, spec_of
-from dimos.mapping.hyperspace.msgs import FoundObject, FoundObjects
 from dimos.mapping.hyperspace.resident import ResidentIndex
 from dimos.utils.logging_config import setup_logger
 

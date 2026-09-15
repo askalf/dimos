@@ -146,7 +146,7 @@ def test_an_item_place_is_built_from_fields_a_found_object_actually_has() -> Non
     """A Place is assembled by hand from a FoundObject, so a renamed or imagined field
     is an AttributeError at the moment of answering -- after the detector has already
     been paid for. `found.arrived` was invented; the real one is `stamp`."""
-    from dimos.mapping.hyperspace.msgs import FoundObject
+    from dimos.mapping.hyperspace.FoundObject import FoundObject
 
     fields = set(FoundObject.__dataclass_fields__)
     for name in ("centre", "frame", "confidence", "depth_m", "extent", "views", "stamp"):

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""What `Hyperspace.find_objects` hands back: where the thing is, and the proof.
+"""One place a hyperspace query found a thing, with the frame that found it.
 
 A caller that asks "where is the traffic cone" wants three different things and they
 are not interchangeable -- somewhere to drive to (the 3D box), a reason to believe it
@@ -22,16 +22,13 @@ together, because an answer without its evidence cannot be checked and a picture
 its frame id cannot be placed.
 
 This lives beside the module rather than in `dimos/msgs` deliberately: it is one
-module's answer shape, not a sensor type the rest of the system speaks. It has no
-`lcm_encode`, so the transport factory gives it the pickled transport -- which is what
-carries the colour frames without a second copy of the image codecs.
+module's answer shape, not a sensor type the rest of the system speaks.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from dimos.msgs.sensor_msgs.Image import Image
@@ -92,48 +89,4 @@ class FoundObject:
             "views": self.views,
             "models": list(self.models),
             "has_image": self.image is not None,
-        }
-
-
-@dataclass
-class FoundObjects:
-    """Every place one query found, strongest first."""
-
-    msg_name: ClassVar[str] = "hyperspace.FoundObjects"
-
-    query: str = ""
-    objects: list[FoundObject] = field(default_factory=list)
-    # Which sort of answer these are, and a subscriber has to read it before it reads
-    # `confidence` or `extent`. "item" means the detector drew a box: `extent` is
-    # measured and `confidence` is OWLv2's own calibrated score. "heatmap" and "area"
-    # mean a scored CELL: `extent` is not measured, and `confidence` carries the cell's
-    # score, which is a different quantity on a different scale and must not be compared
-    # with a detector's. Without this a viewer reads a cell score as a detection and
-    # believes a number nothing measured.
-    kind: str = "item"
-    # The world frame every box is in, repeated here so a caller reading only the
-    # envelope does not have to open an object to find out.
-    frame: str = "odom"
-    # Episodes the detector refused. A query that found nothing and a query that was
-    # never asked look identical without this.
-    refused: int = 0
-    # How long the whole thing took, and how that split. Live callers budget against
-    # this, and the split is what says whether a slow answer was the search or OWLv2.
-    ms: float = 0.0
-    timings: dict[str, float] = field(default_factory=dict)
-    ts: float = field(default_factory=time.time)
-
-    def __len__(self) -> int:
-        return len(self.objects)
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "query": self.query,
-            "kind": self.kind,
-            "frame": self.frame,
-            "objects": [found.as_dict() for found in self.objects],
-            "refused": self.refused,
-            "ms": self.ms,
-            "timings": self.timings,
-            "ts": self.ts,
         }
