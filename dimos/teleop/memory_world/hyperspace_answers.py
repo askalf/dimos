@@ -169,6 +169,18 @@ class HyperspaceAnswers:
 
     def _draw_hyperspace_answer(self, found: FoundObjects) -> None:
         query = found.query or "that"
+        # `timings` carries the detector's own split, including `passes` -- the number of
+        # forward passes the answer actually cost. Logged because the cost of an answer is
+        # not visible from the answer: two queries can return one place each and differ
+        # several-fold in work, and without this the only way to tell "more work" from
+        # "dearer work" is inside hyperspace's own loop.
+        if found.timings:
+            logger.info(
+                "hyperspace %s %r: %s",
+                found.kind or "item",
+                query,
+                "  ".join(f"{name}={value:.0f}" for name, value in sorted(found.timings.items())),
+            )
         # Read BEFORE `confidence` or `extent`: both mean different things per kind, and
         # neither field says which. It also rides out on the answer, because `engine`
         # alone no longer says what scale the scores are on.
