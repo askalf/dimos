@@ -25,9 +25,10 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 import typer
 
-from dimos.mapping.hyperspace import cli, patches as hs
+from dimos.mapping.hyperspace import cli, patches as hs, siglip_embedder
 from dimos.mapping.hyperspace.ingest import (
     COMPLETE_STREAM,
     KEYFRAME_STREAM,
@@ -474,6 +475,38 @@ def test_member_specs_and_tags() -> None:
     assert member_tag("google/siglip2-base-patch16-naflex@576") == "base-patch16-naflex-576"
     assert member_tag("/models/siglip2-so400m-patch16-384") == "so400m-patch16-384"
     assert member_tag("google/siglip2-base-patch16-224#2x3") == "base-patch16-224-2x3"
+
+
+def test_naflex_on_metal_gets_its_missing_resize() -> None:
+    """A NaFlex member resizes its position grid with an antialiased bilinear, which
+    torch has no Metal kernel for, so before this the forward pass raised mid-run and
+    NaFlex was unusable on a Mac. `PYTORCH_ENABLE_MPS_FALLBACK=1` cannot fix it from
+    inside the process -- torch reads that when it is imported."""
+    installed = len(siglip_embedder._mps_antialias_fallback)
+    siglip_embedder.ensure_mps_antialias("cpu")
+    siglip_embedder.ensure_mps_antialias("cuda")
+    assert len(siglip_embedder._mps_antialias_fallback) == installed, (
+        "only Metal is missing the kernel"
+    )
+
+    if not torch.backends.mps.is_available():
+        pytest.skip("no Metal device")
+
+    siglip_embedder.ensure_mps_antialias("mps")
+    on_metal = torch.nn.functional.interpolate(
+        torch.arange(64, dtype=torch.float32, device="mps").reshape(1, 1, 8, 8),
+        size=(4, 4),
+        mode="bilinear",
+        antialias=True,
+    )
+    on_cpu = torch.nn.functional.interpolate(
+        torch.arange(64, dtype=torch.float32).reshape(1, 1, 8, 8),
+        size=(4, 4),
+        mode="bilinear",
+        antialias=True,
+    )
+    assert on_metal.device.type == "mps", "the answer comes back where the caller left it"
+    assert on_metal.cpu().numpy() == pytest.approx(on_cpu.numpy())
 
 
 def test_tiles_cover_the_frame_exactly_and_stitch_back() -> None:
