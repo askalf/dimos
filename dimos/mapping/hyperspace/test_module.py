@@ -1427,3 +1427,21 @@ def test_a_narrowed_device_search_answers_about_the_whole_index() -> None:
     assert np.max(np.abs(narrowed_device - narrowed_cpu)) < 5e-3
     picked, _ = held.hot(query, background, threshold=0.0, rows=wanted)
     assert set(picked.tolist()) <= set(wanted.tolist())
+
+
+def test_a_named_index_device_reaches_the_index_that_is_actually_used(store: SqliteStore) -> None:
+    """`LiveQuery` holds its OWN `ResidentIndex`, not the process-wide `RESIDENT`.
+
+    Setting the device on the global one did nothing and the setting was silently
+    ignored -- `--index-device cpu` still put a member on the card, which the run line
+    happily reported as "index_device cpu" on the way past. The index a query uses is
+    the one that has to be told, and it has to be told in the constructor, because `ask`
+    loads the index too and a caller that never warms would otherwise get "auto".
+    """
+    from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
+
+    for named in ["cpu", "cuda", "mps"]:
+        query = LiveQuery(store, LiveConfig(index_device=named))
+        assert query.held.device == named
+        assert query.held.chosen_device() == named
+    assert LiveQuery(store, LiveConfig()).held.device == "auto", "and auto still means auto"

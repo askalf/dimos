@@ -124,7 +124,11 @@ class LiveQuery:
         self.frames = RecordingFrames(store, config=self.config.detect, **named)
         self.boxes = Owlv2Boxes(self.config.detect)
         self.towers = TextTowers(self.config.tower_device or self.config.detect.device or "cpu")
+        # Its own index, not the process-wide `RESIDENT` -- and the device has to be
+        # named HERE rather than in `warm`, because `ask` loads the index too and a
+        # caller that never warms would otherwise get "auto" whatever it asked for.
         self.held = ResidentIndex()
+        self.held.device = self.config.index_device
         self._lock = threading.Lock()
         self.loaded: dict[str, float] = {}
 
@@ -142,10 +146,6 @@ class LiveQuery:
         self.loaded["detector"] = self.boxes.warm()
         self.loaded["recording"] = self.frames.warm()
         at = time.monotonic()
-        # Before the first read, because a member is placed as it loads.
-        from dimos.mapping.hyperspace.resident import RESIDENT
-
-        RESIDENT.device = self.config.index_device
         self.loaded["index"] = float(self.catch_up())
         self.loaded["index_s"] = time.monotonic() - at
         self.loaded["first_pass_s"] = self._touch_the_index(specs)

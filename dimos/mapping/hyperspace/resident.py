@@ -73,7 +73,13 @@ DEVICE_AS = "float16"
 # Left free on a CUDA card after the index takes its share. OWLv2 and its activations
 # live there too, and an index that fills the card leaves the detector nothing -- which
 # on an 8 GB card is how a query goes from fast to out of memory.
-CUDA_RESERVE_BYTES = 3_000_000_000
+#
+# This covers ACTIVATIONS, not the weights: the index is placed during `warm`, after the
+# detector is loaded, so what `room_on` sees free is already net of OWLv2 itself. One
+# forward pass at 960x960 measured about 600 MiB. Three gigabytes was a guess and it cost
+# something real -- sf_office's so400m member wanted 2041 MB and was told there were 1795,
+# so it stayed in RAM over a 250 MB margin that was never needed.
+CUDA_RESERVE_BYTES = 1_500_000_000
 
 
 @dataclass
