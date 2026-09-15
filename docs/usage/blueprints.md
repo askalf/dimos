@@ -367,7 +367,7 @@ parsed = parser.parse(["--module1.arg1=5"])
 ```
 
 `dimos run --help` and `dimos run unitree-go2 --help` show command usage and exit
-before loading blueprints or starting DimOS. Use `dimos run unitree-go2 --config-help`
+before loading blueprints or starting dimOS. Use `dimos run unitree-go2 --config-help`
 to load the blueprint and list its module configuration options without starting
 the robot. This requires the blueprint's dependencies to be installed.
 
