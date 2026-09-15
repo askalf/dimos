@@ -15,8 +15,10 @@
 """Dimensional cloud auth: `dimos login` / `dimos logout` / `dimos whoami`.
 
 Device-code flow (RFC 8628 shaped) against api.dimensional.org — built for robots:
-no browser or clipboard needed on this machine. The CLI prints an 8-character code,
-you approve it from any signed-in browser (laptop, phone), and the minted API key is
+no browser or clipboard needed on this machine. On a local desktop the CLI opens the
+verification page for you; anywhere else (over SSH, headless, a robot) it just prints
+the URL and an 8-character code, which you approve from any signed-in browser, and the
+minted API key is
 stored in the system keyring, falling back to a plain-text 0600 file
 (`CREDENTIALS_PATH`, just the key) on headless machines with no keyring
 backend. `DIMOS_API_KEY` (via GlobalConfig) overrides any stored login.
@@ -27,6 +29,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sys
 import textwrap
 import time
 from types import ModuleType
@@ -71,11 +74,37 @@ def _version() -> str:
         return "dev"
 
 
-def _login_card(uri: str, code: str, spin: str = "", clock: str = "") -> list[str]:
+def _open_browser(url: str) -> bool:
+    """Open the verification page for the user, when it is safe to.
+
+    Only on a local terminal with a display. Over SSH ``webbrowser.open`` would
+    launch a browser on the far end, a robot; headless it can seize the terminal
+    with a text browser. The URL is printed regardless, so the fallback is the
+    same everywhere. ``NO_BROWSER`` opts out.
+    """
+    if not sys.stdout.isatty() or os.environ.get("NO_BROWSER"):
+        return False
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return False
+    if sys.platform not in ("darwin", "win32") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return False
+    try:
+        import webbrowser
+
+        return webbrowser.open(url)
+    except Exception:
+        return False
+
+
+def _login_card(
+    uri: str, code: str, spin: str = "", clock: str = "", opened: bool = False
+) -> list[str]:
     """The one card the whole wait lives in: URL, code, and a ticking last line."""
     body = [
         theme.paint("Sign in to Dimensional", theme.GREY_RAMP[2]),
-        theme.paint(f"Open      {uri}", theme.MUTED),
+        theme.paint(f"{'Opened' if opened else 'Open':<10}{uri}", theme.MUTED),
         "",
         theme.paint(f"Code      {code}", theme.rgb("white")),
     ]
@@ -115,9 +144,8 @@ def _signed_in_card(email: str, key_id: str, where: str) -> list[str]:
             + theme.paint(COMMUNITY, theme.rgb("cyan")),
         ]
     if cols < 72:
-        # Names only, on one line — enough to hint at the surface area.
-        if cols >= 48:
-            body += ["", theme.paint(" · ".join(n for n, _ in CAPABILITIES), theme.MUTED)]
+        # Too little room for the About prose; identity and the community link
+        # are what a narrow terminal keeps.
         return theme.card(body, "ok", cols, cap=110)
 
     body += ["", theme.paint("About DimOS", theme.rgb("white"))]
@@ -157,13 +185,13 @@ def _reveal(rows: list[str]) -> None:
     effect.terminal_config.ignore_terminal_dimensions = True
     effect.terminal_config.frame_rate = 100_000
     frames = list(effect)
-    started, n = time.time(), 60
+    started, n, fps = time.time(), 60, 60  # 60 frames at 60fps -> a ~1s sweep
     # Redraw in place, relative to where the cursor is. An absolute cursor-home
     # would paint the wordmark over whatever sits at the top of the window.
     with theme.Live() as live:
         for k in range(n):
             live.update(frames[min(len(frames) - 1, int(len(frames) * k / (n - 1)))].split("\n"))
-            slack = started + (k + 1) / 30 - time.time()
+            slack = started + (k + 1) / fps - time.time()
             if slack > 0:
                 time.sleep(slack)
 
@@ -265,6 +293,7 @@ def login() -> None:
     """Sign this machine in to Dimensional cloud."""
     d = _post("/auth/device", label=socket.gethostname())
     deadline = time.time() + d["expires_in"]
+    opened = _open_browser(d["verification_uri"])
 
     # The wait runs on the alternate screen, so resizing the window repaints the
     # card cleanly instead of smearing it. The outcome is carried back out and
@@ -277,7 +306,11 @@ def login() -> None:
         def frame() -> list[str]:
             left = max(0, int(deadline - time.time()))
             return _login_card(
-                d["verification_uri"], d["user_code"], next(spin), f"{left // 60}:{left % 60:02d}"
+                d["verification_uri"],
+                d["user_code"],
+                next(spin),
+                f"{left // 60}:{left % 60:02d}",
+                opened=opened,
             )
 
         live.update(frame())

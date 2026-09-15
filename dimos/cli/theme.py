@@ -170,6 +170,39 @@ def enabled() -> bool:
     return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
 
+def _mute_echo() -> object | None:
+    """Turn off terminal echo, returning what is needed to restore it.
+
+    A fullscreen view does not read stdin, but the terminal still queues and
+    echoes whatever is typed or scrolled at it. Silencing echo keeps scroll
+    escapes off the canvas; ISIG is untouched, so Ctrl-C still interrupts.
+    """
+    try:
+        import termios
+
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        muted = termios.tcgetattr(fd)
+        muted[3] &= ~termios.ECHO  # lflags
+        termios.tcsetattr(fd, termios.TCSADRAIN, muted)
+        return (fd, saved)
+    except Exception:
+        return None  # not a real terminal, or no termios (Windows): nothing to mute
+
+
+def _restore_echo(state: object | None) -> None:
+    if not isinstance(state, tuple):
+        return
+    try:
+        import termios
+
+        fd, saved = state
+        termios.tcflush(fd, termios.TCIFLUSH)  # drop queued scroll bytes, don't spill to the shell
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    except Exception:
+        pass
+
+
 def term_width() -> int:
     return shutil.get_terminal_size((100, 24)).columns
 
@@ -375,6 +408,7 @@ class Live:
         self._static = not enabled()
         self._done = False
         self._fullscreen = fullscreen
+        self._echo: object | None = None
 
     def __enter__(self) -> Live:
         if not self._static:
@@ -382,6 +416,11 @@ class Live:
             # does not, because it moves up a logical-line count that desyncs the
             # moment the terminal reflows. Use fullscreen for a wait that stays on
             # screen long enough to be resized, in-place for a brief animation.
+            if self._fullscreen:
+                # A touchpad scroll makes the terminal send arrow-key escapes;
+                # with echo on they print as ^[[A litter over the card. Off for
+                # the duration, restored on exit.
+                self._echo = _mute_echo()
             sys.stdout.write(
                 "\033[?1049h\033[2J\033[H\033[?25l" if self._fullscreen else "\033[?25l"
             )
@@ -392,6 +431,7 @@ class Live:
         if not self._static:
             sys.stdout.write("\033[?25h\033[?1049l" if self._fullscreen else "\033[?25h")
             sys.stdout.flush()
+            _restore_echo(self._echo)
 
     def update(self, rows: list[str]) -> None:
         if self._static:

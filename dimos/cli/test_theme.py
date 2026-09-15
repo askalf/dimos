@@ -273,3 +273,66 @@ def test_fullscreen_live_is_silent_off_a_terminal(
         live.update(["Signed in", "you@x"])
     out = capsys.readouterr().out
     assert "\x1b[" not in out and "Signed in" in out, "no alt screen, just the words"
+
+
+# --------------------------------------------------------------- browser open
+
+
+def test_open_browser_opens_on_a_local_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    import webbrowser
+
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.append(u) or True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    for var in ("SSH_CONNECTION", "SSH_TTY", "NO_BROWSER"):
+        monkeypatch.delenv(var, raising=False)
+    assert cloud._open_browser("https://console.dimensional.org/activate") is True
+    assert opened == ["https://console.dimensional.org/activate"]
+
+
+def test_open_browser_stays_shut_over_ssh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On a robot reached over SSH, opening a browser would hit the far end."""
+    import webbrowser
+
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.append(u) or True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22")
+    assert cloud._open_browser("https://x") is False
+    assert opened == [], "must not launch a browser over SSH"
+
+
+def test_open_browser_needs_a_tty_and_honours_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    assert cloud._open_browser("https://x") is False
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("NO_BROWSER", "1")
+    assert cloud._open_browser("https://x") is False
+
+
+def test_login_card_says_opened_but_always_shows_the_url(tty: None) -> None:
+    auto = " ".join(plain(cloud._login_card(URI, CODE, opened=True)))
+    manual = " ".join(plain(cloud._login_card(URI, CODE, opened=False)))
+    assert "Opened" in auto and URI in auto
+    assert "Opened" not in manual and "Open" in manual and URI in manual
+
+
+def test_narrow_signed_in_card_drops_the_capability_names(
+    tty: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a small screen the signed-in card keeps identity, not the surface area."""
+    monkeypatch.setattr(theme, "term_width", lambda: 60)
+    text = " ".join(plain(cloud._signed_in_card("a@b", "k", "keyring")))
+    assert "Signed in" in text and "a@b" in text
+    assert "Navigation" not in text and "Manipulation" not in text
+
+
+def test_fullscreen_live_tolerates_a_non_tty_stdin(
+    tty: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Muting echo is best-effort: a stdin with no fileno must not crash the wait."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    with theme.Live(fullscreen=True) as live:
+        live.update(["x"])  # reaching here without raising is the assertion
