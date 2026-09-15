@@ -392,37 +392,19 @@ fn wait_for_ack(cmd: &UdpSocket, device: SocketAddrV4, seq: u32, stop: &AtomicBo
 mod tests {
     use super::*;
     use crate::wire::{build_imu_samples, build_points_high, DataPacket, DataType, ImuSample};
+    use serial_test::file_serial;
     use std::collections::HashSet;
-    use std::fs::File;
 
-    /// Eight free loopback ports, reserved until the returned lock file drops.
-    fn test_ports() -> (Ports, File) {
-        let dir = std::env::temp_dir().join("dimos-livox-test-ports");
-        std::fs::create_dir_all(&dir).unwrap();
-        for base in (10000..32768).step_by(8) {
-            let lock = File::create(dir.join(base.to_string())).unwrap();
-            if lock.try_lock().is_err() {
-                continue;
-            }
-            let free = (0..8).all(|offset| {
-                UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, base + offset)).is_ok()
-            });
-            if free {
-                let ports = Ports {
-                    cmd_data: base,
-                    point_data: base + 1,
-                    imu_data: base + 2,
-                    host_cmd_data: base + 3,
-                    host_point_data: base + 4,
-                    host_imu_data: base + 5,
-                    push_msg: base + 6,
-                    host_push_msg: base + 7,
-                };
-                return (ports, lock);
-            }
-        }
-        panic!("no free port block below 32768");
-    }
+    const TEST_PORTS: Ports = Ports {
+        cmd_data: 10000,
+        point_data: 10001,
+        imu_data: 10002,
+        host_cmd_data: 10003,
+        host_point_data: 10004,
+        host_imu_data: 10005,
+        push_msg: 10006,
+        host_push_msg: 10007,
+    };
 
     /// A minimal in-test device: ACK every param-set, then stream one point
     /// packet and one IMU packet once work mode is set.
@@ -508,8 +490,9 @@ mod tests {
     }
 
     #[test]
+    #[file_serial(livox_loopback)]
     fn handshake_and_stream_over_loopback() {
-        let (ports, _lock) = test_ports();
+        let ports = TEST_PORTS;
         let device = spawn_fake_device(ports);
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -556,8 +539,9 @@ mod tests {
     }
 
     #[test]
+    #[file_serial(livox_loopback)]
     fn packets_from_unexpected_senders_are_ignored() {
-        let (ports, _lock) = test_ports();
+        let ports = TEST_PORTS;
         let stop = Arc::new(AtomicBool::new(false));
         // A dropped loopback datagram fails the test instead of hanging it.
         let watchdog = stop.clone();
@@ -610,8 +594,9 @@ mod tests {
     }
 
     #[test]
+    #[file_serial(livox_loopback)]
     fn recv_ends_on_stop() {
-        let (ports, _lock) = test_ports();
+        let ports = TEST_PORTS;
         let stop = Arc::new(AtomicBool::new(false));
         let mut source = LiveSource::start(
             LiveConfig {
@@ -631,8 +616,9 @@ mod tests {
     }
 
     #[test]
+    #[file_serial(livox_loopback)]
     fn rejected_handshake_fails_the_source() {
-        let (ports, _lock) = test_ports();
+        let ports = TEST_PORTS;
         let device = std::thread::spawn(move || {
             let cmd =
                 UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, ports.cmd_data)).unwrap();
