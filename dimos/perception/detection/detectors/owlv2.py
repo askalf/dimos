@@ -52,6 +52,18 @@ class Owlv2Config(HuggingFaceModelConfig):
     # the same order as float16. Anything with a threshold should be re-checked against
     # its own answers before turning this on, not just against a few frames.
     gpu_preprocess: bool = False
+    # Where those four steps run. "" follows the model. The point of naming it separately
+    # is that THE WIN WAS NEVER THE GPU -- it is torch instead of skimage, and torch on a
+    # CPU is already most of it. MEASURED on an M-series Mac, one 848x480 frame:
+    #
+    #   the processor's preprocessing, on the cpu   155 ms
+    #   these four steps in torch, on the cpu       4.0 ms
+    #   the forward pass, on mps                    141 ms
+    #
+    # Which matters because MPS cannot run them at all: torch has no
+    # `aten::_upsample_bilinear2d_aa` there and asking raises mid-run. Preparing on the
+    # cpu and moving the result is 39x on a machine that could not use this feature.
+    preprocess_device: str = ""
 
 
 class Owlv2Detector(HuggingFaceModel):
@@ -113,7 +125,8 @@ class Owlv2Detector(HuggingFaceModel):
         """
         processor = self._processor.image_processor
         side = processor.size["height"]
-        device = self.config.device
+        # Where the arithmetic happens, which need not be where the model lives.
+        device = self.config.preprocess_device or self.config.device
         mean = torch.tensor(processor.image_mean, device=device).view(1, 3, 1, 1)
         deviation = torch.tensor(processor.image_std, device=device).view(1, 3, 1, 1)
 
@@ -135,7 +148,8 @@ class Owlv2Detector(HuggingFaceModel):
                     antialias=True,
                 )
             )
-        return (torch.cat(squares, dim=0) - mean) / deviation
+        prepared = (torch.cat(squares, dim=0) - mean) / deviation
+        return prepared if device == self.config.device else prepared.to(self.config.device)
 
     def _autocast(self) -> torch.autocast:
         return torch.autocast(

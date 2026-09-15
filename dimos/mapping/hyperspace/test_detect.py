@@ -1177,20 +1177,32 @@ def test_the_fast_image_path_is_cuda_only_and_never_metal() -> None:
     differ a little and the scores move with them -- which is why it took a whole run's
     answers to turn on, and only where it was measured.
 
-    MPS is a harder no: torch has no `aten::_upsample_bilinear2d_aa` there, so "on" raises
-    NotImplementedError partway through a run rather than being slightly wrong. "auto" must
-    never pick it there, whatever the score question says.
+    MPS cannot run those steps at all -- no `aten::_upsample_bilinear2d_aa` there -- but
+    that is a question of WHERE they run, not whether. MEASURED on an M-series Mac, one
+    848x480 frame: the processor's preprocessing 155 ms against 4.0 ms for the same four
+    steps in torch on the CPU, beside a 141 ms forward pass. So the win was never the GPU,
+    and a machine that cannot use the GPU for it still gets 39x by preparing on the cpu.
     """
-    from dimos.mapping.hyperspace.detect import DetectConfig, gpu_preprocess_for
+    from dimos.mapping.hyperspace.detect import (
+        DetectConfig,
+        gpu_preprocess_for,
+        preprocess_device_for,
+    )
     from dimos.perception.detection.detectors.owlv2 import Owlv2Config
 
     assert DetectConfig.gpu_preprocess == "auto"
+    # CUDA only, and for a RECALL reason rather than a speed one: on Metal the fast path
+    # is twice as quick and cost four of bike's eleven traffic lights. See the docstring.
     assert gpu_preprocess_for("auto", "cuda") is True
-    assert gpu_preprocess_for("auto", "cuda:1") is True
     assert gpu_preprocess_for("auto", "mps") is False
     assert gpu_preprocess_for("auto", "cpu") is False
     assert gpu_preprocess_for("on", "mps") is True, "an explicit ask is still obeyed"
     assert gpu_preprocess_for("off", "cuda") is False
+
+    # Metal has no antialiased resize, so it prepares on the cpu and moves the result.
+    assert preprocess_device_for("mps") == "cpu"
+    assert preprocess_device_for("cuda") == "", "cuda does it in place"
+    assert preprocess_device_for("cpu") == ""
 
     # Owlv2Config is a pydantic model, so the default lives in the field, not on the class.
     assert Owlv2Config().gpu_preprocess is False, (

@@ -711,14 +711,40 @@ def detector_dtype_for(setting: str, device: str) -> str:
 
 
 def gpu_preprocess_for(setting: str, device: str) -> bool:
-    """Whether to prepare the detector's images on the card, once the device is known.
+    """Whether to prepare the detector's images in torch rather than in the processor.
 
-    "auto" is CUDA only. MPS is excluded because torch has no antialiased bilinear resize
-    there and the run would raise partway through, not because of the score question.
+    "auto" is CUDA only, and that is a recall decision rather than a speed one.
+
+    THE SPEED IS REAL AND SO IS THE COST. The win was never the GPU: on an M-series Mac
+    the processor's preprocessing is 155 ms against 4.0 ms for the same four steps in
+    torch on the CPU, beside a 141 ms forward pass -- so even MPS, which cannot run them
+    (no `aten::_upsample_bilinear2d_aa`), could prepare on the cpu and halve a detector
+    pass. MEASURED end to end on bike, detector time 4.33 / 10.66 / 5.02 / 4.74 s fell
+    to 2.81 / 5.88 / 2.69 / 2.98.
+
+    AND THE ANSWERS MOVED: places went 11 / 11 / 9 / 17 to 10 / 7 / 9 / 17. Four of
+    eleven traffic lights, gone. That is the documented cost of a different resize kernel
+    arriving at a 0.5 acceptance cut, and it is exactly what "re-check against a whole
+    run's answers" was written to catch. Twice the speed for a third of the traffic
+    lights is not a trade to make quietly, so Metal keeps the slow, faithful path until
+    someone decides otherwise with this in front of them.
+
+    `preprocess_device_for` still knows where the fast path would run, so turning it on
+    is `gpu_preprocess="on"` and nothing more.
     """
     if setting == "auto":
         return device.startswith("cuda")
     return setting.lower() in {"1", "on", "true", "yes"}
+
+
+def preprocess_device_for(device: str) -> str:
+    """Where the image preparation runs, given where the model lives.
+
+    CUDA does it in place. Metal cannot -- the antialiased resize does not exist there --
+    so it prepares on the cpu and pays one small copy, which is nothing against the
+    151 ms it saves.
+    """
+    return "cpu" if device == "mps" else ""
 
 
 class Owlv2Boxes:
@@ -746,6 +772,9 @@ class Owlv2Boxes:
                 settings["dtype"] = _torch_dtype(dtype)
             if gpu_preprocess_for(self.config.gpu_preprocess, chosen):
                 settings["gpu_preprocess"] = True
+                where = preprocess_device_for(chosen)
+                if where:
+                    settings["preprocess_device"] = where
             self._detector = Owlv2Detector(**settings)
         return self._detector
 
