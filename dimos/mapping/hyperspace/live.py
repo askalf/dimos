@@ -153,12 +153,42 @@ class LiveQuery:
         self.loaded["index_s"] = time.monotonic() - at
 
         at = time.monotonic()
-        self.towers.place(self.tower_device())
-        for spec in specs:
-            self.towers.background(spec)
+        self._place_the_towers(specs)
         self.loaded["towers"] = time.monotonic() - at
         self.loaded["first_pass_s"] = self._touch_the_index(specs)
         return dict(self.loaded)
+
+    def _place_the_towers(self, specs: Sequence[str]) -> None:
+        """Load the towers where they should go, and move them if that turns out wrong.
+
+        Predicting beforehand does not work: on an 8 GB card the free memory said there
+        was room, the towers took most of it, and the detector's next forward pass died
+        asking for 594 MiB. So the towers load, and then the question is asked again with
+        them in place -- if the detector can no longer breathe they go back to the CPU,
+        which costs a reload and keeps the query alive.
+        """
+        from dimos.mapping.hyperspace.resident import detector_can_still_breathe
+
+        wanted = self.tower_device()
+        self.towers.place(wanted)
+        for spec in specs:
+            self.towers.background(spec)
+        if wanted == "cpu" or detector_can_still_breathe(wanted):
+            return
+        logger.warning(
+            f"hyperspace: the text towers left {wanted} too full for the detector; "
+            "moving them to the cpu"
+        )
+        self.towers.close()
+        # Stopping them is not the same as giving the memory back: torch keeps its
+        # allocator's blocks, and the detector asks the DRIVER, not the allocator.
+        if wanted.startswith("cuda"):
+            import torch
+
+            torch.cuda.empty_cache()
+        self.towers.place("cpu")
+        for spec in specs:
+            self.towers.background(spec)
 
     def tower_device(self) -> str:
         """Where the text towers should run, answered after everything else is placed."""

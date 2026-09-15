@@ -1481,3 +1481,47 @@ def test_a_named_tower_device_still_wins(store: SqliteStore) -> None:
 
     assert LiveQuery(store, LiveConfig(tower_device="cpu")).tower_device() == "cpu"
     assert LiveQuery(store, LiveConfig(tower_device="cuda:1")).tower_device() == "cuda:1"
+
+
+def test_the_towers_give_the_card_back_when_the_detector_cannot_breathe(
+    store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Predicting there is room is not the same as there being room afterwards.
+
+    On an 8 GB card the free memory before loading said 3 GB, which passed the filter;
+    the towers then took most of it and OWLv2's next forward pass died asking for
+    594 MiB. So the real check happens with the towers already in place, and failing it
+    moves them to the CPU rather than letting the query die.
+    """
+    from dimos.mapping.hyperspace import live as live_module
+    from dimos.mapping.hyperspace.live import LiveConfig, LiveQuery
+
+    query = LiveQuery(store, LiveConfig(tower_device="cuda"))
+    placed: list[str] = []
+    monkeypatch.setattr(query.towers, "place", lambda device: placed.append(device))
+    monkeypatch.setattr(query.towers, "background", lambda spec: None)
+    monkeypatch.setattr(query.towers, "close", lambda: None)
+    monkeypatch.setattr(live_module, "logger", SimpleNamespace(warning=lambda *_: None))
+
+    # Room left: they stay where they were put.
+    monkeypatch.setattr(
+        "dimos.mapping.hyperspace.resident.detector_can_still_breathe", lambda device: True
+    )
+    query._place_the_towers(["some-spec"])
+    assert placed == ["cuda"]
+
+    # No room left: they go back, and the query survives.
+    placed.clear()
+    monkeypatch.setattr(
+        "dimos.mapping.hyperspace.resident.detector_can_still_breathe", lambda device: False
+    )
+    query._place_the_towers(["some-spec"])
+    assert placed == ["cuda", "cpu"]
+
+
+def test_the_headroom_check_is_a_yes_where_there_is_no_separate_pool() -> None:
+    from dimos.mapping.hyperspace.resident import detector_can_still_breathe
+
+    assert detector_can_still_breathe("cpu") is True
+    assert detector_can_still_breathe("") is True
+    assert detector_can_still_breathe("mps") is True, "unified memory is not a card"

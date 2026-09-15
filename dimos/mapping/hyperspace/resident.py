@@ -81,12 +81,20 @@ DEVICE_AS = "float16"
 # so it stayed in RAM over a 250 MB margin that was never needed.
 CUDA_RESERVE_BYTES = 1_500_000_000
 
-# Free VRAM below which the text towers stay on the CPU. They are small -- about 1.5 GB
-# for two members -- but they load BESIDE the detector and the index, and the failure is
-# not graceful: MEASURED on an 8 GB RTX 5070, three towers on the card held 6.0 GiB of
-# 7.5, so OWLv2's warm-up asked for 594 MiB, found 217, and the query died before it
-# looked at a frame. Asked AFTER both of those are placed, so this is what is really left.
+# Free VRAM below which the text towers do not even try the card. A first filter only --
+# the real check is `detector_can_still_breathe` AFTER they have loaded, because what
+# matters is what is left once they are actually on it.
 TOWER_ROOM_BYTES = 3_000_000_000
+
+# What the detector needs free for one forward pass, over and above its weights. MEASURED
+# on an 8 GB RTX 5070: OWLv2 at 960x960 asks for 594 MiB, and when it is not there the
+# query dies with an OutOfMemoryError before it looks at a frame. 1.2 GB is that with room
+# for the activations either side of it.
+#
+# THIS IS CHECKED AFTER THE TOWERS LOAD, NOT BEFORE, and the difference is not academic:
+# predicting from free memory beforehand said 3 GB was plenty, the towers then took most
+# of it, and the detector OOM'd exactly as it had before any of this was touched.
+DETECTOR_HEADROOM_BYTES = 1_200_000_000
 
 
 @dataclass
@@ -336,6 +344,23 @@ def towers_fit_on(device: str) -> bool:
         free, _total = torch.cuda.mem_get_info(device if ":" in device else None)
         return int(free) >= TOWER_ROOM_BYTES
     return False
+
+
+def detector_can_still_breathe(device: str) -> bool:
+    """Is there room left on *device* for a detector forward pass, right now?
+
+    Asked after the towers have actually loaded, which is the only moment the answer is
+    a fact rather than a forecast. Unified memory is not a separate pool, so Metal is
+    always yes; a card has to show `DETECTOR_HEADROOM_BYTES`.
+    """
+    if not device or device == "cpu" or device == "mps":
+        return True
+    import torch
+
+    if device.startswith("cuda"):
+        free, _total = torch.cuda.mem_get_info(device if ":" in device else None)
+        return int(free) >= DETECTOR_HEADROOM_BYTES
+    return True
 
 
 def room_on(device: str) -> int:
