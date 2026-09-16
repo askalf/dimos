@@ -27,13 +27,13 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 import typer
 
-from dimos.mapping.ray_tracing.transformer import RayTraceMap, pose_from_tf
 from dimos.mapping.ray_tracing.utils.loaded_map import LOADED_MAP_STREAM
+from dimos.mapping.ray_tracing.viz import PREMAP_POINT_RADIUS, log_loaded_map, voxel_map_points
 from dimos.mapping.relocalization.lidar.module import LidarConfig
 from dimos.mapping.relocalization.lidar.relocalize import PRESETS, LidarRelocalizer
+from dimos.mapping.relocalization.module import yaw_deg
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF
-from dimos.memory.vis.utils import PREMAP_POINT_RADIUS, log_loaded_map, voxel_map_points
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, register_colormap_annotation
 from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 from dimos.utils.data import resolve_named_path
@@ -53,7 +53,7 @@ _FIELDS = LidarConfig.model_fields
 class Attempt(NamedTuple):
     t_s: float
     fitness: float
-    tf: Transform | None
+    fix: Transform | None
 
 
 class Replay(NamedTuple):
@@ -61,10 +61,6 @@ class Replay(NamedTuple):
     fix: Transform | None
     fix_ts: float
     recorded: Transform | None
-
-
-def yaw_deg(tf: Transform) -> float:
-    return math.degrees(tf.rotation.euler.z)
 
 
 def fix_error(fix: Transform, recorded: Transform) -> tuple[float, float]:
@@ -130,6 +126,9 @@ def replay(
     """Drive the recording through the relocalizer and log the run to rerun."""
     import rerun as rr
 
+    # Needs the native ray tracer, which the other tune commands do without.
+    from dimos.mapping.ray_tracing.transformer import RayTraceMap, pose_from_tf
+
     tf = StreamTF.from_store(store)
     if tf is None:
         raise typer.BadParameter("the recording has no tf stream to register clouds from")
@@ -138,7 +137,7 @@ def replay(
         lidar = lidar.from_time(from_time)
     if to_time is not None:
         lidar = lidar.to_time(to_time)
-    ray = RayTraceMap(voxel_size=voxel_size, min_health=-1, max_health=5, support_min=4)
+    ray = RayTraceMap(voxel_size=voxel_size)
     frames = lidar.transform(pose_from_tf(tf, world_frame)).transform(ray)
 
     relocalizer = LidarRelocalizer(premap.pointcloud, PRESETS[preset])
@@ -200,17 +199,17 @@ def write_loaded_map(
 
 
 def _print_attempt(attempt: Attempt, recorded: Transform | None) -> None:
-    if attempt.tf is None:
+    if attempt.fix is None:
         print(f"{attempt.t_s:.1f}s refused fitness={attempt.fitness:.3f}")
         return
-    t = attempt.tf.translation
+    t = attempt.fix.translation
     line = (
         f"{attempt.t_s:.1f}s fitness={attempt.fitness:.3f} "
-        f"t=({t.x:.2f}, {t.y:.2f}, {t.z:.2f}) yaw={yaw_deg(attempt.tf):.1f}deg"
+        f"t=({t.x:.2f}, {t.y:.2f}, {t.z:.2f}) yaw={yaw_deg(attempt.fix):.1f}deg"
     )
     if recorded is not None:
-        dyaw, dt = fix_error(attempt.tf, recorded)
-        line += f" vs recorded: yaw {dyaw:+.1f}deg t {dt:.2f}m"
+        dyaw, dist_m = fix_error(attempt.fix, recorded)
+        line += f" vs recorded: yaw {dyaw:+.1f}deg t {dist_m:.2f}m"
     print(f"{line} ACCEPTED")
 
 

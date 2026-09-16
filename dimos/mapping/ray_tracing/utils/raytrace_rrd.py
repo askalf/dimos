@@ -36,10 +36,11 @@ from dimos.mapping.ray_tracing.utils.loaded_map import (
     first_loaded_map,
     place_loaded_map,
 )
+from dimos.mapping.ray_tracing.viz import log_loaded_map
 from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF
-from dimos.memory.vis.utils import DEFAULT_RENDER_VOXEL, default_render_voxel, log_loaded_map
+from dimos.memory.vis.utils import DEFAULT_RENDER_VOXEL, default_render_voxel
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.data import resolve_named_path
 

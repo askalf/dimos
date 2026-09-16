@@ -129,13 +129,7 @@ unitree_go2_nav_3d = autoconnect(
             exclude_unset=True
         )
     ).remappings([(MLSPlannerNative, "global_map", "global_map_unused")]),
-    BasicPathFollower.blueprint(
-        speed=0.5,
-        heading_gain=1.0,
-        max_angular=1.0,
-        lookahead_time_s=2.5,
-        min_lookahead_m=1.2,
-    ),
+    BasicPathFollower.blueprint(heading_gain=1.0, lookahead_time_s=2.5, min_lookahead_m=1.2),
     MovementManager.blueprint(),
 ).global_config(n_workers=10, robot_model="unitree_go2", obstacle_avoidance=False)
 

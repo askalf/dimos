@@ -17,9 +17,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from functools import partial
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -30,10 +29,9 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
     from rerun._baseclasses import Archetype
 
-GRAPH_Z_LIFT = 0.05
+    from dimos.visualization.rerun.bridge import VisualOverride
 
-# A bridge visual_override entry: a renderer, or None to hide the entity.
-VisualOverride: TypeAlias = "Callable[..., Archetype | None] | None"
+GRAPH_Z_LIFT = 0.05
 
 TIGHT_COLOR = (4.0, 8.0, 48.0)
 OPEN_COLOR = (150.0, 200.0, 255.0)

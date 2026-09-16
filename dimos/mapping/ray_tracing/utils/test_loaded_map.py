@@ -60,6 +60,18 @@ def test_first_loaded_map_is_none_for_a_missing_or_empty_stream(store: SqliteSto
     assert first_loaded_map(store, "loaded_map") is None
 
 
+def test_first_loaded_map_is_the_earliest_by_ts(store: SqliteStore) -> None:
+    stream = store.stream("loaded_map", PointCloud2)
+    stream.append(_cloud(2.0, T0 + 1.0), ts=T0 + 1.0)
+    stream.append(_cloud(1.0, T0), ts=T0)
+
+    first = first_loaded_map(store, "loaded_map")
+
+    assert first is not None
+    assert first.ts == T0
+    np.testing.assert_allclose(first.data.points_f32(), [[1.0, 0.0, 0.0]])
+
+
 def test_place_loaded_map_moves_points_into_the_world(store: SqliteStore) -> None:
     store.stream("tf", TFMessage).append(
         TFMessage(_world_to_map(90.0, 1.0, 2.0, T0)), ts=T0, pose=None

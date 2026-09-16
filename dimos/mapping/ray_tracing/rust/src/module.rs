@@ -69,7 +69,8 @@ pub struct RayTracingVoxelMap {
     #[output(encode = PointCloud2::encode)]
     local_map_fine: Output<PointCloud2>,
 
-    // Support-gated snapshot of the whole map, emitted once after the seed.
+    // Support-gated snapshot of the whole map, emitted after the seed and
+    // again for each later loaded map, so a planner that missed one recovers.
     #[output(encode = PointCloud2::encode)]
     full_map: Output<PointCloud2>,
 
@@ -221,7 +222,7 @@ impl Worker {
         match job {
             Job::Lidar(msg) => self.ingest_frame(state, msg).await,
             Job::ClearMask(msg) => self.apply_clear_mask(state, msg),
-            Job::LoadedMap(msg) => self.place_loaded_map(state, msg),
+            Job::LoadedMap(msg) => self.place_loaded_map(state, msg).await,
             Job::SeedPrepared(None) => state.seed = SeedState::Idle,
             Job::SeedPrepared(Some(part)) => {
                 info!(
@@ -393,11 +394,16 @@ impl Worker {
     }
 
     /// Place the first loaded map on its own task and tile it off the worker.
-    /// Later maps are ignored, since reseeding would resurrect voxels live
-    /// rays have carved.
-    fn place_loaded_map(&self, state: &mut State, msg: PointCloud2) {
-        if !matches!(state.seed, SeedState::Idle) {
-            return;
+    /// A later map only republishes the full map, since reseeding would
+    /// resurrect voxels live rays have carved.
+    async fn place_loaded_map(&self, state: &mut State, msg: PointCloud2) {
+        match state.seed {
+            SeedState::Idle => {}
+            SeedState::Done => {
+                self.publish_full_map(state).await;
+                return;
+            }
+            SeedState::Placing | SeedState::Loading(_) => return,
         }
         state.seed = SeedState::Placing;
         let tf = self.tf.clone();
@@ -467,8 +473,6 @@ impl Worker {
         let max_tile_ms = load.max_tile_ms;
         let mean_tile_ms = load.mean_tile_ms();
         state.seed = SeedState::Done;
-        let mapper = &state.mapper;
-        let full = tokio::task::block_in_place(|| mapper.full_points());
         info!(
             num_created,
             tiles,
@@ -477,6 +481,13 @@ impl Worker {
             mean_tile_ms,
             "Seeded the voxel map from a loaded map cloud."
         );
+        self.publish_full_map(state).await;
+    }
+
+    /// Publish the support-gated whole map as it stands now.
+    async fn publish_full_map(&self, state: &State) {
+        let mapper = &state.mapper;
+        let full = tokio::task::block_in_place(|| mapper.full_points());
         let cloud = points_to_cloud(&full, &self.config.world_frame, now());
         publish_cloud(&self.full_map, &cloud).await;
     }

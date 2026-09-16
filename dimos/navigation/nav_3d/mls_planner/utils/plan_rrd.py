@@ -36,15 +36,11 @@ from dimos.mapping.ray_tracing.utils.loaded_map import (
     first_loaded_map,
     place_loaded_map,
 )
+from dimos.mapping.ray_tracing.viz import log_loaded_map, voxel_map_points
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF, tf_stream
 from dimos.memory.type.observation import Observation
-from dimos.memory.vis.utils import (
-    DEFAULT_RENDER_VOXEL,
-    default_render_voxel,
-    log_loaded_map,
-    voxel_map_points,
-)
+from dimos.memory.vis.utils import DEFAULT_RENDER_VOXEL, default_render_voxel
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2, register_colormap_annotation
 from dimos.msgs.tf2_msgs.TFMessage import TfFrameTree, TFMessage

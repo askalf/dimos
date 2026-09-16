@@ -59,6 +59,10 @@ logger = setup_logger()
 MAP_SUFFIX = ".pc2.lcm"
 
 
+def yaw_deg(tf: Transform) -> float:
+    return math.degrees(tf.rotation.euler.z)
+
+
 def fix_stream(fixes: Observable[Transform], interval: float) -> Observable[Transform]:
     """Every accepted fix as it lands, then again every ``interval`` s (once only if <= 0)."""
 
@@ -144,10 +148,9 @@ class RelocalizationModule(Module):
             f"relocalize {source}: expected {world!r} -> {map_frame!r}, "
             f"got {tf.frame_id!r} -> {tf.child_frame_id!r}"
         )
-        yaw_deg = math.degrees(tf.rotation.euler.z)
         logger.info(
             f"relocalize {source}: TF {world!r} -> {map_frame!r} "
-            f"t={tf.translation} yaw={yaw_deg:.1f}deg"
+            f"t={tf.translation} yaw={yaw_deg(tf):.1f}deg"
         )
         self.fixes.on_next(tf)
         if not self._placed and self.config.relocalize_once:

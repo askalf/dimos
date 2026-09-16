@@ -25,8 +25,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from dimos.memory.vis.utils import voxel_map_points
-from dimos.navigation.nav_3d.mls_planner.viz import VisualOverride, planner_visual_override
+from dimos.mapping.ray_tracing.viz import voxel_map_points
+from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from dimos.msgs.geometry_msgs.PointStamped import PointStamped
     from dimos.msgs.nav_msgs.Path import Path
     from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+    from dimos.visualization.rerun.bridge import VisualOverride
 
 PATH_Z_LIFT = 0.05
 

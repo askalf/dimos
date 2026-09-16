@@ -21,26 +21,13 @@ from dimos.robot.unitree.go2.constants import BASE_LINK_HEIGHT, ROBOT_HEIGHT
 voxel_size = 0.08
 wall_clearance_m = 0.1
 
-ray_tracing_config = RayTracingVoxelMapConfig(
-    voxel_size=voxel_size,
-    emit_every=1,
-    global_emit_every=50,
-    min_health=-1,
-    max_health=5,
-    support_min=4,
-)
+ray_tracing_config = RayTracingVoxelMapConfig(voxel_size=voxel_size, global_emit_every=50)
 
 # global_map is remapped off by every user, so the planner runs purely on the
 # incremental local_map + region_bounds pair. viz_publish_hz is per blueprint.
 mls_planner_config = MLSPlannerNativeConfig(
-    world_frame="odom",
     voxel_size=voxel_size,
     robot_height=ROBOT_HEIGHT,
     start_z_offset_m=BASE_LINK_HEIGHT,
-    surface_closing_radius=0.3,
     wall_clearance_m=wall_clearance_m,
-    wall_buffer_m=0.75,
-    wall_buffer_weight=100.0,
-    step_threshold_m=0.16,
-    step_penalty_weight=4.0,
 )

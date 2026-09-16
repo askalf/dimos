@@ -18,14 +18,13 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use validator::Validate;
 
-use dimos_mls_planner::mls_planner::{Config, MapLoad, Planner, RegionBounds};
+use dimos_mls_planner::mls_planner::{partition_cloud, Config, LoadStep, Planner, RegionBounds};
 use dimos_mls_planner::voxel::{surface_point_xyz, VoxelKey};
 
 #[pyclass]
 pub struct MLSPlanner {
     config: Config,
     planner: Planner,
-    load: Option<MapLoad>,
 }
 
 /// Extract a (N, 3) float32 numpy array into xyz tuples, dropping any row with
@@ -114,7 +113,6 @@ impl MLSPlanner {
         Ok(Self {
             planner: Planner::new(config.worker_threads),
             config,
-            load: None,
         })
     }
 
@@ -123,8 +121,6 @@ impl MLSPlanner {
         let config = &self.config;
         let planner = &mut self.planner;
         py.allow_threads(move || planner.update_global_map(&pts, config));
-        // A full rebuild replaces everything a load would add.
-        self.load = None;
         Ok(())
     }
 
@@ -153,9 +149,6 @@ impl MLSPlanner {
         let config = &self.config;
         let planner = &mut self.planner;
         py.allow_threads(|| planner.update_region(&pts, &bounds, config));
-        if let Some(load) = self.load.as_mut() {
-            load.region_applied(bounds);
-        }
         Ok(())
     }
 
@@ -169,25 +162,23 @@ impl MLSPlanner {
     ) -> PyResult<usize> {
         let pts = extract_points(points)?;
         let config = &self.config;
-        let planner = &self.planner;
-        let tiles = py.allow_threads(|| planner.partition_full_map(&pts, center, config));
-        let count = tiles.len();
-        self.load = (count > 0).then(|| MapLoad::new(tiles));
-        Ok(count)
+        let planner = &mut self.planner;
+        Ok(py.allow_threads(|| {
+            let part = partition_cloud(&pts, config.full_map_tile_m, config.voxel_size);
+            planner.start_load(part, center, config)
+        }))
     }
 
     /// Apply the next pending tile through the region pipeline, leaving what
     /// a later update_region covered. None when no load is pending.
     fn apply_full_map_tile(&mut self, py: Python<'_>) -> Option<usize> {
-        let load = self.load.as_mut()?;
         let config = &self.config;
         let planner = &mut self.planner;
-        py.allow_threads(|| load.apply_next_tile(planner, config));
-        let remaining = load.remaining();
-        if load.finished() {
-            self.load = None;
+        match py.allow_threads(|| planner.apply_next_tile(config)) {
+            LoadStep::Idle => None,
+            LoadStep::Applied { remaining } => Some(remaining),
+            LoadStep::Finished { .. } => Some(0),
         }
-        Some(remaining)
     }
 
     fn surface_map<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
@@ -316,7 +307,6 @@ impl MLSPlanner {
 
     fn clear(&mut self) {
         self.planner = Planner::new(self.config.worker_threads);
-        self.load = None;
     }
 
     fn __repr__(&self) -> String {

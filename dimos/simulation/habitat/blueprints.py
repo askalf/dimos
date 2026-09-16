@@ -33,6 +33,7 @@ from dimos.navigation.nav_3d.mls_planner.mls_planner_native import (
     MLSPlannerNativeConfig,
 )
 from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
+from dimos.navigation.nav_3d.viz import render_path
 from dimos.simulation.habitat.connection import HabitatConnection
 from dimos.visualization.rerun.websocket_server import RerunWebSocketServer
 from dimos.visualization.vis_module import vis_module
@@ -65,11 +66,6 @@ HIDDEN = ("world/nodes", "world/depth_image")
 def _small_points(cloud: Any) -> Any:
     """Flat dots; mode is explicit so this does not track to_rerun's default."""
     return cloud.to_rerun(mode="points", ui_radius=1.0)
-
-
-def _render_path(msg: Any) -> Any:
-    """Skip empty paths so a failed plan keeps the last good one drawn."""
-    return None if len(msg.poses) == 0 else msg
 
 
 def _view() -> Any:
@@ -181,7 +177,7 @@ habitat_nav = autoconnect(
         global_config.viewer,
         rerun_config=_rerun_config(
             {
-                "world/path": _render_path,
+                "world/path": render_path,
                 **planner_visual_override(
                     planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=wall_clearance_m
                 ),

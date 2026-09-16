@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 import math
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
@@ -25,39 +25,13 @@ from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.perception.detection.type.detection2d.base import Detection2D
 from dimos.perception.detection.type.detection2d.imageDetections2D import ImageDetections2D
 
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
-    from rerun._baseclasses import Archetype
-
 # Rerun voxel render size at each replay tool's default voxel size.
 DEFAULT_RENDER_VOXEL = 0.05
-LOADED_MAP_COLOR = (130, 130, 130)
-PREMAP_POINT_RADIUS = 0.008
 
 
 def default_render_voxel(voxel_size: float, default_voxel_size: float) -> float:
     """Rerun voxel render size, scaled with the configured voxel size."""
     return DEFAULT_RENDER_VOXEL * (voxel_size / default_voxel_size)
-
-
-def voxel_map_points(pts: NDArray[np.float32], voxel_size: float) -> Archetype:
-    """Voxel centers colored by height on the turbo ramp."""
-    import rerun as rr
-
-    if len(pts) == 0:
-        return rr.Points3D([])
-    z = pts[:, 2]
-    class_ids = ((z - z.min()) / (z.max() - z.min() + 1e-8) * 255).astype(np.uint8)
-    return rr.Points3D(pts, class_ids=class_ids, radii=voxel_size / 3)
-
-
-def log_loaded_map(points: NDArray[np.float32]) -> None:
-    import rerun as rr
-
-    rr.log(
-        "world/loaded_map",
-        rr.Points3D(points, colors=[LOADED_MAP_COLOR], radii=PREMAP_POINT_RADIUS),
-    )
 
 
 def mosaic(

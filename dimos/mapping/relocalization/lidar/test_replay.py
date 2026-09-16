@@ -19,8 +19,6 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-pytest.importorskip("dimos_voxel_ray_tracing")
-
 from dimos.mapping.ray_tracing.utils.loaded_map import LOADED_MAP_STREAM
 from dimos.mapping.relocalization.lidar.replay import fix_error, place_premap, write_loaded_map
 from dimos.memory.store.sqlite import SqliteStore
@@ -42,9 +40,9 @@ def test_place_premap_applies_the_fix_to_every_point() -> None:
 
 
 def test_fix_error_wraps_yaw_and_measures_translation() -> None:
-    dyaw, dt = fix_error(_fix(179.0), _fix(-179.0, x=3.0, y=4.0))
+    dyaw, dist_m = fix_error(_fix(179.0), _fix(-179.0, x=3.0, y=4.0))
     assert abs(dyaw - (-2.0)) < 1e-6
-    assert abs(dt - 5.0) < 1e-6
+    assert abs(dist_m - 5.0) < 1e-6
 
 
 @pytest.mark.skipif_aarch64
