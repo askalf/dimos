@@ -379,9 +379,15 @@ jobs:
 
       - name: Find C++ native modules
         id: find-modules
+        # `native/` is excluded because it is the SDK the modules build against, not a
+        # module: nothing declares it as a NativeModuleConfig, so the build step below
+        # never produces a `build/` for it and the ctest loop would fail on the missing
+        # directory. It is not going untested -- the Configure/Build/Test steps above
+        # build it at build/native-cpp and run its 76 cases there.
         run: |
           modules=$(find . -name flake.nix \
             -not -path './.git/*' \
+            -not -path './native/*' \
             -not -path '*/build/*' \
             -not -path '*/result/*' \
             -printf '%h\n' \
