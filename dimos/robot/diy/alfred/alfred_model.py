@@ -50,10 +50,8 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
-# Alfred's measured plant model, checked in alongside the Go2's. It is the output
-# of a characterization run against the real FlowBase; the tooling that produces
-# it is not in this branch, so treat this file as config - hand-edit it only if
-# you know what the numbers mean.
+# Alfred's measured plant model, from a characterization run against the real
+# FlowBase. Config, not a build output: nothing in this branch regenerates it.
 _ARTIFACT_DIR = Path(_GO2_FOLLOWER_ARTIFACT).parent
 ALFRED_FOLLOWER_ARTIFACT = str(_ARTIFACT_DIR / "alfred_posedomain.json")
 
@@ -82,8 +80,8 @@ ALFRED_PACKAGE_PATHS: dict[str, Path] = {
     "openarm_description": OPENARM_DESCRIPTION_ROOT,
 }
 ALFRED_V1_URDF = ALFRED_DESCRIPTION_ROOT / "urdf" / "alfred_v1.urdf"  # forks/wheels welded
-# alfred_v2 adds eight steer/drive caster joints. They are display-only and nothing
-# commands them, so ``wheels`` selects the urdf and never changes the joint set.
+# alfred_v2 adds eight display-only caster joints, so ``wheels`` selects the urdf
+# without changing the joint set.
 ALFRED_V2_URDF = ALFRED_DESCRIPTION_ROOT / "urdf" / "alfred_v2.urdf"
 
 ALFRED_LIFT_URDF_JOINT = "lift_joint"
@@ -91,19 +89,12 @@ ALFRED_LIFT_LOWER_M = PILLAR_MIN_POSITION_M  # -0.500, bottom stop
 ALFRED_LIFT_UPPER_M = PILLAR_MAX_POSITION_M  # -0.002, just under the top switch
 ALFRED_LIFT_LINK = "lift_link"
 
-# Alfred's own dimensions, measured off alfred_v1.urdf's collision scene at the
-# home pose. test_alfred_nav re-derives both from the URDF and fails if the
-# constants drift below what the robot actually is, so these cannot quietly rot.
-#
-# The MLS planner has a CIRCULAR footprint, and Alfred is holonomic - it can sit
-# at any yaw - so the honest hard clearance is the circumscribed radius, not the
-# inscribed one. Inscribed is 0.255: closer than that is a guaranteed collision
-# whatever the yaw. Anything between the two is a bet on favourable heading at
-# the pinch point.
+# Measured off alfred_v1.urdf's collision scene at the home pose; test_alfred_nav
+# re-derives them so they cannot rot. The MLS footprint is circular and Alfred is
+# holonomic, so the honest hard clearance is the circumscribed radius.
 ALFRED_FOOTPRINT_RADIUS_M = 0.373  # base_link -> worst xy corner
 ALFRED_INSCRIBED_RADIUS_M = 0.255  # base_link -> nearest face
-# Top of the collision scene. This is the headroom a cell needs to be standable,
-# which is the whole robot, not the part of it near the floor.
+# Top of the collision scene: the headroom a cell needs to be standable.
 ALFRED_HEIGHT_M = 1.86
 
 # Joint velocity limits come from the URDF; acceleration is not in URDF, so one default.
@@ -119,10 +110,8 @@ ALFRED_V2_MODEL = (
     .with_renamed_joints({ALFRED_LIFT_URDF_JOINT: PILLAR_LIFT_JOINT})
 )
 
-# The FlowBase as three synthetic planning coordinates, so a whole-body plan can move
-# the robot as well as the arms. Deliberately slower than free navigation: these are the
-# speeds the base runs at while it is carrying a plan with the arms out.
-# TUNE ON HARDWARE - nothing upstream declares a FlowBase limit to inherit.
+# The FlowBase as three synthetic planning coordinates. Deliberately slower than
+# free navigation - the arms are out. TUNE ON HARDWARE.
 ALFRED_BASE_VELOCITY_LIMITS = (0.5, 0.5, 1.0)  # vx, vy m/s; wz rad/s
 ALFRED_BASE_ACCELERATION_LIMITS = (1.0, 1.0, 2.0)
 ALFRED_PLANAR_BASE = PlanarBaseDefinition(
@@ -193,8 +182,7 @@ def alfred_model_config(
     world frame, a second tf root next to a navigation tree.
     """
     joint_names = alfred_joint_names()
-    # pillar/lift is zero at the top limit switch, above everything it can reach, so an
-    # all-zero home is outside its range. Park it where `home` leaves the rail instead.
+    # pillar/lift is zero at the top limit switch, so an all-zero home is out of range.
     home_joints = [0.0] * len(joint_names)
     home_joints[joint_names.index(PILLAR_LIFT_JOINT)] = PILLAR_HOME_POSITION_M
     return RobotModelConfig(

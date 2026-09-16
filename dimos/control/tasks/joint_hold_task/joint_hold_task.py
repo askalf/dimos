@@ -14,22 +14,15 @@
 
 """Hold joints at a latched pose while the base drives.
 
-A mobile base accelerating under an arm that nothing is commanding leaves the
-arm to swing on its own inertia; on a bimanual robot the two can reach each
-other. This task watches the base's own joints on the coordinator and, while
-the base is moving, holds its arm joints at the pose they were in when the
-motion started.
+A base accelerating under an uncommanded arm leaves it to swing on its own
+inertia; on a bimanual robot the two can reach each other. The trajectory task
+only commands while EXECUTING, so it holds nothing before the first plan or
+after one completes - this fills that gap.
 
-The base is read from CoordinatorState rather than from a twist stream: for BASE
-hardware the coordinator fills the virtual joints' velocity from the commanded
-twist, and every writer - teleop, a route follower, the base half of a whole-body
-plan - is already aggregated there. Watching one command stream would see only
-one of them.
-
-It claims SERVO_POSITION like the trajectory task but at a lower priority, so a
-real plan preempts it: hold is what happens when nothing else wants the arm.
-On preemption the latch is dropped, and when the task next takes the joints
-back it latches wherever the arm now is rather than snapping to a stale pose.
+Base motion is read from CoordinatorState, where every writer (teleop, follower,
+a plan's base segment) is already aggregated. Claims SERVO_POSITION below the
+trajectory task, so a plan always preempts it and the latch re-takes at the
+arm's current pose rather than a stale one.
 
     joint_hold_task(alfred_arm_joints())
 """
@@ -144,10 +137,7 @@ class JointHoldTask(BaseControlTask):
     def is_active(self) -> bool:
         """Participate whenever enabled; compute() decides if there is a hold.
 
-        The base's motion is only legible from CoordinatorState, which is_active
-        does not receive, so the decision moves into compute(). This task sits at
-        the bottom of the stack, so claiming the joints and then declining to
-        command them blocks nothing underneath.
+        Claiming without commanding blocks nothing: this is the bottom claim.
         """
         with self._lock:
             return self._enabled
@@ -165,9 +155,7 @@ class JointHoldTask(BaseControlTask):
             if self._hold_until is None:
                 return None
 
-            # The release window runs on the coordinator clock, so a base that
-            # stops being commanded still releases the joints rather than
-            # holding them until something says so.
+            # On the coordinator clock, so an uncommanded base still releases.
             if state.t_now >= self._hold_until:
                 self._reset_locked()
                 return None
@@ -275,8 +263,7 @@ class JointHoldTask(BaseControlTask):
             positions.append(float(value))
 
         if missing:
-            # Holding a subset would pin some joints and leave the rest to swing
-            # into them, which is the failure this task exists to prevent.
+            # A partial hold pins some joints and lets the rest swing into them.
             if not self._warned_missing:
                 self._warned_missing = True
                 logger.warning(

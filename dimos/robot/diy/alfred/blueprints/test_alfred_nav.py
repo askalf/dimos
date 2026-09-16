@@ -282,13 +282,8 @@ def test_alfreds_tuned_artifact_is_checked_in_where_the_follower_reads_it() -> N
 def test_alfreds_measured_size_constants_match_the_urdf() -> None:
     """The size constants must not fall below what the URDF says the robot is.
 
-    These describe the robot. What the planner is *given* is a separate question
-    - see test_the_planner_gets_the_real_height_and_a_footprint_under_the_robot -
-    because the MLS planner models a cylinder and Alfred is a short wide base
-    under a thin mast.
-
     Re-derived from the collision scene rather than pinned to a literal, so a
-    change to the URDF fails here instead of on a wall.
+    URDF change fails here instead of on a wall.
     """
     import numpy as np
     import yourdfpy
@@ -319,24 +314,15 @@ def test_alfreds_measured_size_constants_match_the_urdf() -> None:
 
 
 def test_the_planner_gets_the_real_height_and_a_footprint_under_the_robot() -> None:
-    """The two planner sizes are set from different evidence. Pinned separately.
+    """The two planner sizes come from different evidence, so they pin separately.
 
-    robot_height is the robot's height, because it is not a headroom nicety:
-    Config::headroom_cells turns it into clearance_cells and surfaces.rs
-    is_standable() uses that to decide whether a cell is floor at all. A cell
-    under something lower than Alfred is not somewhere Alfred can go, so the
-    honest value is the measured height. Normal ceilings clear it comfortably -
-    max_overhead_m caps the map at sensor_z + 2 m and 24 cells is 1.92 m - and
-    tables, shelves and sub-2 m doorways do not, which is correct.
+    robot_height is the measured height: surfaces.rs is_standable() uses it to
+    decide whether a cell is floor at all, so tables and sub-2 m doorways
+    correctly read as blocked.
 
-    wall_clearance_m is a hard footprint clearance and is knowingly set BELOW
-    Alfred's inscribed radius, so the planner can route it through a gap it will
-    not fit at some yaws. Measured on the robot: 0.2 plans, 0.28 cannot. The
-    reason the step is so sharp is spawn_floor in nodes.rs, which gates where new
-    graph nodes may appear at wall_clearance_m + 0.5 * wall_buffer_m - 0.575 m
-    today, so 8 cm of clearance moves a threshold that is already large. Raising
-    it wants wall_buffer_m lowered in the same change, and a mapped space to test
-    in; it is a commissioning decision, not a config edit.
+    wall_clearance_m is knowingly BELOW the inscribed radius. Measured on the
+    robot: 0.2 plans, 0.28 cannot. Raising it wants wall_buffer_m lowered in the
+    same change - a commissioning decision, not a config edit.
     """
     from dimos.navigation.nav_3d.mls_planner.mls_planner_native import MLSPlannerNative
     from dimos.robot.diy.alfred.alfred_model import (

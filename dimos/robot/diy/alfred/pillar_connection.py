@@ -487,12 +487,9 @@ class PillarConnection(Module):
             self._last_feedback_at = time.monotonic()
             self._state_changed.notify_all()
 
-        # Published whether or not the rail is homed. On boot the firmware
-        # restores its position from EEPROM, which is a good enough hint to draw
-        # the robot and plan the arms against; it is not good enough to move
-        # against, and `set_position` is what enforces that. Withholding it
-        # instead would drop `pillar/lift` from the coordinator's merged state
-        # and take both arms down with it.
+        # Published even unhomed: the EEPROM-restored position is good enough to
+        # draw and plan against, and set_position enforces the rest. Withholding it
+        # would drop pillar/lift from merged state and take both arms with it.
         try:
             self.motor_states.publish(
                 JointState(

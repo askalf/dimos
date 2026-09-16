@@ -14,11 +14,9 @@
 
 """Alfred's mount tree, read off alfred.urdf and published onto tf.
 
-Every sensor driver publishes only its own subtree, rooted at its own link, so
-nothing connects base_link to d455_link or mid360_link. cuVSLAM resolves its rig
-by looking up base_link -> each camera frame and places no camera at all until
-every one of them resolves, so without these edges it drops every frame it is
-handed.
+Sensor drivers publish only their own subtree, so nothing otherwise connects
+base_link to d455_link or mid360_link - and cuVSLAM drops every frame until its
+whole rig resolves against base_link.
 """
 
 from __future__ import annotations
@@ -35,14 +33,12 @@ from dimos.robot.diy.alfred.config import ALFRED_URDF
 def mount_transforms(root_frame: str = "base_link") -> list[Transform]:
     """One transform per fixed joint of the urdf, minus the imager frames.
 
-    The drivers publish their own imager offsets from the factory extrinsics read
-    off the device; the urdf's copies of those are nominal, so publishing them too
-    would put a second, worse answer on tf for the same edge.
+    Imager frames are skipped: the drivers publish factory extrinsics for those,
+    and the urdf's copies are nominal.
 
-    ``root_frame`` re-roots the tree when odometry owns a frame other than
-    base_link. Point-LIO publishes ``odom -> mid360_link``, so on alfred-nav the
-    lidar already has a parent and the ``base_link -> mid360_link`` edge has to be
-    inverted; publishing it as-is would give the lidar two parents and break tf.
+    ``root_frame`` re-roots the tree when odometry already parents a frame - on
+    alfred-nav Point-LIO owns mid360_link, so that edge must be inverted or the
+    lidar ends up with two parents.
     """
     transforms = []
     for joint in ElementTree.parse(ALFRED_URDF).getroot().findall("joint"):
@@ -75,7 +71,7 @@ def mount_transforms(root_frame: str = "base_link") -> list[Transform]:
 
 
 class AlfredMountTfConfig(StaticTfPublisherConfig):
-    # Frame the tree hangs from. Set it to whichever frame odometry already parents.
+    # Frame the tree hangs from; set it to whichever frame odometry already parents.
     root_frame: str = "base_link"
 
 

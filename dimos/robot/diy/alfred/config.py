@@ -41,23 +41,14 @@ class AlfredConfig:
 
 ALFRED = AlfredConfig(
     name="alfred",
-    # NOT the planner's headroom - alfred-nav passes ALFRED_HEIGHT_M (1.86 m, the
-    # top of the collision scene) for that. The claim this comment used to make,
-    # that nothing above 0.5 m is a collision risk, is contradicted by the URDF:
-    # the mast alone reaches 1.57 m. Kept because the MLS planner's body_height
-    # is also used as the free-span heuristic elsewhere.
+    # Free-span heuristic, not planner headroom - alfred-nav passes ALFRED_HEIGHT_M.
     body_height=0.5,
-    # Unused by any Alfred blueprint - only the G1's read these two fields. They
-    # look authoritative here and are not; ALFRED_FOOTPRINT_RADIUS_M in
-    # alfred_model is the measured number the planner is given.
     height_clearance=2.0,  # meters
     width_clearance=1.0,
-    # The Mid-360 is on the Jetson's wired 192.168.1.100/24 link.
     mid360_ip="192.168.1.189",
-    # The mast D455. The rear D435i stays plugged in, so the device is pinned by serial.
+    # The rear D435i stays plugged in, so the mast D455 is pinned by serial.
     d455_serial="260922302422",
     internal_odom_offsets={
-        # Mid-360 lidar: a bit forward, and a bit to the right of base center, above ground.
         "mid360_link": Pose(0.20, -0.20, 0.30, *Quaternion.from_euler(Vector3(0, 0, 0))),
     },
 )
