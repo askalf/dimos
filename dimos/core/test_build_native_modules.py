@@ -252,14 +252,47 @@ def test_no_module_reaches_the_repository_root() -> None:
 
 # The shared flakes live in this repository, so the very change that introduces
 # native/rust/flake.nix cannot reference it on the default branch -- it is not there
-# yet. Until it merges, the module inputs name this branch. That pin must not outlive
-# the merge, and a comment is not a mechanism: this test is.
+# yet. Until it merges, the module inputs name that branch. That pin must not outlive
+# the merge, and a comment is not a mechanism: these tests are.
 _SHARED_FLAKES = ("native/rust/flake.nix", "native/cpp/flake.nix")
+_DEFAULT_BRANCH = "main"
+
+# `github:dimensionalOS/dimos?ref=<branch>&dir=<subdir>` -- the in-repo input every
+# native module takes for the shared crates and the C++ SDK.
+_IN_REPO_INPUT = re.compile(r'url = "github:dimensionalOS/dimos\?(?P<query>[^"]*)"')
+
+
+def _module_flakes() -> list[Path]:
+    return sorted(
+        flake for flake in DIMOS_PROJECT_ROOT.rglob("flake.nix") if ".git" not in flake.parts
+    )
+
+
+def _in_repo_input_refs() -> dict[str, list[str | None]]:
+    """flake path -> the `ref=` of each in-repo input it declares (None when absent)."""
+    refs: dict[str, list[str | None]] = {}
+    for flake in _module_flakes():
+        found: list[str | None] = []
+        for match in _IN_REPO_INPUT.finditer(flake.read_text()):
+            ref = re.search(r"(?:^|&)ref=([^&]*)", match.group("query"))
+            found.append(ref.group(1) if ref else None)
+        if found:
+            refs[flake.relative_to(DIMOS_PROJECT_ROOT).as_posix()] = found
+    return refs
+
+
+def _current_branch() -> str:
+    done = subprocess.run(
+        ("git", "-C", str(DIMOS_PROJECT_ROOT), "rev-parse", "--abbrev-ref", "HEAD"),
+        capture_output=True,
+        text=True,
+    )
+    return done.stdout.strip()
 
 
 def _default_branch_has_shared_flakes() -> bool:
     """True once the shared flakes exist on the default branch we can see locally."""
-    for ref in ("origin/HEAD", "origin/main", "main"):
+    for ref in ("origin/HEAD", f"origin/{_DEFAULT_BRANCH}", _DEFAULT_BRANCH):
         for flake in _SHARED_FLAKES:
             done = subprocess.run(
                 ("git", "-C", str(DIMOS_PROJECT_ROOT), "cat-file", "-e", f"{ref}:{flake}"),
@@ -271,28 +304,52 @@ def _default_branch_has_shared_flakes() -> bool:
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
-def test_shared_flake_inputs_are_unpinned_once_they_exist_upstream() -> None:
-    """A module input may name a branch only while the shared flakes are not upstream.
+def test_in_repo_flake_inputs_name_only_main_or_the_bootstrap_branch() -> None:
+    """No module may take its shared input from a third branch.
 
-    `github:dimensionalOS/dimos?dir=native/rust` with no `ref=` follows the default
-    branch, which is what every module should do. The branch-pinned form exists purely
-    to bootstrap the change that first adds those flakes; once they are on the default
-    branch the pin is stale -- it freezes every module on one commit of a branch that
-    may be deleted. This test goes red the moment that bootstrap window closes, so
-    nobody has to remember.
+    A module's one in-repo input is the shared crate tree. Pointing it at an
+    arbitrary branch freezes that module on somebody's work in progress, and at a ref
+    that can be deleted out from under every checkout -- which is exactly what happens
+    when the branch's pull request is closed.
+
+    Only two refs are legitimate: `main`, which is the answer, and the branch that
+    first adds the shared flakes, which is unavoidable because those files do not
+    exist on `main` until it merges. Anything else fails here.
+    """
+    allowed = {_DEFAULT_BRANCH, None, _current_branch()}
+    wrong = {
+        flake: [ref for ref in refs if ref not in allowed]
+        for flake, refs in _in_repo_input_refs().items()
+    }
+    wrong = {flake: refs for flake, refs in wrong.items() if refs}
+    assert not wrong, (
+        "these flakes take the shared dimos input from a branch that is neither "
+        f"{_DEFAULT_BRANCH!r} nor this branch: {wrong} -- point them at "
+        f"`ref={_DEFAULT_BRANCH}`"
+    )
+
+
+@pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
+def test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream() -> None:
+    """Once the shared flakes are on `main`, every module input must name `main`.
+
+    The branch-pinned form exists purely to bootstrap the change that first adds those
+    flakes. Left behind, it freezes every module on one commit of a branch that may be
+    deleted -- and a deleted branch takes every module's build with it. This test goes
+    red the moment that bootstrap window closes, so nobody has to remember.
     """
     if not _default_branch_has_shared_flakes():
-        pytest.skip("shared flakes are not on the default branch yet; the pin is the bootstrap")
-    pinned = [
-        flake.relative_to(DIMOS_PROJECT_ROOT).as_posix()
-        for flake in DIMOS_PROJECT_ROOT.rglob("flake.nix")
-        if ".git" not in flake.parts
-        and re.search(r'url = "github:dimensionalOS/dimos\?ref=', flake.read_text())
-    ]
-    assert not pinned, (
-        "these flakes still pin the shared input to a branch, now that it is on the "
-        f"default branch: {sorted(pinned)} -- drop the `ref=` so the input follows the "
-        "default branch"
+        pytest.skip(
+            f"shared flakes are not on {_DEFAULT_BRANCH} yet; the branch pin is the bootstrap"
+        )
+    not_main = {
+        flake: refs
+        for flake, refs in _in_repo_input_refs().items()
+        if any(ref != _DEFAULT_BRANCH for ref in refs)
+    }
+    assert not not_main, (
+        f"the shared flakes are on {_DEFAULT_BRANCH} now, so these must name "
+        f"`ref={_DEFAULT_BRANCH}`: {not_main}"
     )
 
 
