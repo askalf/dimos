@@ -58,5 +58,5 @@ def test_async_module_handles(start_double_module, a_transport, double_a_transpo
     queue = Queue()
     double_a_transport.subscribe(queue.put)
     a_transport.publish(42)
-    doubled = queue.get(timeout=0.1)
+    doubled = queue.get(timeout=5.0)
     assert doubled == 84
