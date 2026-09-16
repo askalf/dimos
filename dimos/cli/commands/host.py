@@ -317,12 +317,12 @@ def serve(
 ) -> None:
     """Serve one Host over the configured Zenoh fabric."""
     from dimos.hosted.daemon import (
-        FRAGMENT_SCHEMA_VERSION,
         HOST_CONTROL_RPC_NAME,
         HOST_LIVELINESS_KEY,
         HOST_PROTOCOL_VERSION,
         HostDaemon,
     )
+    from dimos.hosted.fragment import FRAGMENT_SCHEMA_VERSION
     from dimos.protocol.rpc.zenohrpc import ZenohRPC
     from dimos.protocol.service.zenohservice import ZenohSessionPool
 

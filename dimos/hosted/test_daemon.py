@@ -24,8 +24,12 @@ from pytest_mock import MockerFixture
 from dimos.core.coordination.blueprint_config.parser import BlueprintConfigParser
 from dimos.core.coordination.process_lifecycle import DIMOS_RUN_ID_ENV
 from dimos.core.module import Module
-from dimos.hosted.daemon import HostDaemon, HostFragment, _run_fragment
-from dimos.hosted.fragment import PythonFragmentPayload, RemoteModuleReference
+from dimos.hosted.daemon import HostDaemon, _run_fragment
+from dimos.hosted.fragment import (
+    HostFragment,
+    PythonFragmentPayload,
+    RemoteModuleReference,
+)
 
 
 class DaemonModule(Module):
