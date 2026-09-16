@@ -124,13 +124,9 @@ ascii_logo = """
 """
 
 
-# ---------------------------------------------------------------------------
-# Components
-#
-# The terminal half of the design system. Pure functions returning rows of
-# text: nothing here writes to a stream, so a module that imports this file for
-# its colours pays nothing for the drawing code.
-# ---------------------------------------------------------------------------
+# Components: the terminal half of the design system. Pure functions returning
+# rows of text: nothing here writes to a stream, so a module that imports this
+# file for its colours pays nothing for the drawing code.
 
 RGB = tuple[int, int, int]
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"

@@ -48,8 +48,7 @@ _KEYRING_SERVICE = "dimos-cloud"
 _KEYRING_USER = "default"
 
 
-# --- presentation -----------------------------------------------------------
-# Copy lives here; the components that draw it live in `theme`. `reveal` is the
+# Presentation. Copy lives here; the components that draw it live in `theme`. `reveal` is the
 # only thing needing terminaltexteffects, so it is imported inside the function
 # — `dimos --help` must not pay for an animation it will never run.
 
