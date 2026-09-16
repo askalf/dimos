@@ -128,8 +128,6 @@ _flowbase_hardware = HardwareComponent(
     auto_enable=True,
 )
 _BASE_VX_LIMIT, _BASE_VY_LIMIT, _BASE_WZ_LIMIT = ALFRED_PLANAR_BASE.velocity_limits
-# Fraction of vmax the corner regulator may not throttle below.
-_CORNER_FLOOR = 0.25 * _BASE_VX_LIMIT
 
 
 class AlfredNavCoordinator(PathFollowingCoordinator):
@@ -182,15 +180,6 @@ def alfred_manipulation_tasks() -> list[TaskConfig]:
                 # the Go2's with a warning when it is not. The follower raises on
                 # a missing artifact, so this resolves rather than hardcodes.
                 "artifact_path": alfred_follower_artifact(),
-                # A sharp vertex makes the nearest point on the path flip between
-                # the incoming and outgoing legs, and the reference yaw flips
-                # with it - the robot sits on the corner oscillating. Monotonic
-                # progress cannot flip back.
-                "progress_back_m": 0.0,
-                # And do not let the vertex's discretized dyaw/ds throttle the
-                # approach to a standstill. 25% of vmax still slows hard for a
-                # corner; it just arrives at one.
-                "min_corner_speed": _CORNER_FLOOR,
             },
         ),
         TaskConfig(
