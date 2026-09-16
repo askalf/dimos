@@ -39,15 +39,17 @@ repos:
     rev: v4.6.0
     hooks:
       - id: check-case-conflict
+      # These three rewrite bytes, so they are kept off files that must stay
+      # byte-identical to something outside this repo: upstream patches.
       - id: trailing-whitespace
         language: python
         types: [text]
-        exclude: \.patch$  # patch files contain intentional trailing whitespace
+        exclude: &verbatim-files (\.patch$)
       - id: end-of-file-fixer
-        exclude: \.patch$  # keep patch files byte-identical to upstream diffs
+        exclude: *verbatim-files
       - id: mixed-line-ending
         args: [--fix=lf]
-        exclude: \.patch$  # keep patch files byte-identical to upstream diffs
+        exclude: *verbatim-files
       - id: check-json
         exclude: ^misc/DimSim/public/sims/  # LFS-tracked
       - id: check-toml

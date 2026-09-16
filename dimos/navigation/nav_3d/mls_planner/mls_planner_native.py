@@ -27,8 +27,6 @@ from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 
 
 class MLSPlannerNativeConfig(NativeModuleConfig):
-    # The crate is a workspace member, so it is built from the repo root along
-    # with every other rust native module.
     cwd: str | None = "rust"
     executable: str = "result/bin/mls_planner"
     build_command: str | None = "nix build -L path:.#dimos-mls-planner"
