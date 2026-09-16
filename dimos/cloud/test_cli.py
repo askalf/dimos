@@ -94,7 +94,7 @@ def test_context_line_names_the_sizes_as_they_become_known() -> None:
     assert up.context() == "rec.db · 1.9 GB → 952.8 MB compressed"
     # pull: only the compressed size is known up front; on-disk size comes after decompress
     down = cli._Ticker(bar, "rec.db.lz4", wire=952_800_000, down=True, compressed=True)
-    assert down.context() == "rec.db.lz4 · 952.8 MB compressed"
+    assert down.context() == "rec.db.lz4 · 952.8 MB compressed · decompresses on disk"
     # no compression involved: just the one size, no claim
     same = cli._Ticker(bar, "raw.bin", raw=500)
     same("upload", 1, 500)

@@ -174,8 +174,10 @@ class _Ticker:
         known = r or w
         if not known:
             return self.name
-        tag = " compressed" if (self.down and self.compressed and w and not r) else ""
-        return f"{self.name} · {decimal(known)}{tag}"
+        if self.down and self.compressed and w and not r:
+            # Tell the user plainly: what arrives is compressed, the file on disk is bigger.
+            return f"{self.name} · {decimal(known)} compressed · decompresses on disk"
+        return f"{self.name} · {decimal(known)}"
 
     def _render(self) -> None:
         if self.live is None:
