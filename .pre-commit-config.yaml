@@ -149,7 +149,11 @@ repos:
             done | sort -u | while read -r root; do
               dir=$(dirname "$root")
               while [ "$dir" != "$top" ] && [ ! -f "$dir/flake.nix" ]; do dir=$(dirname "$dir"); done
-              [ -f "$dir/flake.nix" ] || { echo "no flake above $root" >&2; exit 1; }
+              if [ "$dir" = "$top" ]; then
+                echo "no module flake above $root -- refusing to fall back to the repo-root" >&2
+                echo "flake, which would copy the whole tree (git-lfs blobs included)." >&2
+                exit 1
+              fi
               nix develop "path:$dir" -c cargo fmt --manifest-path "$root" --all
             done
           '
@@ -168,7 +172,11 @@ repos:
             done | sort -u | while read -r root; do
               dir=$(dirname "$root")
               while [ "$dir" != "$top" ] && [ ! -f "$dir/flake.nix" ]; do dir=$(dirname "$dir"); done
-              [ -f "$dir/flake.nix" ] || { echo "no flake above $root" >&2; exit 1; }
+              if [ "$dir" = "$top" ]; then
+                echo "no module flake above $root -- refusing to fall back to the repo-root" >&2
+                echo "flake, which would copy the whole tree (git-lfs blobs included)." >&2
+                exit 1
+              fi
               nix develop "path:$dir" -c cargo clippy --manifest-path "$root" --workspace --all-targets -- -D warnings
             done
           '

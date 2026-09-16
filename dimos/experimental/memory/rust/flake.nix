@@ -33,8 +33,14 @@
               nativeBuildInputs = [ pkgs.pkg-config ];
               LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
             };
+            # turbojpeg-sys vendors libjpeg-turbo and drives cmake from its own
+            # build script. dontUseCmakeConfigure stops nixpkgs' cmake setup hook
+            # from *also* trying to configure the crate root, which has no
+            # CMakeLists.txt -- the crate's build.rs is the only thing that should
+            # invoke cmake.
             turbojpeg-sys = _: {
               nativeBuildInputs = [ pkgs.cmake pkgs.nasm ];
+              dontUseCmakeConfigure = true;
             };
           };
         };
