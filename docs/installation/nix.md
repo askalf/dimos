@@ -49,4 +49,4 @@ uv run dimos --help
 
 If uv is missing, install it with `curl -LsSf https://astral.sh/uv/install.sh | sh` and add `$HOME/.local/bin` to PATH. Always enter `nix develop` before activating these environments. Nix supplies Python and native libraries; uv manages Python packages.
 
-In a developer checkout, `uv run --no-sync` uses the installed environment. When updating dependencies, repeat the selected `--extra cpu` or `--extra cuda` on `uv sync` so the accelerator choice is preserved.
+Developer installs use the locked PyTorch build. On Linux x86_64 it includes CUDA libraries and also supports CPU execution without an NVIDIA GPU. Selecting `cpu` skips optional CUDA extras; it does not select a CPU-only PyTorch wheel. Use `uv run --no-sync` to use the installed environment, and repeat your selected extras when running `uv sync`.

@@ -275,7 +275,7 @@ Usage: bash scripts/install.sh [OPTIONS]
     --capabilities <list>    navigation, manipulation, or navigation,manipulation
     --non-interactive        Require mode, directory, capabilities; never prompt
     --branch <branch>        Branch to clone for a new checkout (default: main)
-    --no-cuda                Use CPU dependencies instead of detected CUDA
+    --no-cuda                Skip optional CUDA extras and GPU verification
     --configure-network      Apply and persist LCM UDP buffer tuning (Linux)
     --use-nix                Use Nix instead of the platform package manager
     --no-nix                 Use apt/brew, or preinstalled dependencies on other Linux
@@ -770,6 +770,7 @@ do_install_dev() {
     local extra
     IFS=',' read -r -a extras <<< "$EXTRAS"
     for extra in "${extras[@]}"; do sync_args+=(--extra "$extra"); done
+    info "Developer installs use locked PyTorch builds; Linux x86_64 includes CUDA libraries even for CPU use."
     dim "will run: uv sync ${sync_args[*]}"
     project_cmd /usr/bin/env UV_PROJECT_ENVIRONMENT=.venv uv sync "${sync_args[@]}"
     ok "developer environment ready in $dir"

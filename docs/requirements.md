@@ -50,8 +50,8 @@ For advanced direct `uv`/`pip` installs, granular package extras remain availabl
 | `drone` | DJI Tello / MAVLink drones | pymavlink | No |
 | `manipulation` | Arm planning + control | Drake, piper-sdk, xarm-sdk | No |
 | `mapping` | GTSAM-backed pose graph optimization (relocalization) | gtsam-extended | No |
-| `cuda` | CUDA PyTorch and GPU acceleration | torch, torchvision, cupy, onnxruntime-gpu | **Yes** |
-| `cpu` | CPU PyTorch and inference backends | torch, torchvision, onnxruntime | No |
+| `cuda` | GPU inference backends | cupy, onnxruntime-gpu | **Yes** |
+| `cpu` | CPU inference backend | onnxruntime | No |
 | `misc` | Extra models, embeddings, hardware SDKs | edgetam, timm, torchreid, xarm-sdk | Varies |
 | `base` | Standard stack (agents + web + viz) | langchain, fastapi, rerun-sdk | No |
 | `dds` | DDS transport (CycloneDDS) | cyclonedds | No |

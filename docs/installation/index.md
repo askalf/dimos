@@ -69,7 +69,7 @@ Interactive runs offer native dependencies or Nix. Unattended runs use these def
 
 The summary lists any package-manager bootstrap. `--no-nix` uses apt/Homebrew where supported; other Linux distributions require preinstalled native dependencies. NixOS defaults to Nix.
 
-CUDA selection requires a detected NVIDIA GPU on Linux x86_64. `--no-cuda` selects CPU dependencies. Jetson CUDA setup is not supported. PyTorch verification does not qualify complete GPU workloads or promise GPU execution for every inference backend.
+CUDA selection requires a detected NVIDIA GPU on Linux x86_64. `--no-cuda` skips optional CUDA extras and GPU verification. Developer installs retain the locked PyTorch build, including CUDA libraries on Linux x86_64; library installs select CPU wheels. Jetson CUDA setup is not supported. PyTorch verification does not qualify complete GPU workloads or promise GPU execution for every inference backend.
 
 LCM network tuning is opt-in: add `--configure-network` to apply and persist Linux UDP buffer settings. On NixOS, set `networking.kernel.sysctl` entries `net.core.rmem_max` and `net.core.rmem_default` to `67108864` in `configuration.nix` instead. macOS does not support this flag.
 

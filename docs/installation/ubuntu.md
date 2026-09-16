@@ -53,6 +53,6 @@ source .venv/bin/activate
 uv run --no-sync dimos --help
 ```
 
-These examples select CPU dependencies. On Linux x86_64 with a CUDA-capable GPU, use `--torch-backend cu128` for library mode or replace `--extra cpu` with `--extra cuda` for developer mode. Do not select both accelerator extras.
+Library mode selects CPU PyTorch wheels. On Linux x86_64 with a CUDA-capable GPU, use `--torch-backend cu128` for library mode or replace `--extra cpu` with `--extra cuda` to add GPU inference dependencies in developer mode.
 
-In a developer checkout, `uv run --no-sync` uses the installed environment. When updating dependencies, repeat the selected `--extra cpu` or `--extra cuda` on `uv sync` so the accelerator choice is preserved.
+Developer installs use the locked PyTorch build. On Linux x86_64 it includes CUDA libraries and also supports CPU execution without an NVIDIA GPU. Selecting `cpu` skips optional CUDA extras; it does not select a CPU-only PyTorch wheel. Use `uv run --no-sync` to use the installed environment, and repeat your selected extras when running `uv sync`.
