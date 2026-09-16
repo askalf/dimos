@@ -31,7 +31,6 @@ import uuid
 from dimos.constants import STATE_DIR
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
 from dimos.core.coordination.process_lifecycle import DIMOS_RUN_ID_ENV, kill_run_processes
-from dimos.core.core import rpc
 from dimos.hosted.fragment import (
     FRAGMENT_FORMAT,
     FRAGMENT_SCHEMA_VERSION,
@@ -106,7 +105,6 @@ class HostDaemon:
         self._deployments: dict[str, _Deployment] = {}
         self._lock = threading.RLock()
 
-    @rpc
     def describe(self) -> HostDescriptor:
         with self._lock:
             self._refresh_locked()
@@ -120,7 +118,6 @@ class HostDaemon:
                 active_run_ids=tuple(sorted(self._deployments)),
             )
 
-    @rpc
     def start(self, epoch: str, fragment: HostFragment) -> DeploymentStatus:
         self._check_epoch(epoch)
         self._check_fragment(fragment)
@@ -176,14 +173,12 @@ class HostDaemon:
                 deployment.state = "running"
             return self._status_locked(fragment.run_id)
 
-    @rpc
     def status(self, epoch: str, run_id: str) -> DeploymentStatus:
         self._check_epoch(epoch)
         with self._lock:
             self._refresh_locked()
             return self._status_locked(run_id)
 
-    @rpc
     def stop(
         self,
         epoch: str,
