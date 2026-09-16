@@ -68,7 +68,7 @@ jobs:
   relock-shared-flakes:
     needs: shared-flakes-changed
     if: needs.shared-flakes-changed.outputs.changed == 'true'
-    timeout-minutes: 15
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:
       contents: read  # For checkout
