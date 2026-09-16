@@ -600,6 +600,59 @@ jobs:
           dimos/e2e_tests/test_robot_picker_browser.py
           dimos/e2e_tests/test_relay_auth_browser.py --no-cov
 
+  # TEMP DEBUG: standalone probe (outside pytest) of the host's time.sleep()
+  # accuracy. Hosted macOS runners are oversubscribed VMs where time.sleep(0.01)
+  # can block ~80 ms instead of ~10 ms, which is why the coordinator rate e2e is
+  # skipped there (test_control_coordinator.py). Deliberately NOT in
+  # ci-complete's needs, so a red macOS leg is visible evidence for filing
+  # upstream without blocking the run. Remove once the issue is reported.
+  sleep-precision:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest", "macos-latest"]
+    runs-on: ${{ matrix.os }}
+    permissions: {}
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Measure time.sleep(0.01) accuracy
+        shell: python
+        run: |
+          import platform, statistics, sys, time
+
+          REQUEST_S, ITERATIONS, TOLERANCE = 0.01, 200, 3.0
+          samples = []
+          for _ in range(ITERATIONS):
+              start = time.perf_counter_ns()
+              time.sleep(REQUEST_S)
+              samples.append((time.perf_counter_ns() - start) / 1_000_000)
+          samples.sort()
+          n = len(samples)
+          requested_ms = REQUEST_S * 1000.0
+          median = statistics.median(samples)
+
+          def pct(p):
+              return samples[min(n - 1, int(p * n))]
+
+          print(f"{platform.platform()}  python {platform.python_version()}")
+          print(
+              f"time.sleep({REQUEST_S}) x{n} (requested {requested_ms:.1f} ms): "
+              f"min={samples[0]:.2f} median={median:.2f} p90={pct(0.90):.2f} "
+              f"p99={pct(0.99):.2f} max={samples[-1]:.2f} ms "
+              f"({median / requested_ms:.2f}x, {1000.0 / median:.1f} Hz)"
+          )
+          limit = requested_ms * TOLERANCE
+          if median > limit:
+              print(
+                  f"::error::time.sleep({REQUEST_S}) median {median:.2f} ms > "
+                  f"{limit:.1f} ms ({TOLERANCE:g}x requested) - host not scheduling sleeps on time"
+              )
+              sys.exit(1)
+          print(f"OK: median within {TOLERANCE:g}x of requested ({limit:.1f} ms)")
+
   tests:
     if: |
       !cancelled() &&
