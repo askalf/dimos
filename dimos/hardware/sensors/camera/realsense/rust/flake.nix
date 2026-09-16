@@ -43,6 +43,8 @@
             };
         };
 
-        devShells.default = dimos-native-rust.devShells.${system}.default;
+        # Not the shared devShell: the clippy hook runs cargo in here, and this
+        # module's build.rs probes librealsense2 through pkg-config.
+        devShells.default = shared.devShellWith (pkgs: [ pkgs.librealsense pkgs.pkg-config ]);
       });
 }
