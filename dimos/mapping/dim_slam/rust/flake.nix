@@ -52,8 +52,13 @@
       in {
         packages = nixpkgs.lib.genAttrs variants packageFor;
 
-        # script needs to detect cuda/non-cuda to pick the right things to load
+        # script needs to detect cuda/non-cuda to pick the right things to load.
+        # The toolchain has to come from here: this used to be entered from inside
+        # the nix/rust toolchain shell, and that shell is gone, so a devShell with
+        # only a shellHook would silently hand cargo/clippy back to whatever the
+        # host has on PATH.
         devShells.default = nixpkgs.legacyPackages.${system}.mkShellNoCC {
+          packages = shared.rustTools;
           shellHook = ''
             if [ -z "''${CUVSLAM_SDK_DIR:-}" ]; then
               case "$(uname -s)-$(uname -m)" in
