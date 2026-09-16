@@ -23,7 +23,11 @@
     # The shared C++ SDK, as a remote ref rather than the bare path literal that used
     # to climb three directories to reach native/cpp. Under the `path:.` build ref
     # this example now uses, such a literal escapes the flake's store path.
-    dimos-native-cpp.url = "github:dimensionalOS/dimos?dir=native/cpp";
+    # NOTE: pinned to the branch that introduces native/{rust,cpp}/flake.nix,
+    # because the default branch does not have those files yet. Drop the `ref=`
+    # once this is on main -- without it the input follows the default branch,
+    # which is what we want from then on.
+    dimos-native-cpp.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/cpp";
     dimos-native-cpp.inputs.nixpkgs.follows = "nixpkgs";
     dimos-native-cpp.inputs.flake-utils.follows = "flake-utils";
   };

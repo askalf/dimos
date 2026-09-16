@@ -3,9 +3,11 @@
     "cachix": {
       "inputs": {
         "devenv": [
+          "dimos-native-rust",
           "crate2nix"
         ],
         "flake-compat": [
+          "dimos-native-rust",
           "crate2nix"
         ],
         "git-hooks": "git-hooks",
@@ -34,6 +36,7 @@
         "flake-parts": "flake-parts",
         "nix-test-runner": "nix-test-runner",
         "nixpkgs": [
+          "dimos-native-rust",
           "nixpkgs"
         ],
         "pre-commit-hooks": "pre-commit-hooks"
@@ -78,6 +81,7 @@
     "devshell": {
       "inputs": {
         "nixpkgs": [
+          "dimos-native-rust",
           "crate2nix",
           "nixpkgs"
         ]
@@ -96,17 +100,28 @@
         "type": "github"
       }
     },
-    "dimos-repo": {
-      "flake": false,
+    "dimos-native-rust": {
+      "inputs": {
+        "crate2nix": "crate2nix",
+        "flake-utils": "flake-utils",
+        "nixpkgs": "nixpkgs_2"
+      },
       "locked": {
-        "path": "../../../..",
-        "type": "path"
+        "dir": "native/rust",
+        "lastModified": 1789521790,
+        "narHash": "sha256-+qL8eGBWJiXGkOeG2hPTr+dwi5e5nGzr3DcdsPegkOE=",
+        "owner": "dimensionalOS",
+        "repo": "dimos",
+        "rev": "717352b0c41d66d1d9f5a02892d09f2c0492c752",
+        "type": "github"
       },
       "original": {
-        "path": "../../../..",
-        "type": "path"
-      },
-      "parent": []
+        "dir": "native/rust",
+        "owner": "dimensionalOS",
+        "ref": "jeff/fix/native_build_cargo_path",
+        "repo": "dimos",
+        "type": "github"
+      }
     },
     "flake-compat": {
       "locked": {
@@ -125,6 +140,7 @@
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
+          "dimos-native-rust",
           "crate2nix",
           "nixpkgs"
         ]
@@ -164,12 +180,14 @@
     "git-hooks": {
       "inputs": {
         "flake-compat": [
+          "dimos-native-rust",
           "crate2nix",
           "cachix",
           "flake-compat"
         ],
         "gitignore": "gitignore",
         "nixpkgs": [
+          "dimos-native-rust",
           "crate2nix",
           "cachix",
           "nixpkgs"
@@ -192,6 +210,7 @@
     "gitignore": {
       "inputs": {
         "nixpkgs": [
+          "dimos-native-rust",
           "crate2nix",
           "cachix",
           "git-hooks",
@@ -215,6 +234,7 @@
     "gitignore_2": {
       "inputs": {
         "nixpkgs": [
+          "dimos-native-rust",
           "crate2nix",
           "pre-commit-hooks",
           "nixpkgs"
@@ -268,11 +288,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1787498568,
-        "narHash": "sha256-9i/VTdusq/+NM/tz+J1Re+ojkMB8MBf0QshnYfzHz30=",
+        "lastModified": 1789286504,
+        "narHash": "sha256-eiEK7cKZORNEvX0GeF3RtNEF/JXhgf2RqSp3230q13E=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "56c02bc00adcf003215cc4bd996d6efaf4cff188",
+        "rev": "ef34387ddd751e1ab8857adf4676492d32eb24ec",
         "type": "github"
       },
       "original": {
@@ -285,11 +305,13 @@
     "pre-commit-hooks": {
       "inputs": {
         "flake-compat": [
+          "dimos-native-rust",
           "crate2nix",
           "flake-compat"
         ],
         "gitignore": "gitignore_2",
         "nixpkgs": [
+          "dimos-native-rust",
           "crate2nix",
           "nixpkgs"
         ]
@@ -310,11 +332,16 @@
     },
     "root": {
       "inputs": {
-        "crate2nix": "crate2nix",
         "cu-vslam-rs": "cu-vslam-rs",
-        "dimos-repo": "dimos-repo",
-        "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs_2"
+        "dimos-native-rust": "dimos-native-rust",
+        "flake-utils": [
+          "dimos-native-rust",
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "dimos-native-rust",
+          "nixpkgs"
+        ]
       }
     },
     "systems": {

@@ -9,7 +9,11 @@
   # the ~16 GB a local ref copies, because a local ref reads the working tree and so
   # picks up every smudged git-lfs blob under data/.
   inputs = {
-    dimos-native-rust.url = "github:dimensionalOS/dimos?dir=native/rust";
+    # NOTE: pinned to the branch that introduces native/{rust,cpp}/flake.nix,
+    # because the default branch does not have those files yet. Drop the `ref=`
+    # once this is on main -- without it the input follows the default branch,
+    # which is what we want from then on.
+    dimos-native-rust.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/rust";
     flake-utils.follows = "dimos-native-rust/flake-utils";
     nixpkgs.follows = "dimos-native-rust/nixpkgs";
   };

@@ -17,6 +17,32 @@
         "type": "github"
       }
     },
+    "dimos-native-cpp": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "native/cpp",
+        "lastModified": 1789521790,
+        "narHash": "sha256-+qL8eGBWJiXGkOeG2hPTr+dwi5e5nGzr3DcdsPegkOE=",
+        "owner": "dimensionalOS",
+        "repo": "dimos",
+        "rev": "717352b0c41d66d1d9f5a02892d09f2c0492c752",
+        "type": "github"
+      },
+      "original": {
+        "dir": "native/cpp",
+        "owner": "dimensionalOS",
+        "ref": "jeff/fix/native_build_cargo_path",
+        "repo": "dimos",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -128,6 +154,7 @@
     "root": {
       "inputs": {
         "dimos-lcm": "dimos-lcm",
+        "dimos-native-cpp": "dimos-native-cpp",
         "flake-utils": "flake-utils",
         "lcm-extended": "lcm-extended",
         "nixpkgs": "nixpkgs",
