@@ -52,8 +52,8 @@ logger = setup_logger()
 
 # Alfred's measured plant model, from a characterization run against the real
 # FlowBase. Config, not a build output: nothing in this branch regenerates it.
-_ARTIFACT_DIR = Path(_GO2_FOLLOWER_ARTIFACT).parent
-ALFRED_FOLLOWER_ARTIFACT = str(_ARTIFACT_DIR / "alfred_posedomain.json")
+# Lives beside the robot it describes, not in the follower task's artifact dir.
+ALFRED_FOLLOWER_ARTIFACT = str(Path(__file__).resolve().parent / "alfred_posedomain.json")
 
 
 def alfred_follower_artifact() -> str:
