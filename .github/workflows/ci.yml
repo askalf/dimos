@@ -244,7 +244,11 @@ jobs:
           key: cachix-published-${{ runner.os }}-${{ runner.arch }}-${{ needs.cachix-build-check.outputs.inputs-hash }}
 
   lint:
-    timeout-minutes: 10
+    # Not 10 minutes any more: this job now runs the cargo-fmt and cargo-clippy hooks,
+    # and with no shared cargo workspace left they compile each module's dependency
+    # graph in turn. The cache below makes repeat runs cheap; a cold run is the
+    # expensive one.
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     permissions:
       contents: read  # For checkout
@@ -285,6 +289,15 @@ jobs:
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
         run: bash docker/ros/install-nix.sh
+
+      # The clippy hook compiles every module's dependency graph. They all share the
+      # repo-root target dir (.cargo/config.toml), so one cache entry covers the lot.
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Only main writes the cache, so a PR run cannot evict main's entry
+          # from the repo's 10GB budget. PR runs still restore from it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
