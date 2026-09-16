@@ -134,15 +134,23 @@ repos:
         language: python
         stages: [pre-commit]
 
+      # Every rust crate now lives in its own cargo workspace with its own flake, so
+      # both hooks walk the workspace roots and enter each one's own devShell. There
+      # is no repo-root fallback: a repo-root flake ref would copy the entire tree,
+      # git-lfs blobs and all, into the store on every commit.
       - id: cargo-fmt
         name: cargo fmt
         entry: |
-          nix develop path:nix/rust -c bash -c '
+          bash -c '
             set -euo pipefail
+            top=$(git rev-parse --show-toplevel)
             git ls-files "*Cargo.toml" | while read -r m; do
               cargo locate-project --manifest-path "$m" --workspace --message-format plain
             done | sort -u | while read -r root; do
-              cargo fmt --manifest-path "$root" --all
+              dir=$(dirname "$root")
+              while [ "$dir" != "$top" ] && [ ! -f "$dir/flake.nix" ]; do dir=$(dirname "$dir"); done
+              [ -f "$dir/flake.nix" ] || { echo "no flake above $root" >&2; exit 1; }
+              nix develop "path:$dir" -c cargo fmt --manifest-path "$root" --all
             done
           '
         language: system
@@ -152,21 +160,16 @@ repos:
       - id: cargo-clippy
         name: cargo clippy
         entry: |
-          nix develop path:nix/rust -c bash -c '
+          bash -c '
             set -euo pipefail
+            top=$(git rev-parse --show-toplevel)
             git ls-files "*Cargo.toml" | while read -r m; do
               cargo locate-project --manifest-path "$m" --workspace --message-format plain
             done | sort -u | while read -r root; do
               dir=$(dirname "$root")
-              # A module crate with its own flake carries system deps the toolchain
-              # shell lacks. The repo-root flake is skipped on purpose: a flake ref
-              # copies its whole source tree into the store, and that tree is the
-              # entire repository.
-              if [ "$dir" != "$(git rev-parse --show-toplevel)" ] && [ -f "$dir/flake.nix" ]; then
-                nix develop "path:$dir" -c cargo clippy --manifest-path "$root" --workspace --all-targets -- -D warnings
-              else
-                cargo clippy --manifest-path "$root" --workspace --all-targets -- -D warnings
-              fi
+              while [ "$dir" != "$top" ] && [ ! -f "$dir/flake.nix" ]; do dir=$(dirname "$dir"); done
+              [ -f "$dir/flake.nix" ] || { echo "no flake above $root" >&2; exit 1; }
+              nix develop "path:$dir" -c cargo clippy --manifest-path "$root" --workspace --all-targets -- -D warnings
             done
           '
         language: system

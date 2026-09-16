@@ -33,9 +33,9 @@ TF_MATCH_TOLERANCE_S = 0.1
 class RayTracingVoxelMapConfig(NativeModuleConfig):
     # The crate is a workspace member, so it is built from the repo root along
     # with every other rust native module.
-    cwd: str | None = "../../.."
+    cwd: str | None = "rust"
     executable: str = "result/bin/voxel_ray_tracing"
-    build_command: str | None = "nix build -L .#rust_native_modules"
+    build_command: str | None = "nix build -L path:.#dimos-voxel-ray-tracing"
     stdin_config: bool = True
 
     voxel_size: float = 0.08

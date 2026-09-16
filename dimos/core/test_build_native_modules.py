@@ -207,9 +207,7 @@ def test_ast_extraction_matches_runtime() -> None:
 
 def test_no_module_hashes_the_repo_root() -> None:
     """A collected input of "." puts the whole-repo tree SHA in the marker key,
-    so it changes on every commit and the marker never matches. A
-    fileset.toSource `root` anchor (usually the repo root) must be skipped, not
-    hashed — regression guard for the rust_recorder fileset flake."""
+    so it changes on every commit and the marker never matches."""
     for module in _SCRIPT.discover():
         assert "." not in _SCRIPT._collect_input_paths(module), (
             f"{module.qualname}: input set includes the repo root — a fileset root anchor "
@@ -217,23 +215,40 @@ def test_no_module_hashes_the_repo_root() -> None:
         )
 
 
-def test_recorder_fileset_covers_every_workspace_member() -> None:
-    """Cargo resolves the workspace from the root manifest, so the recorder's
-    fileset src must carry every [workspace] member — as static path literals,
-    because the publish gate can only hash literals. Deriving the list from
-    Cargo.toml at eval time (fromTOML) is invisible to the flake parser, which
-    then hashes the fileset root instead: the repo-root tree SHA busts the
-    publish marker on every commit."""
-    flake = DIMOS_PROJECT_ROOT / "dimos" / "experimental" / "memory" / "rust" / "flake.nix"
-    block = re.search(r"members\s*=\s*\[([^]]*)\]", (DIMOS_PROJECT_ROOT / "Cargo.toml").read_text())
-    assert block is not None, "no [workspace] members array in Cargo.toml"
-    members = re.findall(r'"([^"]+)"', block.group(1))
-    assert members, "no [workspace] members parsed from Cargo.toml"
-    literals, _path_inputs = _SCRIPT._flake_refs(flake)
-    for member in members:
-        assert any(member == lit or member.startswith(lit + "/") for lit in literals), (
-            f"workspace member {member!r} has no covering path literal in {flake} — "
-            "list it in the fileset.unions so the publish gate hashes it"
+def test_every_module_flake_is_self_contained() -> None:
+    """A module flake may reach its own directory and nothing else.
+
+    This is what makes the publish gate's key correct: `--inputs-hash` hashes each
+    module's directory tree and nothing more, so a path literal or `path:` input
+    pointing outside it would let content change without changing the key, and the
+    module would be served from Cachix as already published. Anything shared has to
+    arrive as a remote input pinned in the module's own flake.lock, or be copied in.
+    """
+    modules = _SCRIPT.discover()
+    assert modules
+    for module in modules:
+        inputs = _SCRIPT._collect_input_paths(module)
+        assert inputs == {module.build_dir}, (
+            f"{module.qualname}: hashed inputs {sorted(inputs)} are not just "
+            f"{module.build_dir!r} — the flake reaches outside its own directory"
+        )
+
+
+def test_no_module_reaches_the_repository_root() -> None:
+    """No `nix build` may resolve to the repo root.
+
+    A ref that walks up to `.git` copies the entire working tree into the store,
+    including every smudged git-lfs blob under `data/` — 16 GB per build, and a
+    source hash that differs between machines depending on what they have pulled.
+    """
+    for module in _SCRIPT.discover():
+        assert module.build_dir != ".", (
+            f"{module.qualname}: builds from the repository root"
+        )
+        ref = _SCRIPT._flake_ref_of(module)
+        assert ref.startswith("path:.#") or ref.startswith("github:"), (
+            f"{module.qualname}: flake ref {ref!r} is not the "
+            "`path:.#<package>` convention"
         )
 
 

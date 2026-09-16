@@ -273,11 +273,21 @@ jobs:
           deno-version: ${{ steps.deno-version.outputs.version }}
           cache: true
 
+      # The cargo-fmt and cargo-clippy hooks enter each module's own devShell, which
+      # is the only place a module's system libraries (librealsense, sqlite, the
+      # cuVSLAM SDK) exist. They used to be skipped here and approximated in the rust
+      # job with a rustup toolchain and `--workspace`, which silently linted neither
+      # dim_slam nor realsense -- they are not members of any shared workspace.
+      - name: Install Nix
+        env:
+          INPUT_EXTRA_NIX_CONFIG: |
+            extra-substituters = https://dimensionalos.cachix.org
+            extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
+          INPUT_SET_AS_TRUSTED_USER: "true"
+        run: bash docker/ros/install-nix.sh
+
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
-        env:
-          # clippy and fmt are checked in the rust job, so we can skip them here
-          SKIP: cargo-fmt,cargo-clippy
 
   rust:
     timeout-minutes: 30
@@ -298,12 +308,20 @@ jobs:
           # Only main writes the cache, so a PR run cannot evict main's entry
           # from the repo's 10GB budget. PR runs still restore from it.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # There is no repo-wide cargo workspace any more: every module is its own
+      # workspace with its own lock. fmt and clippy moved to the pre-commit hooks in
+      # the lint job, which enter each module's devShell; what is left here is the
+      # test run, over each workspace root in turn.
       - name: cargo test
-        run: cargo test --workspace --all-features --locked
+        run: |
+          set -euo pipefail
+          git ls-files "*Cargo.toml" | while read -r m; do
+            cargo locate-project --manifest-path "$m" --workspace --message-format plain
+          done | sort -u | while read -r root; do
+            echo "::group::cargo test $root"
+            cargo test --manifest-path "$root" --workspace --all-features --locked
+            echo "::endgroup::"
+          done
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
@@ -330,9 +348,9 @@ jobs:
       - name: Bake e2e tests
         run: uv run pytest -m bake_e2e dimos/cli/bake/test_bake_e2e.py --no-cov
       - name: Native module e2e tests
-        run: |
-          cargo build --release --locked -p dimos-livox -p dimos-virtual-mid360
-          uv run pytest -m native_e2e dimos/hardware/sensors/lidar/livox/test_e2e.py --no-cov
+        # NativeModule builds these itself, through each module's own
+        # `nix build -L path:.#<package>`; nothing here builds them with cargo.
+        run: uv run pytest -m native_e2e dimos/hardware/sensors/lidar/livox/test_e2e.py --no-cov
 
   native:
     name: Native builds (C++ and Rust)
@@ -377,16 +395,18 @@ jobs:
       - name: Test
         run: ctest --test-dir build/native-cpp --output-on-failure
 
-      - name: Find C++ native modules
+      # `bin/build-native-modules` is the single discovery mechanism: it reads every
+      # NativeModuleConfig's own build_command. This job used to run a second,
+      # independent `find -name flake.nix` glob, and the repo-root flake a third
+      # (`findDepsFiles`); a module missed by any one of them was silently not built,
+      # not hashed, or not published.
+      - name: List C++ native modules
         id: find-modules
         run: |
-          modules=$(find . -name flake.nix \
-            -not -path './.git/*' \
-            -not -path '*/build/*' \
-            -not -path '*/result/*' \
-            -printf '%h\n' \
+          modules=$(git ls-files '*/flake.nix' \
+            | sed 's|/flake.nix$||' \
             | while read -r dir; do
-                [ -f "$dir/CMakeLists.txt" ] && echo "${dir#./}"
+                [ -f "$dir/CMakeLists.txt" ] && echo "$dir"
               done \
             | sort)
           if [ -z "$modules" ]; then
@@ -411,21 +431,12 @@ jobs:
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
         run: bash docker/ros/install-nix.sh
-      - name: Build Rust memory recorder Nix package
-        run: |
-          cd dimos/experimental/memory/rust
-          nix build .#dimos-memory-recorder --no-write-lock-file --print-build-logs
-          test -x result/bin/dimos-memory-recorder
       # PCL, GTSAM and the SLAM cores come from each module's flake, not apt.
-      - name: Build C++ native modules
-        env:
-          MODULES: ${{ steps.find-modules.outputs.modules }}
-        run: |
-          for module in $MODULES; do
-            echo "::group::$module"
-            (cd "$module" && nix build --no-write-lock-file --print-build-logs)
-            echo "::endgroup::"
-          done
+      # Builds every native module, C++ and rust alike, each with the exact command
+      # its own NativeModuleConfig declares -- so CI cannot build something different
+      # from what a developer's machine builds.
+      - name: Build native modules
+        run: python3 bin/build-native-modules
       - name: Test C++ native modules
         env:
           MODULES: ${{ steps.find-modules.outputs.modules }}
@@ -915,7 +926,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build rust native modules
         if: contains(matrix.markers, 'self_hosted')
-        run: cargo build --release --locked -p dimos-livox -p dimos-virtual-mid360
+        # Each module owns its build: NativeModule runs the module's own
+        # `nix build -L path:.#<package>`, and this script runs exactly those.
+        run: python3 bin/build-native-modules
       - name: Run tests
         run: uv run pytest --cov=dimos/ --junitxml=junit.xml -m '(${{ matrix.markers }}) and not mujoco'
       - name: Re-run the failing tests with maximum verbosity

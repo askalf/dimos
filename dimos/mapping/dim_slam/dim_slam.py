@@ -122,12 +122,11 @@ class SourceConfig(BaseModel):
 class DimSlamConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     executable: str = "result/bin/dim_slam"
-    # git+file, not path:. : the flake's ../../../.. input must be inside the entered tree.
-    # Builds see tracked files only.
+    # Same `nix build -L path:.#<package>` shape as every other native module. The
+    # package name is the cuVSLAM SDK variant rather than a fixed string, because the
+    # SDK a build links decides what the binary can run on.
     build_command: str | None = Field(
-        default_factory=lambda: (
-            f"nix build -L 'git+file:../../../..?dir=dimos/mapping/dim_slam/rust#{sdk_variant()}'"
-        )
+        default_factory=lambda: f"nix build -L path:.#{sdk_variant()}"
     )
     stdin_config: bool = True
     extra_env: dict[str, str] = Field(default_factory=driver_env)
