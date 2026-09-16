@@ -1,17 +1,6 @@
 [registry]
 global-min-publish-age = "7 days"
 
-# Without this, cargo writes `target/` beside each crate -- which, now that the root
-# workspace is gone, means inside every module directory. `nix build path:.#…` copies
-# a module's whole directory, gitignored output included, so that `target/` becomes
-# part of the derivation: the hash changes after any local cargo build, the module
-# stops matching what CI published, and it recompiles from scratch instead of being
-# substituted from Cachix. This is true of every module -- dim_slam is only the
-# largest, at 2.3 GB.
-#
-# The root workspace used to give us this for free, since cargo puts `target/` at the
-# workspace root. Paths here resolve against this file's directory, so `target` is the
-# repo root's whichever module cargo runs in -- which is also what lets modules that
-# no longer share a workspace still share build artifacts.
+# store cache of all non-nix rust builds at the root level (shared)
 [build]
 target-dir = "target"
