@@ -276,7 +276,7 @@ def _get_all_python_files(root: Path) -> Generator[Path, None, None]:
     """Yield host source files without entering Python-native runtime projects."""
     for directory, directory_names, file_names in os.walk(root):
         # A sibling directory named ``python`` is the isolation boundary for a
-        # PythonNativeModule. Its implementation and .venv are not host code.
+        # IsolatedPythonModule. Its implementation and .venv are not host code.
         directory_names[:] = sorted(
             name for name in directory_names if name not in {"__pycache__", "python"}
         )

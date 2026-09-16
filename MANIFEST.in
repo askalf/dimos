@@ -53,3 +53,14 @@ include dimos/imitation/policy/abc/python/pyproject.toml
 include dimos/imitation/policy/abc/python/uv.lock
 include dimos/imitation/policy/abc/python/LICENSE
 recursive-include dimos/imitation/policy/abc/python/abc_minimal *.md LICENSE
+include dimos/simulation/behavior/python/pyproject.toml
+include dimos/simulation/behavior/python/uv.lock
+include dimos/simulation/behavior/python/pixi.toml
+include dimos/simulation/behavior/python/pixi.lock
+include dimos/simulation/behavior/python/.python-version
+recursive-include dimos/simulation/behavior/python/dimos_behavior *.py
+prune dimos/simulation/behavior/python/.assets
+prune dimos/simulation/behavior/python/.downloads
+prune dimos/simulation/behavior/python/.pixi
+prune dimos/simulation/behavior/python/.venv
+exclude dimos/simulation/behavior/python/.behavior-setup.json

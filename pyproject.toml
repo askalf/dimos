@@ -28,6 +28,7 @@ include = ["dimos*"]
 # .py modules out of the wheel too).
 exclude = [
     "dimos.experimental.isolated_python.example.python*",
+    "dimos.simulation.behavior.python*",
     "dimos.web.websocket_vis.node_modules*",
     "dimos.web.command-center-extension*",
     "dimos.web.dimos_interface.src*",
@@ -50,6 +51,13 @@ exclude = [
     "**/*.svg",
     "**/*.tcss",
     "**/*.pyi",
+    "simulation/behavior/python/pyproject.toml",
+    "simulation/behavior/python/uv.lock",
+    "simulation/behavior/python/pixi.toml",
+    "simulation/behavior/python/pixi.lock",
+    "simulation/behavior/python/.python-version",
+    "simulation/behavior/python/dimos_behavior/*.py",
+
     # Locked Python-native runtime definition. Keep these exact rather than
     # shipping arbitrary manifests from the source tree.
     "imitation/policy/lerobot/python/pyproject.toml",
@@ -78,6 +86,12 @@ exclude = [
     "web/dimos_interface/public/**",
     "web/dimos_interface/node_modules/**",
     "hardware/sensors/lidar/fastlio2/cpp/**",
+    "simulation/behavior/python/.assets/**",
+    "simulation/behavior/python/.downloads/**",
+    "simulation/behavior/python/.pixi/**",
+    "simulation/behavior/python/.venv/**",
+    "simulation/behavior/python/.behavior-setup.json",
+
 ]
 
 [project]
@@ -775,6 +789,7 @@ max_size_kb = 75
 ignore = [
     "uv.lock",
     "*/uv.lock",
+    "dimos/simulation/behavior/python/pixi.lock",
     "*/package-lock.json",
     "Cargo.lock",
     "*/Cargo.lock",
@@ -786,3 +801,7 @@ ignore = [
     # Generated golden vectors (web/shared/fixtures/gen.ts); grows per panel kind.
     "web/shared/fixtures/manifests.json",
 ]
+
+[[tool.mypy.overrides]]
+module = ["omnigibson.*", "yaml"]
+ignore_missing_imports = true

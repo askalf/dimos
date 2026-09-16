@@ -27,6 +27,11 @@ from dimos.imitation.dataprep.lerobot import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_preparation(mocker):
+    return mocker.patch("dimos.imitation.dataprep.lerobot.prepare_isolated_python")
+
+
 def test_conversion_runs_packaged_module_in_policy_project(
     tmp_path: Path, mocker: pytest_mock.MockerFixture
 ) -> None:
@@ -52,7 +57,7 @@ def test_conversion_runs_packaged_module_in_policy_project(
     command = run.call_args.args[0]
     project = Path(__file__).parents[1] / "policy" / "lerobot" / "python"
     assert lerobot_project() == project
-    assert command[:3] == ["uv", "run", "--frozen"]
+    assert command[:3] == ["uv", "run", "--no-sync"]
     assert command[-3:] == ["python", "-m", "dimos_lerobot.dataprep"]
     assert "--python" not in command
     assert run.call_args.kwargs["cwd"] == project

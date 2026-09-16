@@ -21,6 +21,8 @@ from dimos.core.core import rpc
 from dimos.experimental.isolated_python.module import (
     IsolatedPythonModule,
     IsolatedPythonModuleConfig,
+    isolated_python_run_command,
+    prepare_isolated_python,
 )
 
 
@@ -47,89 +49,80 @@ def test_sibling_project_is_required(tmp_path: Path, monkeypatch: pytest.MonkeyP
         module.stop()
 
 
-def test_uv_lock_enables_frozen_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "contract.py"
-    source.touch()
-    project = tmp_path / "python"
-    project.mkdir()
-    (project / "pyproject.toml").touch()
-    (project / "uv.lock").touch()
+def test_prepare_installs_host_code_without_changing_runtime_dependencies(tmp_path, mocker):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "pyproject.toml").touch()
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile", lambda _: str(source)
-    )
-    monkeypatch.setattr("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", checkout)
-    module = Contract()
-    try:
-        command = module._launch_command(7)
+    mocker.patch("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", checkout)
+    run = mocker.patch("dimos.experimental.isolated_python.module.subprocess.run")
+    run.return_value.returncode = 0
 
-        assert module._prepare_command() == [
+    prepare_isolated_python(tmp_path, {})
+
+    assert [call.args[0] for call in run.call_args_list] == [
+        ["uv", "sync", "--frozen"],
+        [
             "uv",
-            "run",
-            "--frozen",
-            "--with-editable",
+            "pip",
+            "install",
+            "--python",
+            str(tmp_path / ".venv/bin/python"),
+            "--no-deps",
+            "--editable",
             str(checkout),
-            "python",
-            "-c",
-            "pass",
-        ]
-        assert command[:5] == [
-            "uv",
-            "run",
-            "--frozen",
-            "--with-editable",
-            str(checkout),
-        ]
-        assert "--python" not in command
-    finally:
-        module.stop()
+        ],
+    ]
+    assert isolated_python_run_command(tmp_path, "python", "script.py") == [
+        "uv",
+        "run",
+        "--no-sync",
+        "python",
+        "script.py",
+    ]
 
 
-def test_installed_host_uses_unversioned_dimos(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "contract.py"
-    source.touch()
-    project = tmp_path / "python"
-    project.mkdir()
-    (project / "pyproject.toml").touch()
-    installed_root = tmp_path / "site-packages"
-    installed_root.mkdir()
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile", lambda _: str(source)
+def test_installed_host_pins_runtime_to_host_version(tmp_path, mocker):
+    mocker.patch("dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", tmp_path)
+    mocker.patch("dimos.experimental.isolated_python.module.version", return_value="1.2.3")
+    run = mocker.patch("dimos.experimental.isolated_python.module.subprocess.run")
+    run.return_value.returncode = 0
+
+    prepare_isolated_python(tmp_path, {})
+
+    assert run.call_args.args[0][-2:] == ["--no-deps", "dimos==1.2.3"]
+
+
+def test_failed_sync_does_not_install_host(tmp_path, mocker):
+    run = mocker.patch("dimos.experimental.isolated_python.module.subprocess.run")
+    run.return_value.returncode = 1
+    run.return_value.stdout = ""
+    run.return_value.stderr = "unsatisfiable dependencies"
+
+    with pytest.raises(RuntimeError, match="unsatisfiable dependencies"):
+        prepare_isolated_python(tmp_path, {})
+
+    assert run.call_count == 1
+
+
+def test_pixi_wraps_preparation_and_launch(tmp_path, mocker):
+    (tmp_path / "pixi.toml").touch()
+    run = mocker.patch("dimos.experimental.isolated_python.module.subprocess.run")
+    run.return_value.returncode = 0
+
+    prepare_isolated_python(tmp_path, {})
+
+    assert all(
+        call.args[0][:4] == ["pixi", "run", "--executable", "uv"] for call in run.call_args_list
     )
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.DIMOS_PROJECT_ROOT", installed_root
-    )
-    module = Contract()
-    try:
-        command = module._launch_command(7)
-
-        assert command[:4] == ["uv", "run", "--with", "dimos"]
-        assert "--python" not in command
-    finally:
-        module.stop()
-
-
-def test_pixi_supplies_uv_when_manifest_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "contract.py"
-    source.touch()
-    project = tmp_path / "python"
-    project.mkdir()
-    (project / "pyproject.toml").touch()
-    (project / "pixi.toml").touch()
-    monkeypatch.setattr(
-        "dimos.experimental.isolated_python.module.inspect.getfile", lambda _: str(source)
-    )
-    module = Contract()
-    try:
-        assert module._prepare_command()[:5] == ["pixi", "run", "--executable", "uv", "run"]
-    finally:
-        module.stop()
+    assert isolated_python_run_command(tmp_path, "python") == [
+        "pixi",
+        "run",
+        "--executable",
+        "uv",
+        "run",
+        "--no-sync",
+        "python",
+    ]
 
 
 def test_runtime_environment_uses_sibling_virtualenv(

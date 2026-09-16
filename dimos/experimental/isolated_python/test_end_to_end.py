@@ -92,7 +92,7 @@ def test_example_script_exits_after_printing_results() -> None:
         cwd=repository,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=180,  # Two locked environment preparations plus a process restart.
     )
 
     assert result.returncode == 0, result.stderr

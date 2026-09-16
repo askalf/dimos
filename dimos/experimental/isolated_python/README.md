@@ -66,16 +66,20 @@ a contract stub or changes its signature or classification.
 
 ## Runtime behavior
 
-During `build()`, dimOS syncs the sibling project and installs the host dimOS
-with its dependencies into a cached `uv run --with` overlay. The first build can
-take minutes to download; later builds reuse the cache. If `pixi.toml` exists,
-Pixi supplies `uv`. If `uv.lock` exists, dimOS uses `--frozen` and treats the
-lockfile as the source of truth.
+During `build()`, DimOS runs `uv sync --frozen` in the sibling project, then
+installs matching host DimOS code with `uv pip install --no-deps`. Launch uses
+`uv run --no-sync`; there is no host-dependency overlay. Every runtime must declare
+and lock the dependencies it uses, including DimOS message and transport imports.
+If `pixi.toml` exists, Pixi supplies the toolchain and `uv`.
 
-Source checkouts make the current dimOS checkout available to the runtime.
-Installed hosts let `uv` resolve `dimos`, so the host and runtime versions may
-differ. The sibling project's `.python-version` and `requires-python` select its
-Python version.
+Source checkouts install the current checkout editable. Installed hosts install
+exactly their own DimOS version. The sibling project's `.python-version` and
+`requires-python` select its interpreter independently of the host.
+
+The bootstrap calls `run_runtime(stopping)` on its main thread after establishing
+RPC service. The default implementation waits for shutdown. Thread-affine engines
+can override it to initialize and drive their simulator there while RPC handlers
+queue operations. `stop()` must signal that loop to exit.
 
 The host contract retains the public module name and forwards contract RPCs to a
 unique internal endpoint. Ordinary dimOS serialization and transport handle RPC

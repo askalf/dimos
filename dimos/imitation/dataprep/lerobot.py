@@ -21,7 +21,10 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from dimos.experimental.isolated_python.module import isolated_python_run_command
+from dimos.experimental.isolated_python.module import (
+    isolated_python_run_command,
+    prepare_isolated_python,
+)
 from dimos.imitation.dataprep._lerobot_protocol import (
     RESULT_ADAPTER,
     BuildRequest,
@@ -52,8 +55,11 @@ def _run(request: Request) -> Result:
     )
     env = dict(os.environ)
     env.pop("VIRTUAL_ENV", None)
+    env.pop("UV_PYTHON", None)
+    env.pop("UV_PROJECT_ENVIRONMENT", None)
     try:
         with cache_usage_guard():
+            prepare_isolated_python(project, env)
             result = subprocess.run(
                 command,
                 cwd=project,
