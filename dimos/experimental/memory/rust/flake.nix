@@ -1,85 +1,49 @@
 {
-  description = "DimOS Rust native modules";
+  description = "Native Memory2 SQLite and MCAP recorder for dimos";
 
+  # The shared crates come in as a remote git input, not a relative path. A `path:..`
+  # input is unresolvable from a `path:.` build (`..` escapes the store path), and a
+  # relative `git+file:` is deprecated (nix#12281); the remote ref is also the only
+  # form that survives this module moving into a repository of its own. It costs one
+  # 25 MB store path, shared by every module locked to the same revision -- against
+  # the ~16 GB a local ref copies, because a local ref reads the working tree and so
+  # picks up every smudged git-lfs blob under data/.
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    dimos-native-rust.url = "github:dimensionalOS/dimos?dir=native/rust";
+    flake-utils.follows = "dimos-native-rust/flake-utils";
+    nixpkgs.follows = "dimos-native-rust/nixpkgs";
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    flake-utils,
-  }:
-    flake-utils.lib.eachSystem [
-      "x86_64-linux"
-      "aarch64-linux"
-      "aarch64-darwin"
-    ] (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-      nativeDeps = [pkgs.cmake pkgs.nasm pkgs.pkg-config];
-      systemDeps =
-        [pkgs.sqlite pkgs.sqlite.dev]
-        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.libiconv];
-      dimos-memory-recorder = pkgs.rustPlatform.buildRustPackage {
-        pname = "dimos-memory-recorder";
-        version = "0.1.0";
-        src = pkgs.lib.fileset.toSource {
-          root = ../../../..;
-          fileset = pkgs.lib.fileset.unions [
-            ../../../../Cargo.lock
-            ../../../../Cargo.toml
-            ../../../../dimos/experimental/memory/rust
-            ../../../../native/rust/dimos-module
-            ../../../../native/rust/dimos-module-macros
-            ../../../../dimos/mapping/ray_tracing/rust
-            ../../../../dimos/mapping/ray_tracing/rust/py
-            ../../../../dimos/navigation/nav_3d/mls_planner/rust
-            ../../../../dimos/navigation/nav_3d/mls_planner/rust/py
-            ../../../../dimos/hardware/sensors/lidar/livox/rust
-            ../../../../dimos/hardware/sensors/lidar/pointlio/rust
-            ../../../../dimos/hardware/sensors/lidar/virtual_mid360
-            ../../../../examples/native-modules/rust
-          ];
-        };
-
-        cargoLock = {
-          lockFile = ../../../../Cargo.lock;
-          outputHashes = {
-            "dimos-lcm-0.1.0" = "sha256-GGkx4Mn6NYP6KZecmoRLKGWIih/+y8OgNn12DeXX6n8=";
-            "pointlio-core-0.1.0" = "sha256-iC7nDbEipfi3cViK7fqKiy2hT9ENGi4Ge7L6Wt1W01Q=";
+  outputs = { self, nixpkgs, dimos-native-rust, flake-utils }:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
+      let
+        shared = dimos-native-rust.lib.${system};
+        pkgsFor = nixpkgs.legacyPackages.${system};
+      in {
+        packages.dimos-memory-recorder = shared.buildNativeModule {
+          name = "dimos-memory-recorder";
+          path = "dimos/experimental/memory/rust";
+          src = ./.;
+          # sqlite and the turbojpeg encoder are C libraries; crate2nix builds each
+          # crate on its own, so the -sys crates name what they link rather than the
+          # whole package doing it once.
+          crateOverrides = pkgs: {
+            libsqlite3-sys = _: {
+              buildInputs = [ pkgs.sqlite ];
+              nativeBuildInputs = [ pkgs.pkg-config ];
+              LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+            };
+            turbojpeg-sys = _: {
+              nativeBuildInputs = [ pkgs.cmake pkgs.nasm ];
+            };
           };
         };
 
-        cargoBuildFlags = ["-p" "dimos-memory-recorder"];
-        cargoTestFlags = ["-p" "dimos-memory-recorder"];
-        strictDeps = true;
-
-        nativeBuildInputs = nativeDeps;
-        buildInputs = systemDeps;
-
-        env.LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-
-        meta = {
-          description = "Experimental native Memory2 SQLite and MCAP recorder";
-          mainProgram = "dimos-memory-recorder";
-          platforms = pkgs.lib.platforms.unix;
+        devShells.default = pkgsFor.mkShell {
+          packages = shared.rustTools
+            ++ [ pkgsFor.cmake pkgsFor.nasm pkgsFor.pkg-config pkgsFor.sqlite pkgsFor.sqlite.dev ]
+            ++ pkgsFor.lib.optionals pkgsFor.stdenv.hostPlatform.isDarwin [ pkgsFor.libiconv ];
+          LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
         };
-      };
-    in {
-      packages = {
-        default = dimos-memory-recorder;
-        inherit dimos-memory-recorder;
-      };
-
-      # Just the system deps and a toolchain. Deliberately not the package's
-      # build environment: that vendors the whole workspace lock, which would
-      # make `nix develop` (and so the cargo clippy hook) fail on any git
-      # dependency added anywhere in the workspace.
-      devShells.default = pkgs.mkShell {
-        nativeBuildInputs = nativeDeps ++ [pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt];
-        buildInputs = systemDeps;
-        LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      };
-    });
+      });
 }

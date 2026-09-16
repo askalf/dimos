@@ -1,5 +1,5 @@
 {
-  description = "RealSense D4xx camera native module for dimos";
+  description = "Virtual Livox Mid-360 pcap replay native module for dimos";
 
   # The shared crates come in as a remote git input, not a relative path. A `path:..`
   # input is unresolvable from a `path:.` build (`..` escapes the store path), and a
@@ -14,18 +14,12 @@
   };
 
   outputs = { self, dimos-native-rust, flake-utils }:
-    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let shared = dimos-native-rust.lib.${system}; in {
-        packages.dimos-realsense = shared.buildNativeModule {
-          name = "dimos-realsense";
-          path = "dimos/hardware/sensors/camera/realsense/rust";
+        packages.dimos-virtual-mid360 = shared.buildNativeModule {
+          name = "dimos-virtual-mid360";
+          path = "dimos/hardware/sensors/lidar/virtual_mid360";
           src = ./.;
-          crateOverrides = pkgs: {
-            realsense-sys = _: {
-              buildInputs = [ pkgs.librealsense ];
-              nativeBuildInputs = [ pkgs.pkg-config ];
-            };
-          };
         };
 
         devShells.default = dimos-native-rust.devShells.${system}.default;

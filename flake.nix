@@ -85,7 +85,8 @@
           { vals.pkg=pkgs.uv;                             flags={}; }
           { vals.pkg=pkgs.pre-commit;                   flags={}; }
 
-          ### Rust (native module auto-builds run `nix develop path:<repo> -c cargo`)
+          ### Rust (for ad-hoc cargo use in this shell; native modules build
+          ### through their own flakes, not this one)
           { vals.pkg=pkgs.cargo;                        flags={}; }
           { vals.pkg=pkgs.rustc;                        flags={}; }
 
@@ -285,81 +286,6 @@
         };
 
         # ------------------------------------------------------------
-        # 3b. Native modules built from the cargo workspace
-        # ------------------------------------------------------------
-        # One derivation for every rust native module, because they are one
-        # cargo workspace: splitting them per module would vendor the deps and
-        # rebuild the shared crates once each.
-        #
-        # Each module owns a `deps.nix` naming the crate directories it
-        # contributes to the workspace, the cargo packages that are module
-        # executables, and any system libraries it links. Adding a module is
-        # just a new deps.nix; nothing here has to change.
-        #
-        # The rule is deliberately the dumbest one possible -- every file named
-        # `deps.nix`, anywhere in the tree -- because
-        # `bin/build-native-modules --inputs-hash` has to find exactly the same
-        # set to key the Cachix publish marker, and it does that with a glob
-        # rather than by evaluating nix. Any cleverer rule here (pruning,
-        # restricted roots) would have to be mirrored there, and the two would
-        # drift. Keep them the same sentence.
-        findDepsFiles = dir:
-          let entries = builtins.readDir dir; in
-          builtins.concatMap
-            (name:
-              if entries.${name} == "directory" then
-                findDepsFiles (dir + "/${name}")
-              else if name == "deps.nix" then
-                [ (dir + "/${name}") ]
-              else
-                [ ])
-            (builtins.attrNames entries);
-        moduleDeps = map (file: import file pkgs) (findDepsFiles ./.);
-        depsField = field: builtins.concatLists (map (dep: dep.${field} or [ ]) moduleDeps);
-
-        rustNativeModules = pkgs.rustPlatform.buildRustPackage {
-          pname = "dimos-rust-native-modules";
-          version = "0.1.0";
-          # Assembled from the declared crate directories rather than filtered
-          # out of `./.`, so the only repo content reaching the derivation is
-          # the workspace itself: a doc or python edit leaves this unchanged
-          # and Cachix substitutes it. It also makes the build independent of
-          # whether a clone has pulled the git-lfs datasets.
-          # `bin/build-native-modules --inputs-hash` follows the same imports
-          # to key the Cachix publish marker.
-          src = pkgs.runCommand "dimos-rust-workspace" { } (
-            ''
-              mkdir -p $out
-              cp ${./Cargo.toml} $out/Cargo.toml
-              cp ${./Cargo.lock} $out/Cargo.lock
-            ''
-            + pkgs.lib.concatMapStrings
-              (dep: pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList (dest: tree: ''
-                mkdir -p $out/${builtins.dirOf dest}
-                cp -r ${tree} $out/${dest}
-              '') (dep.sources or { })))
-              moduleDeps
-            + "chmod -R u+w $out\n"
-          );
-          buildInputs = depsField "buildInputs";
-          nativeBuildInputs = depsField "nativeBuildInputs";
-          # Vendored by cargo rather than by `cargoLock.lockFile`, which would
-          # need no hash at all: nixpkgs fetches each crate with curl from
-          # `crates.io/api/v1/.../download`, and that endpoint 403s curl's user
-          # agent. Cargo itself is allowed, which is why vendoring works here.
-          # `static.crates.io` also serves them fine, but nothing in
-          # `importCargoLock` can point at it -- `registries` supplies only a
-          # base, always suffixed `/<name>/<version>/download`, and the CDN's
-          # path is `/<name>/<name>-<version>.crate`. Note the 403 is invisible
-          # locally, where the crates substitute from cache.nixos.org instead.
-          # So this hash has to be re-pasted whenever Cargo.lock moves; the CI
-          # failure prints the new value.
-          cargoHash = "sha256-Tm1TeMi8A0ESvARlLglV/ycax2GFqvh54zjEPkOTXm8=";
-          cargoBuildFlags = builtins.concatMap (name: [ "-p" name ]) (depsField "binaries");
-          doCheck = false;
-        };
-
-        # ------------------------------------------------------------
         # 4. Closure copied into the OCI image rootfs
         # ------------------------------------------------------------
         imageRoot = pkgs.buildEnv {
@@ -371,8 +297,6 @@
       in {
         ## Local dev shell
         devShells = devShells;
-
-        packages.rust_native_modules = rustNativeModules;
 
         ## Layered docker image with DockerTools
         packages.devcontainer = pkgs.dockerTools.buildLayeredImage {
