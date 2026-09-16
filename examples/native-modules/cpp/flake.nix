@@ -20,9 +20,9 @@
       url = "github:apolukhin/pfr_non_boost/2.3.2";
       flake = false;
     };
-    # The shared C++ SDK, as a remote ref rather than a `${../../../native/cpp}` path
-    # literal: under the `path:.` build ref this example now uses, such a literal
-    # escapes the flake's store path.
+    # The shared C++ SDK, as a remote ref rather than the bare path literal that used
+    # to climb three directories to reach native/cpp. Under the `path:.` build ref
+    # this example now uses, such a literal escapes the flake's store path.
     dimos-native-cpp.url = "github:dimensionalOS/dimos?dir=native/cpp";
     dimos-native-cpp.inputs.nixpkgs.follows = "nixpkgs";
     dimos-native-cpp.inputs.flake-utils.follows = "flake-utils";

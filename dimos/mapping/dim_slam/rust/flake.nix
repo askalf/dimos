@@ -6,8 +6,9 @@
   # relative `git+file:` is deprecated (nix#12281); the remote ref is also the only
   # form that survives this module moving into a repository of its own. It costs one
   # 25 MB store path, shared by every module locked to the same revision -- against
-  # the ~16 GB the old whole-repo `path:../../../..` input copied, because a local
-  # ref reads the working tree and so picks up every smudged git-lfs blob.
+  # the ~16 GB the old whole-repo input copied (a `path:` ref four levels up),
+  # because a local ref reads the working tree and so picks up every smudged
+  # git-lfs blob.
   inputs = {
     dimos-native-rust.url = "github:dimensionalOS/dimos?dir=native/rust";
     flake-utils.follows = "dimos-native-rust/flake-utils";

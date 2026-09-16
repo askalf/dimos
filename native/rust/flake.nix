@@ -43,8 +43,8 @@
 
         # The tree a module's crate2nix build runs in: the module's own directory at
         # the same relative path it occupies in the repository, plus the shared
-        # crates at theirs, so the `path = "../../../native/rust/dimos-module"`
-        # dependency in the module's Cargo.toml resolves without rewriting it.
+        # crates at theirs, so the relative `path = ` dependency on dimos-module
+        # in the module's Cargo.toml resolves without rewriting it.
         moduleSource = { name, path, src }:
           pkgs.runCommand "${name}-source" { } (
             ''

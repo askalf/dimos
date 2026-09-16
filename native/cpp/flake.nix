@@ -11,7 +11,7 @@
   # rather than a built artifact.
   #
   # This exists as a flake so a module can take the SDK as an input instead of a
-  # `${../../../../../../native/cpp}` path literal. Under the `path:.` build refs the
+  # bare path literal climbing six directories to reach it. Under the `path:.` refs the
   # modules now use, such a literal escapes the module's store path and fails to
   # resolve -- and when it did resolve, it resolved by copying the entire repository,
   # git-lfs blobs included.

@@ -5,10 +5,10 @@
     zenoh.url = "github:jeff-hykin/zenoh_flake";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # The shared C++ SDK, as a remote ref rather than a `../../../../../../native/cpp`
-    # path literal: under the `path:.` build ref this module now uses, such a literal
-    # escapes the module's store path, and when it resolved at all it resolved by
-    # copying the whole repository.
+    # The shared C++ SDK, as a remote ref rather than the bare path literal that
+    # used to climb six directories to reach native/cpp. Under the `path:.` build
+    # ref this module now uses, such a literal escapes the module's store path, and
+    # back when it resolved at all it resolved by copying the whole repository.
     dimos-native-cpp.url = "github:dimensionalOS/dimos?dir=native/cpp";
     dimos-native-cpp.inputs.nixpkgs.follows = "nixpkgs";
     dimos-native-cpp.inputs.flake-utils.follows = "flake-utils";
