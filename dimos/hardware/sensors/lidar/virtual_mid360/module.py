@@ -54,15 +54,7 @@ _MACOS_IFACE = "lo0"
 
 
 class VirtualMid360Config(NativeModuleConfig):
-    # Built from the repo root, but only this module's crate: the crates it
-    # shares with the other modules are separate store paths already in the
-    # cache. The out-link is per-module so builds do not clobber each other.
-    cwd: str | None = "../../../../.."
-    executable: str = "result-virtual_mid360/bin/virtual_mid360"
-    build_command: str | None = (
-        "nix build -L .#rust_native_module_dimos-virtual-mid360 --out-link result-virtual_mid360"
-    )
-    # The crate is a workspace member, so cargo builds into the repo-root target dir.
+    cwd: str | None = "."
     executable: str = "result/bin/virtual_mid360"
     build_command: str | None = "nix build -L path:.#dimos-virtual-mid360"
     # The rust binary reads its config as a JSON object on stdin (required).

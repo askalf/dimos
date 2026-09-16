@@ -54,15 +54,7 @@ from dimos.spec import perception
 
 
 class Mid360Config(NativeModuleConfig):
-    # Built from the repo root, but only this module's crate: the crates it
-    # shares with the other modules are separate store paths already in the
-    # cache. The out-link is per-module so builds do not clobber each other.
-    cwd: str | None = "../../../../.."
-    executable: str = "result-mid360_native/bin/mid360_native"
-    build_command: str | None = (
-        "nix build -L .#rust_native_module_dimos-livox --out-link result-mid360_native"
-    )
-    # The crate is a workspace member, so cargo builds into the repo-root target dir.
+    cwd: str | None = "rust"
     executable: str = "result/bin/mid360_native"
     build_command: str | None = "nix build -L path:.#dimos-livox"
     stdin_config: bool = True
