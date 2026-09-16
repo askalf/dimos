@@ -268,7 +268,7 @@ ${BOLD}OPTIONS${RESET}
     --branch <branch>      Git branch for dev mode (default: main)
     --project-dir <path>   Project directory
     --non-interactive      Accept defaults, no prompts
-    --no-cuda              Use CPU inference dependencies (skip CUDA extras)
+    --no-cuda              Skip optional CUDA extras and GPU verification
     --no-sysctl            Skip LCM sysctl configuration
     --use-nix              Force Nix-based setup
     --no-nix               Skip Nix entirely
@@ -777,6 +777,7 @@ do_install_dev() {
     local extra
     IFS=',' read -r -a extras <<< "$EXTRAS"
     for extra in "${extras[@]}"; do sync_args+=(--extra "$extra"); done
+    info "Developer installs use locked PyTorch builds; Linux x86_64 includes CUDA libraries even for CPU use."
     dim "will run: uv sync ${sync_args[*]}"
     if ! prompt_confirm "Install dependencies now?" yes; then INSTALL_DEPS=0; return; fi
     project_cmd uv sync "${sync_args[@]}"
