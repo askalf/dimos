@@ -27,6 +27,7 @@ from dimos.hosted.fragment import (
     run_stream_key,
 )
 from dimos.hosted.fragment_compiler import compile_fragments, resolve_hosted_assignments
+from dimos.msgs.std_msgs.Bool import Bool
 from dimos.msgs.std_msgs.String import String
 
 
@@ -36,6 +37,14 @@ class SourceModule(Module):
 
 class SinkModule(Module):
     messages: In[String]
+
+
+class StringChannelConsumer(Module):
+    ch: In[String]
+
+
+class BoolChannelProducer(Module):
+    ch: Out[Bool]
 
 
 class ProviderModule(Module):
@@ -117,6 +126,28 @@ def test_compiler_keeps_same_host_stream_local() -> None:
 
     assert payload.boundary_streams == ()
     assert ("messages", String) not in payload.blueprint.transport_map
+
+
+def test_compiler_rejects_cross_host_ch_type_conflict_before_splitting() -> None:
+    blueprint = autoconnect(
+        StringChannelConsumer.blueprint(),
+        BoolChannelProducer.blueprint(),
+    )
+    config = BlueprintConfigParser(blueprint).parse(environ={})
+
+    with pytest.raises(ValueError, match="'ch' has conflicting types"):
+        compile_fragments(
+            blueprint,
+            config,
+            {
+                "stringchannelconsumer": "host-a",
+                "boolchannelproducer": "host-b",
+            },
+            run_id="run-1",
+            generation=1,
+            application_name="compiler-test",
+            application_revision="revision-1",
+        )
 
 
 @pytest.mark.parametrize(

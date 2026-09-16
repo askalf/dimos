@@ -30,6 +30,7 @@ from dimos.core.coordination.blueprints import (
     ModuleRef,
     TransportSpec,
 )
+from dimos.core.coordination.module_coordinator import _verify_no_name_conflicts
 from dimos.core.module import is_module_type
 from dimos.core.transport import ZenohTransport, pZenohTransport
 from dimos.hosted.daemon import HostDescriptor
@@ -71,6 +72,7 @@ def compile_fragments(
     """
     _validate_metadata(run_id, generation, application_name, application_revision)
     config.assert_matches(blueprint)
+    _verify_no_name_conflicts(blueprint)
 
     host_descriptors = tuple(hosts)
     resolved_assignments: Mapping[str, str]
