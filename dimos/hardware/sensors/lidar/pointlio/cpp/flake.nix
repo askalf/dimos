@@ -5,9 +5,13 @@
     zenoh.url = "github:jeff-hykin/zenoh_flake";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    livox-sdk.url = "path:../../livox/cpp";
-    livox-sdk.inputs.nixpkgs.follows = "nixpkgs";
-    livox-sdk.inputs.flake-utils.follows = "flake-utils";
+    # The shared C++ SDK, as a remote ref rather than a `../../../../../../native/cpp`
+    # path literal: under the `path:.` build ref this module now uses, such a literal
+    # escapes the module's store path, and when it resolved at all it resolved by
+    # copying the whole repository.
+    dimos-native-cpp.url = "github:dimensionalOS/dimos?dir=native/cpp";
+    dimos-native-cpp.inputs.nixpkgs.follows = "nixpkgs";
+    dimos-native-cpp.inputs.flake-utils.follows = "flake-utils";
     dimos-lcm = {
       url = "github:dimensionalOS/dimos-lcm/main";
       flake = false;
@@ -29,7 +33,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, zenoh, flake-utils, livox-sdk, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
+  outputs = { self, nixpkgs, zenoh, flake-utils, dimos-native-cpp, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         # Overlay fixes for darwin-broken nixpkgs recipes in our transitive
@@ -67,12 +71,53 @@
           inherit system;
           overlays = [ darwinDepFixes ];
         };
-        livox-sdk2 = livox-sdk.packages.${system}.livox-sdk2;
+        # Livox SDK2, built here rather than taken from the livox module's flake.
+        # A native module may not reach sideways into another module's directory, and
+        # livox is a specific sensor rather than part of the shared SDK, so the
+        # derivation is copied. Keep it in step with
+        # `dimos/hardware/sensors/lidar/livox/cpp/flake.nix`, which is the original.
+        livox-sdk2 = pkgs.stdenv.mkDerivation rec {
+          pname = "livox-sdk2";
+          version = "1.2.5";
+
+          src = pkgs.fetchFromGitHub {
+            owner = "Livox-SDK";
+            repo = "Livox-SDK2";
+            rev = "v${version}";
+            hash = "sha256-NGscO/vLiQ17yQJtdPyFzhhMGE89AJ9kTL5cSun/bpU=";
+          };
+
+          # macOS socket fixes (SO_RCVBUF too large, broadcast bind fails).
+          patches = [ ./livox-sdk2-darwin.patch ];
+
+          nativeBuildInputs = [ pkgs.cmake ];
+
+          cmakeFlags = [
+            "-DBUILD_SHARED_LIBS=ON"
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+          ];
+
+          preConfigure = ''
+            substituteInPlace CMakeLists.txt \
+              --replace-fail "add_subdirectory(samples)" ""
+            sed -i '1i #include <cstdint>' sdk_core/comm/define.h
+            sed -i '1i #include <cstdint>' sdk_core/logger_handler/file_manager.h
+            # Livox-SDK2 bundles an old rapidjson whose RAPIDJSON_DIAG_OFF(foo-bar)
+            # macros stringify with spaces under newer clang, producing invalid
+            # warning-group names.  It also has an unused FastCRC field.  Both
+            # explode under -Werror, and passing -DCMAKE_CXX_FLAGS=-Wno-error is
+            # overridden by add_compile_options(-Werror) deeper in the sdk_core
+            # CMakeLists.  Strip -Werror in-place instead.
+            find . -name CMakeLists.txt -exec sed -i 's/-Werror//g' {} +
+          '';
+        };
         lcm = lcm-extended.packages.${system}.lcm;
         zenohc = zenoh.packages.${system}.zenoh-c;
         zenohcpp = zenoh.packages.${system}.zenoh-cpp;
 
-        livox-common = ../../common;
+        # Copied from `dimos/hardware/sensors/lidar/common/`, for the same reason
+        # as the SDK above.
+        livox-common = ./livox_common;
 
         # Patch the Point-LIO fork in place: resize (not reserve) the per-point
         # vectors in run_once, whose reserve+operator[] is out-of-bounds UB that
@@ -111,9 +156,7 @@
             "-DFETCHCONTENT_SOURCE_DIR_PFR=${pfr}"
             "-DFASTLIO_DIR=${fast-lio-patched}"
             "-DLIVOX_COMMON_DIR=${livox-common}"
-            # The header-only SDK lives outside this dir. A git-tree flake can
-            # reach it as a path literal within the repo tree.
-            "-DDIMOS_NATIVE_CPP_DIR=${../../../../../../native/cpp}"
+            "-DDIMOS_NATIVE_CPP_DIR=${dimos-native-cpp.packages.${system}.default}"
           ];
         };
       in {

@@ -20,9 +20,15 @@
       url = "github:apolukhin/pfr_non_boost/2.3.2";
       flake = false;
     };
+    # The shared C++ SDK, as a remote ref rather than a `${../../../native/cpp}` path
+    # literal: under the `path:.` build ref this example now uses, such a literal
+    # escapes the flake's store path.
+    dimos-native-cpp.url = "github:dimensionalOS/dimos?dir=native/cpp";
+    dimos-native-cpp.inputs.nixpkgs.follows = "nixpkgs";
+    dimos-native-cpp.inputs.flake-utils.follows = "flake-utils";
   };
 
-  outputs = { self, nixpkgs, zenoh, flake-utils, lcm-extended, dimos-lcm, pfr, ... }:
+  outputs = { self, nixpkgs, zenoh, flake-utils, lcm-extended, dimos-lcm, pfr, dimos-native-cpp, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -30,7 +36,7 @@
         zenohc = zenoh.packages.${system}.zenoh-c;
         zenohcpp = zenoh.packages.${system}.zenoh-cpp;
       in {
-        packages.default = pkgs.stdenv.mkDerivation {
+        packages.dimos-native-module-examples-cpp = pkgs.stdenv.mkDerivation {
           pname = "dimos-native-ping-pong";
           version = "0.1.0";
           src = ./.;
@@ -44,7 +50,7 @@
             "-DFETCHCONTENT_SOURCE_DIR_PFR=${pfr}"
             # The header-only SDK lives outside this dir. A git-tree flake can
             # reach it as a path literal within the repo tree.
-            "-DDIMOS_NATIVE_CPP_DIR=${../../../native/cpp}"
+            "-DDIMOS_NATIVE_CPP_DIR=${dimos-native-cpp.packages.${system}.default}"
           ];
         };
       });
