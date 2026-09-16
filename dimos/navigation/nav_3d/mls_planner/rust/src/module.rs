@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -50,6 +50,13 @@ enum MapUpdate {
 enum AppliedUpdate {
     Region(RegionBounds),
     Global,
+}
+
+/// A partitioned full map, tagged with how many global maps had arrived when
+/// its cloud did. A global map that arrives later makes it stale.
+struct PendingFullMap {
+    global_maps_seen: u64,
+    partition: CloudPartition,
 }
 
 /// Extract and partition a full-map cloud. None when unusable or empty.
@@ -122,7 +129,10 @@ pub struct MlsPlanner {
     // on map processing. The full-map partition has its own slot, so a live
     // update arriving first cannot clobber it.
     pending: Shared<MapUpdate>,
-    pending_full_map: Shared<CloudPartition>,
+    pending_full_map: Shared<PendingFullMap>,
+    // Counts global maps as they arrive, so a full map still being partitioned
+    // when a newer global map lands is discarded rather than loaded over it.
+    global_maps_seen: Arc<AtomicU64>,
     active_goal: Shared<Xyz>,
     goal_changed: Arc<AtomicBool>,
     wake: Arc<Notify>,
@@ -135,6 +145,7 @@ impl MlsPlanner {
         let worker = Worker {
             pending: Arc::clone(&self.pending),
             pending_full_map: Arc::clone(&self.pending_full_map),
+            global_maps_seen: Arc::clone(&self.global_maps_seen),
             active_goal: Arc::clone(&self.active_goal),
             goal_changed: Arc::clone(&self.goal_changed),
             wake: Arc::clone(&self.wake),
@@ -155,6 +166,7 @@ impl MlsPlanner {
     }
 
     async fn on_global_map(&mut self, msg: PointCloud2) {
+        self.global_maps_seen.fetch_add(1, Ordering::SeqCst);
         self.hand_off(MapUpdate::Global { cloud: msg });
     }
 
@@ -164,11 +176,15 @@ impl MlsPlanner {
         let slot = Arc::clone(&self.pending_full_map);
         let wake = Arc::clone(&self.wake);
         let config = self.config.clone();
+        let global_maps_seen = self.global_maps_seen.load(Ordering::SeqCst);
         tokio::task::spawn_blocking(move || {
-            let Some(part) = extract_and_partition(&msg, &config) else {
+            let Some(partition) = extract_and_partition(&msg, &config) else {
                 return;
             };
-            *slot.lock().expect("full map mutex") = Some(part);
+            *slot.lock().expect("full map mutex") = Some(PendingFullMap {
+                global_maps_seen,
+                partition,
+            });
             wake.notify_one();
         });
     }
@@ -225,7 +241,8 @@ fn goal_position(p: &Point) -> Option<Xyz> {
 /// off the handle loop. Woken by the handlers.
 struct Worker {
     pending: Shared<MapUpdate>,
-    pending_full_map: Shared<CloudPartition>,
+    pending_full_map: Shared<PendingFullMap>,
+    global_maps_seen: Arc<AtomicU64>,
     active_goal: Shared<Xyz>,
     goal_changed: Arc<AtomicBool>,
     wake: Arc<Notify>,
@@ -271,8 +288,12 @@ impl Worker {
                 None => {}
             }
             let full = self.pending_full_map.lock().expect("full map mutex").take();
-            if let Some(part) = full {
-                load = Some(self.start_load(&planner, part));
+            if let Some(full) = full {
+                if full.global_maps_seen < self.global_maps_seen.load(Ordering::SeqCst) {
+                    info!("full map load skipped, a newer global map replaced it");
+                } else {
+                    load = Some(self.start_load(&planner, full.partition));
+                }
             }
             if goal_changed || live_update {
                 self.maybe_replan(&mut planner, &mut last_path_at).await;

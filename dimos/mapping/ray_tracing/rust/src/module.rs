@@ -135,7 +135,7 @@ impl RayTracingVoxelMap {
     }
 }
 
-/// A seed load in progress, applied one tile per idle pass of the worker.
+/// A seed load in progress, applied one tile per pass of the worker.
 struct SeedLoad {
     tiles: Vec<SeedTile>,
     next: usize,
@@ -170,8 +170,8 @@ struct State {
 }
 
 /// Owns the mapper and does every map mutation and publish off the handle
-/// loop. Queued jobs take priority: a seed load advances one tile at a time,
-/// only while the queue is empty.
+/// loop. Queued jobs go first, and a seed load then advances one tile per
+/// pass, so sustained traffic slows the load but cannot stall it.
 struct Worker {
     jobs: mpsc::Receiver<Job>,
     // Handed to the seed placement task so its result re-enters the queue.
@@ -194,7 +194,8 @@ impl Worker {
             seed: SeedState::Idle,
         };
         loop {
-            let job = if matches!(state.seed, SeedState::Loading(_)) {
+            let loading = matches!(state.seed, SeedState::Loading(_));
+            let job = if loading {
                 match self.jobs.try_recv() {
                     Ok(job) => Some(job),
                     Err(TryRecvError::Empty) => None,
@@ -206,12 +207,12 @@ impl Worker {
                     None => return,
                 }
             };
-            match job {
-                Some(job) => self.handle(&mut state, job).await,
-                None => {
-                    self.seed_step(&mut state).await;
-                    tokio::task::yield_now().await;
-                }
+            if let Some(job) = job {
+                self.handle(&mut state, job).await;
+            }
+            self.seed_step(&mut state).await;
+            if loading {
+                tokio::task::yield_now().await;
             }
         }
     }
