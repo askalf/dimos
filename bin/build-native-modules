@@ -53,6 +53,7 @@ import argparse
 import ast
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -69,8 +70,13 @@ MARKER_SALT = 1
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _current_system() -> str:
-    """nix's name for this machine, e.g. aarch64-darwin."""
+@lru_cache(maxsize=1)
+def current_system() -> str:
+    """nix's name for this machine, e.g. aarch64-darwin.
+
+    Asked lazily, never at import: `--inputs-hash` runs on a runner that has no nix
+    yet -- that is the whole point of the gate -- and must stay a git-only operation.
+    """
     proc = subprocess.run(
         ["nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem"],
         capture_output=True,
@@ -80,7 +86,6 @@ def _current_system() -> str:
     return proc.stdout.strip()
 
 
-CURRENT_SYSTEM = _current_system()
 PACKAGE_DIR = REPO_ROOT / "dimos"
 IGNORED_DIRS = {"result", "build", "target", "__pycache__", ".git", "node_modules"}
 # Captured at import time; forked workers inherit it
@@ -448,7 +453,7 @@ def _result_links(modules: tuple[DiscoveredModule, ...]) -> list[tuple[str, str]
             # rather than built, so it has nothing to publish or verify here. Any
             # other empty directory means the build never ran.
             systems = _declared_systems(module)
-            if systems is not None and CURRENT_SYSTEM not in systems:
+            if systems is not None and current_system() not in systems:
                 continue
             raise SystemExit(f"{module.build_dir}: no result symlink — run the build first")
         for link in links:
@@ -531,8 +536,8 @@ def build_one(module: DiscoveredModule, dry_run: bool) -> tuple[str, bool, str]:
     command = module.build_command + (" --dry-run" if dry_run else "")
     build_dir = REPO_ROOT / module.build_dir
     systems = _declared_systems(module)
-    if systems is not None and CURRENT_SYSTEM not in systems:
-        return name, False, f"SKIP:  {name} declares no packages for {CURRENT_SYSTEM}"
+    if systems is not None and current_system() not in systems:
+        return name, False, f"SKIP:  {name} declares no packages for {current_system()}"
     _log(f"START: {name} in {build_dir}: {command}")
     proc = subprocess.run(
         command,
