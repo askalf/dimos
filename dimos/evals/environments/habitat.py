@@ -35,27 +35,21 @@ if TYPE_CHECKING:
 
 
 class HabitatEnvironmentConfig(SimConfig):
-    """Scene overrides; None preserves HabitatConnectionConfig's current default.
-
-    Paths must resolve in the Habitat subprocess. scene_id is the dataset's
-    handle or a supported asset path, not a DimSim scene name. Scene selection
-    belongs to the case alongside its references, rather than a global override
-    of an existing DimSim QA suite.
-    """
-
+    # Dataset configuration path, resolved before launching Habitat.
     scene_dataset_config: str | None = None
+    # Dataset scene handle or supported asset path in the Habitat subprocess.
     scene_id: str | None = None
     seed: int = 0
+    # Initial ROS yaw in degrees.
     start_yaw_deg: float = 90.0
     # ROS world-frame floor position in meters.
-    # None retains the existing seeded navigable-point selection. An explicit
-    # invalid position must fail, not silently move to an unrelated room.
-    start_position_ros: tuple[float, float, float] | None = None
+    start_position_ros_override: tuple[float, float, float] | None = None
+    # Optional path to the Habitat executable.
     executable: str | None = None
 
     @model_validator(mode="after")
     def finite_spawn(self) -> HabitatEnvironmentConfig:
-        values = (*(self.start_position_ros or ()), self.start_yaw_deg)
+        values = (*(self.start_position_ros_override or ()), self.start_yaw_deg)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Habitat spawn and yaw must be finite")
         if self.attach:
@@ -64,7 +58,17 @@ class HabitatEnvironmentConfig(SimConfig):
 
 
 class HabitatEnvironment(Sim):
-    """Habitat scene settings; Sim owns processes, MCP, recordings and cleanup."""
+    """Run agent evaluations in selected Habitat scenes with recorded RGB, scans and odometry."""
+
+    _connection_fields = (
+        "scene_dataset_config",
+        "scene_id",
+        "seed",
+        "start_yaw_deg",
+        "start_position_ros",
+        "executable",
+        "publish_semantic",
+    )
 
     config: HabitatEnvironmentConfig
 
@@ -92,6 +96,8 @@ class HabitatEnvironment(Sim):
 
         fields = HabitatEnvironmentConfig.model_fields.keys() - SimConfig.model_fields.keys()
         overrides = self.config.model_dump(include=fields, exclude_none=True)
+        if "start_position_ros_override" in overrides:
+            overrides["start_position_ros"] = overrides.pop("start_position_ros_override")
         if "scene_dataset_config" in overrides and overrides["scene_dataset_config"] != "default":
             overrides["scene_dataset_config"] = str(
                 Path(overrides["scene_dataset_config"]).expanduser().resolve()
@@ -99,18 +105,9 @@ class HabitatEnvironment(Sim):
         return HabitatConnectionConfig(**overrides, publish_semantic=False)
 
     def configure_launch(self, proc: DimosCliCall) -> None:
-        """Supply scene overrides and recording selection, not a skill or planner API.
-
-        The case owns the robot/navigation/skill composition, as for DimSim.
-        HabitatConnection consumes its Twist commands and publishes observations.
-        """
         config = self.connection_config()
-        fields = (
-            *sorted(HabitatEnvironmentConfig.model_fields.keys() - SimConfig.model_fields.keys()),
-            "publish_semantic",
-        )
         environment = [("DIMOS_TRANSPORT", "zenoh")]
-        for name in fields:
+        for name in self._connection_fields:
             value = getattr(config, name)
             environment.append(
                 (
@@ -119,9 +116,6 @@ class HabitatEnvironment(Sim):
                 )
             )
         proc.simulator = None
-        # Keep RGB, the derived point cloud, pose, maps and navigation
-        # traces. Navigation topics come from the composed blueprint, not
-        # HabitatConnection itself. Raw depth is used internally, not recorded.
         proc.global_args = [
             "--record-topics",
             ",".join(
@@ -166,11 +160,7 @@ class HabitatEnvironment(Sim):
         raise TimeoutError("Habitat did not publish fresh RGB and odometry")
 
     def latest_pose(self, recording: Store) -> PoseStamped:
-        """Adapt Habitat's odometry: Odometry to the settling pose contract.
-
-        Do not assume the DimSim odom: PoseStamped stream or read commanded pose
-        instead of achieved pose. Preserve the message's frame and timestamp.
-        """
+        """Convert recorded odometry to a pose, preserving its frame and timestamp."""
         if "odometry" not in recording.streams:
             raise LookupError("No Habitat odometry recorded")
         odom = recording.streams.odometry.last().data
@@ -189,10 +179,7 @@ class HabitatEnvironment(Sim):
             "backend": "habitat",
             "connection_overrides": config.model_dump(
                 mode="json",
-                include={
-                    *(HabitatEnvironmentConfig.model_fields.keys() - SimConfig.model_fields.keys()),
-                    "publish_semantic",
-                },
+                include=set(self._connection_fields),
             ),
             # Describes the scan generation method, not publication state.
             "point_cloud_source": "depth_unprojection",

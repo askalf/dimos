@@ -53,7 +53,7 @@ def test_scene_config_reaches_blueprint_parser(tmp_path):
         scene_dataset_config=str(dataset),
         scene_id="apt_1",
         seed=42,
-        start_position_ros=(1, 2, 3),
+        start_position_ros_override=(1, 2, 3),
         start_yaw_deg=15,
     )
     proc = DimosCliCall()
@@ -63,15 +63,19 @@ def test_scene_config_reaches_blueprint_parser(tmp_path):
     assert config["scene_id"] == "apt_1"
     assert config["scene_dataset_config"] == str(dataset)
     assert config["start_position_ros"] == (1, 2, 3)
+    assert "start_position_ros_override" not in config
     assert config["seed"] == 42
     assert config["publish_semantic"] is False
     assert parsed.global_config["transport"] == "zenoh"
     assert proc.simulator is None
+    overrides = env.episode_metadata()["connection_overrides"]
+    assert overrides["start_position_ros"] == [1, 2, 3]
+    assert "start_position_ros_override" not in overrides
 
 
 def test_invalid_configuration(tmp_path):
     with pytest.raises(ValueError, match="finite"):
-        environment(start_position_ros=(float("nan"), 0, 0))
+        environment(start_position_ros_override=(float("nan"), 0, 0))
     with pytest.raises(ValueError, match="fresh launches"):
         environment(attach=True)
     with pytest.raises(FileNotFoundError):

@@ -14,10 +14,7 @@
 
 """Observation smoke using existing dimos modules, not a navigation benchmark.
 
-    dimos evals run dimos.evals.suites.habitat_smoke --agent dimos.evals.agents.pi
-
-Use build_suite(scene_dataset_config=..., scene_id=...) in
-another suite module to select a downloaded scene. Defaults match habitat-nav.
+dimos evals run dimos.evals.suites.habitat_smoke --agent dimos.evals.agents.pi
 """
 
 from dimos.evals.environments.habitat import HabitatEnvironment
@@ -38,24 +35,18 @@ def sensor_score(outcome: Outcome) -> float:
         return 1.0
 
 
-def build_suite(*, scene_dataset_config: str | None = None, scene_id: str | None = None) -> Suite:
-    return [
-        EvalCase(
-            id="habitat_observe",
-            inputs=(
-                "Use the available observation tool to inspect the scene. "
-                "Briefly describe what you see."
-            ),
-            environment=HabitatEnvironment(
-                scene_dataset_config=scene_dataset_config,
-                scene_id=scene_id,
-                blueprint=["habitat-nav", "mcp-server", "observe-skill"],
-            ),
-            grade=sensor_score,
-            timeout_s=300.0,
-            tags=frozenset({"habitat", "smoke", "observation"}),
-        )
-    ]
-
-
-SUITE = build_suite()
+SUITE: Suite = [
+    EvalCase(
+        id="habitat_observe",
+        inputs=(
+            "Use the available observation tool to inspect the scene. "
+            "Briefly describe what you see."
+        ),
+        environment=HabitatEnvironment(
+            blueprint=["habitat-nav", "mcp-server", "observe-skill"],
+        ),
+        grade=sensor_score,
+        timeout_s=300.0,
+        tags=frozenset({"habitat", "smoke", "observation"}),
+    )
+]
