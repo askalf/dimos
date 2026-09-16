@@ -21,12 +21,8 @@ from scipy.spatial.transform import Rotation
 
 pytest.importorskip("dimos_voxel_ray_tracing")
 
-from dimos.mapping.relocalization.lidar.replay import (
-    LOADED_MAP_STREAM,
-    fix_error,
-    place_premap,
-    write_loaded_map,
-)
+from dimos.mapping.ray_tracing.utils.loaded_map import LOADED_MAP_STREAM
+from dimos.mapping.relocalization.lidar.replay import fix_error, place_premap, write_loaded_map
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
