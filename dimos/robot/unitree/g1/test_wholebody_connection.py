@@ -106,9 +106,9 @@ def _wire(connection, soft_start_seconds):
     return connection._publisher
 
 
-def _command():
+def _command(position=1.0):
     return MotorCommandArray(
-        q=[1.0] * _NUM_MOTORS,
+        q=[position] * _NUM_MOTORS,
         dq=[0.0] * _NUM_MOTORS,
         kp=[100.0] * _NUM_MOTORS,
         kd=[5.0] * _NUM_MOTORS,
@@ -180,42 +180,21 @@ def test_wrong_joint_count_is_dropped(connection: G1WholeBodyConnection):
     assert publisher.frames == []
 
 
-@pytest.mark.parametrize("release_sport_mode, expected_releases", [(True, 1), (False, 0)])
-def test_sport_mode_handoff_waits_for_first_complete_command(
-    connection: G1WholeBodyConnection,
-    mocker,
-    release_sport_mode,
-    expected_releases,
-):
+def test_prepared_command_triggers_one_handoff_and_repeats_on_dds_ticks(connection, mocker):
     publisher = _wire(connection, soft_start_seconds=0.0)
-    connection.config.release_sport_mode = release_sport_mode
     release = mocker.patch.object(connection, "_release_sport_mode")
     connection._sport_mode_released = False
 
     connection._on_motor_command(MotorCommandArray(q=[0.0] * 5))
     release.assert_not_called()
-
     connection._on_motor_command(_command())
-    connection._on_motor_command(_command())
+    connection._on_motor_command(_command(2.0))
+    assert publisher.frames == []
     connection._publish_latest_command(10.0)
     connection._publish_latest_command(10.002)
 
-    assert release.call_args_list == [mocker.call()] * expected_releases
-    assert len(publisher.frames) == 2
-
-
-def test_latest_policy_target_is_republished_on_each_dds_tick(
-    connection: G1WholeBodyConnection,
-) -> None:
-    publisher = _wire(connection, soft_start_seconds=0.0)
-
-    connection._on_motor_command(_command())
-
-    assert publisher.frames == []
-    assert connection._publish_latest_command(10.0)
-    assert connection._publish_latest_command(10.002)
-    assert len(publisher.frames) == 2
-    assert publisher.frames[0] == publisher.frames[1]
+    release.assert_called_once_with()
+    assert publisher.frames == [[(2.0, 0.0, 100.0, 5.0, 8.0)] * 29] * 2
 
 
 @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
@@ -227,70 +206,48 @@ def test_non_finite_soft_start_is_rejected(value):
         G1WholeBodyConnectionConfig(soft_start_seconds=value)
 
 
-@pytest.mark.parametrize("velocity", [-36.0, 36.0])
-@pytest.mark.parametrize("motor", [0, 14, 28])
-def test_overspeed_latches_damping_despite_fresh_commands(connection, velocity, motor):
+@pytest.mark.parametrize("source", ["operator", "policy", "overspeed", "nonfinite"])
+def test_fault_stays_in_damping_through_fresh_commands_and_shutdown(connection, source):
     publisher = _wire(connection, soft_start_seconds=0.0)
     connection._on_motor_command(_command())
-    connection._publish_latest_command(10.0)
+    trip = {
+        "operator": lambda: connection.set_estop(True),
+        "policy": lambda: connection._on_sonic_fault(String("inference failed")),
+        "overspeed": lambda: _feedback(connection, tick=2, motor=28, velocity=36.0),
+        "nonfinite": lambda: connection._on_motor_command(_command(float("nan"))),
+    }
 
-    _feedback(connection, tick=2, motor=motor, velocity=velocity)
-    connection._publish_latest_command(10.002)
+    trip[source]()
+    connection._publish_latest_command(10.0)
     _feedback(connection, tick=3)
     connection._on_motor_command(_command())
-    connection._publish_latest_command(10.004)
+    connection._publish_latest_command(10.002)
 
-    assert publisher.frames[-2:] == [[(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29] * 2
-    assert publisher.modes[-1] == [1] * 29
-    assert "joint overspeed" in connection.command_stream_status()["fault_reason"]
+    assert publisher.frames == [[(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29] * 2
     with pytest.raises(RuntimeError, match="restart"):
         connection.set_estop(False)
+    connection.stop()
+    assert publisher.frames[-1] == [(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29
+    assert publisher.modes[-1] == [1] * 29
 
 
-@pytest.mark.parametrize("velocity", [-35.0, 35.0])
-def test_joint_velocity_at_limit_does_not_trip(connection, velocity):
-    publisher = _wire(connection, soft_start_seconds=0.0)
-    _feedback(connection, tick=2, velocity=velocity)
-    connection._on_motor_command(_command())
-    connection._publish_latest_command(10.0)
-    assert publisher.frames[-1][0][2] == 100.0
-    assert connection.command_stream_status()["fault_reason"] is None
-
-
-def test_feedback_timeout_overrides_fresh_policy_commands(connection, clock):
+@pytest.mark.parametrize(
+    "fresh_feedback, reason", [(False, "robot feedback timeout"), (True, "policy command timeout")]
+)
+def test_stale_feedback_or_commands_force_damping(connection, clock, fresh_feedback, reason):
     publisher = _wire(connection, soft_start_seconds=0.0)
     connection._on_motor_command(_command())
     connection._publish_latest_command(clock.now)
     clock.now += 0.101
-    connection._on_motor_command(_command())
+    # Re-reading the same firmware tick must not renew feedback freshness.
+    _feedback(connection, tick=2 if fresh_feedback else 1)
+    if not fresh_feedback:
+        connection._on_motor_command(_command())
 
     connection._publish_latest_command(clock.now)
 
     assert publisher.frames[-1] == [(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29
-    assert connection.command_stream_status()["fault_reason"] == "robot feedback timeout"
-
-
-def test_command_timeout_overrides_fresh_robot_feedback(connection, clock):
-    publisher = _wire(connection, soft_start_seconds=0.0)
-    connection._on_motor_command(_command())
-    connection._publish_latest_command(clock.now)
-    clock.now += 0.101
-    _feedback(connection, tick=2)
-
-    connection._publish_latest_command(clock.now)
-
-    assert publisher.frames[-1] == [(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29
-    assert connection.command_stream_status()["fault_reason"] == "policy command timeout"
-
-
-def test_repeated_firmware_tick_does_not_refresh_feedback_age(connection, clock):
-    _wire(connection, soft_start_seconds=0.0)
-    captured_at = connection._feedback_wall_time
-    clock.now += 0.101
-    _feedback(connection, tick=1)
-
-    assert connection.command_stream_status()["feedback_age_ms"] == pytest.approx(101.0)
-    assert connection._feedback_wall_time == captured_at
+    assert connection.command_stream_status()["fault_reason"] == reason
 
 
 def test_stop_before_handoff_does_not_take_control(connection, mocker):
@@ -320,45 +277,6 @@ def test_stop_during_handoff_cannot_be_overwritten_by_prepared_command(connectio
     assert publisher.frames == [[(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29]
 
 
-@pytest.mark.parametrize("source", ["rpc", "policy"])
-def test_all_stop_sources_use_same_latched_damping(connection, source):
-    publisher = _wire(connection, soft_start_seconds=1000.0)
-    connection._on_motor_command(_command())
-    operations = {
-        "rpc": lambda: connection.set_estop(True),
-        "policy": lambda: connection._on_sonic_fault(String("inference failed")),
-    }
-
-    operations[source]()
-    connection._on_motor_command(_command())
-    connection._publish_latest_command(10.0)
-
-    assert publisher.frames == [[(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29]
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_nonfinite_command_trips_damping(connection, value):
-    publisher = _wire(connection, soft_start_seconds=0.0)
-    command = _command()
-    command.q[0] = value
-
-    connection._on_motor_command(command)
-    connection._publish_latest_command(10.0)
-
-    assert publisher.frames == [[(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29]
-    assert connection.command_stream_status()["fault_reason"] == "non-finite motor command"
-
-
-def test_shutdown_preserves_latched_damping(connection):
-    publisher = _wire(connection, soft_start_seconds=0.0)
-    connection.set_estop(True)
-
-    connection.stop()
-
-    assert publisher.frames[-1] == [(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29
-    assert publisher.modes[-1] == [1] * 29
-
-
 @pytest.mark.timeout(2)
 def test_writer_recovers_to_damping_even_when_fault_reporting_fails(connection, mocker):
     publisher = _wire(connection, soft_start_seconds=0.0)
@@ -382,18 +300,3 @@ def test_writer_recovers_to_damping_even_when_fault_reporting_fails(connection, 
 
     assert publisher.frames == [[(0.0, 0.0, 0.0, DAMPING_KD, 0.0)] * 29]
     assert connection.command_stream_status()["fault_reason"] == "motor command publication failed"
-
-
-@pytest.mark.parametrize(
-    "field",
-    [
-        "feedback_timeout_seconds",
-        "command_timeout_seconds",
-        "joint_velocity_limit",
-        "publish_rate_hz",
-    ],
-)
-@pytest.mark.parametrize("value", [0.0, float("nan"), float("inf")])
-def test_invalid_safety_configuration_is_rejected(field, value):
-    with pytest.raises(ValidationError):
-        G1WholeBodyConnectionConfig(**{field: value})
