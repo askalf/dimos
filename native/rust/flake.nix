@@ -74,6 +74,13 @@
           # restating it and drifting from it.
           inherit rustTools;
 
+          # The shell for a module that needs system libraries -- realsense links
+          # librealsense, and the clippy hook runs `cargo clippy` inside this shell, so
+          # a build script that probes pkg-config finds nothing without it. Takes a
+          # selector rather than a package list because a module flake has no nixpkgs of
+          # its own; this one is the single revision every module follows.
+          devShellWith = select: pkgs.mkShell { packages = rustTools ++ select pkgs; };
+
           buildNativeModule =
             { name              # the cargo package name, and the flake output name
             , path              # the module's path within the repository
