@@ -160,7 +160,9 @@ class TestControlCoordinatorE2E:
 
         # The coordinator ticks at 100 Hz and its loop compensates for sleep
         # overshoot, so we should see ~100 messages land in the window.
-        assert 90 < in_window < 110, f"Expected ~100 messages/s, got {in_window} in {window_elapsed:.3f}s"
+        assert 90 < in_window < 110, (
+            f"Expected ~100 messages/s, got {in_window} in {window_elapsed:.3f}s"
+        )
 
         # Decode a message to verify structure
         with lcm_spy._messages_lock:
