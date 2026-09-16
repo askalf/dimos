@@ -163,9 +163,15 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: bin/hooks/rust-module-foreach clippy --workspace --all-targets -- -D warnings
+      # Not `cargo clippy` in a devShell any more: that had no view of the nix store,
+      # so it recompiled every module's ~340 dependency crates from scratch, and it
+      # left a `target/` in the module directory for the next `path:` build to copy
+      # into the store. `nix build path:<module>#clippy` lints the same crates and
+      # the same targets against the dependency derivations the package build already
+      # made, and no cargo ever runs in a module directory.
+      - id: native-module-clippy
+        name: clippy (nix)
+        entry: bin/hooks/native-module-clippy
         language: system
         types: [rust]
         pass_filenames: false

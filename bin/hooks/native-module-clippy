@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Clippy every rust native module, as a nix build.
+#
+# `nix build path:<module>#clippy` compiles the module's own crates with
+# clippy-driver against the very dependency derivations the module's package build
+# already produced, so nothing third-party is recompiled and the result itself
+# substitutes from Cachix on a rerun.
+#
+# This deliberately replaces `cargo clippy` in a devShell. That had no view of the
+# nix store, so it recompiled every module's ~340 dependency crates from scratch --
+# and, because it ran cargo inside the module directory, it left a `target/` there
+# for `path:` to copy into the store on the next build. Building the check through
+# nix means no cargo ever runs in a module directory, so no `target/` appears in one.
+#
+# A module whose flake declares no clippy check (the C++ ones) is skipped, as is one
+# that declares no packages for this system -- realsense links librealsense, which
+# nixpkgs will not evaluate off Linux.
+set -euo pipefail
+
+top=$(git rev-parse --show-toplevel)
+system=$(nix eval --raw --impure --expr builtins.currentSystem)
+
+# Not `... | while read`: a subshell would turn the failure below into a silent pass.
+flakes=$(git ls-files '*/flake.nix')
+
+failed=0
+while read -r flake; do
+    dir=$(dirname "$flake")
+    if ! nix eval --quiet "path:$top/$dir#packages.$system.clippy.drvPath" >/dev/null 2>&1; then
+        continue  # no clippy check for this system, or none at all
+    fi
+    started=$(date +%s)
+    if nix build -L "path:$top/$dir#clippy" --no-link; then
+        printf '  clippy %s: %ss\n' "$dir" "$(( $(date +%s) - started ))" >&2
+    else
+        printf '  clippy %s: FAILED\n' "$dir" >&2
+        failed=$((failed + 1))
+    fi
+done <<< "$flakes"
+
+if [ "$failed" -ne 0 ]; then
+    echo "$failed module(s) failed clippy" >&2
+    exit 1
+fi
