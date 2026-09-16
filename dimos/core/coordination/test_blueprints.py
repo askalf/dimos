@@ -206,8 +206,7 @@ def test_autoconnect_drops_hosted_metadata_from_overridden_module() -> None:
         {"host": ""},
         {"tags": "gpu"},
         {"tags": {""}},
-        {"local": True, "host": "robot-1"},
-        {"local": True, "tags": {"gpu"}},
+        {"host": None, "tags": {"gpu"}},
     ),
 )
 def test_hosted_rejects_invalid_constraints(kwargs: dict[str, Any]) -> None:

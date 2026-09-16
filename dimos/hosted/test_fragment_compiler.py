@@ -292,8 +292,8 @@ def test_module_references_force_automatic_co_location() -> None:
     }
 
 
-def test_hosted_local_constraint_keeps_the_whole_fragment_on_controller() -> None:
-    blueprint = autoconnect(SourceModule.blueprint(), SinkModule.blueprint()).hosted(local=True)
+def test_host_none_keeps_the_whole_hosted_fragment_on_controller() -> None:
+    blueprint = autoconnect(SourceModule.blueprint(), SinkModule.blueprint()).hosted(host=None)
 
     assignments = resolve_hosted_assignments(
         blueprint,

@@ -241,7 +241,7 @@ def resolve_hosted_assignments(
     placement_units.sort(
         key=lambda names: (
             not any(
-                constraint.host is not None
+                isinstance(constraint.host, str)
                 for name in names
                 for constraint in constraints_by_name[name]
             ),
@@ -292,9 +292,11 @@ def _select_host_for_unit(
     if not constraints:
         return local_host_id
 
-    local = any(constraint.local for constraint in constraints)
-    remote = any(not constraint.local for constraint in constraints)
-    exact_hosts = {constraint.host for constraint in constraints if constraint.host is not None}
+    local = any(constraint.host is None for constraint in constraints)
+    remote = any(constraint.host is not None for constraint in constraints)
+    exact_hosts = {
+        constraint.host for constraint in constraints if isinstance(constraint.host, str)
+    }
     required_tags = frozenset(tag for constraint in constraints for tag in constraint.tags)
 
     unit_label = ", ".join(module_names)

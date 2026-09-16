@@ -14,6 +14,7 @@
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from functools import cached_property, reduce
 import operator
 import re
@@ -78,14 +79,20 @@ class ModuleRef:
     optional: bool = False
 
 
+class _HostSelection(Enum):
+    ANY = "any"
+
+
+_ANY_HOST = _HostSelection.ANY
+
+
 @dataclass(frozen=True)
 class HostedPlacement:
     """Placement constraint attached to one Blueprint fragment."""
 
     module_names: tuple[str, ...]
-    host: str | None = None
+    host: str | None | _HostSelection = _ANY_HOST
     tags: frozenset[str] = frozenset()
-    local: bool = False
 
 
 @dataclass(frozen=True)
@@ -242,19 +249,22 @@ class Blueprint:
     def hosted(
         self,
         *,
-        host: str | None = None,
+        host: str | None | _HostSelection = _ANY_HOST,
         tags: Iterable[str] = (),
-        local: bool = False,
     ) -> "Blueprint":
         """Schedule this Blueprint fragment as one placement unit.
 
         With no selector, ``hosted()`` chooses any available remote Host. An
         exact Host name/ID and required Host tags may narrow the candidates.
-        ``local=True`` expresses a hard constraint on the controlling machine.
+        Passing ``host=None`` constrains the fragment to the controlling machine.
         """
         if not self.blueprints:
             raise ValueError("hosted() requires at least one module")
-        if host is not None and (not isinstance(host, str) or not host.strip()):
+        if (
+            host is not None
+            and host is not _ANY_HOST
+            and (not isinstance(host, str) or not host.strip())
+        ):
             raise ValueError("host must be a non-empty string")
 
         if isinstance(tags, str):
@@ -262,14 +272,13 @@ class Blueprint:
         tag_set = frozenset(tags)
         if any(not isinstance(tag, str) or not tag.strip() for tag in tag_set):
             raise ValueError("tags must contain non-empty strings")
-        if local and (host is not None or tag_set):
-            raise ValueError("local=True cannot be combined with host or tags")
+        if host is None and tag_set:
+            raise ValueError("host=None cannot be combined with tags")
 
         placement = HostedPlacement(
             module_names=tuple(atom.name for atom in self.blueprints),
             host=host,
             tags=tag_set,
-            local=local,
         )
         return replace(self, hosted_placements=(*self.hosted_placements, placement))
 

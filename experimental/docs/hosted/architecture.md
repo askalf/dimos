@@ -357,7 +357,8 @@ The API has the following semantics:
   all modules in that fragment are co-located.
 - A module with no placement metadata has a soft preference for the controlling
   machine, preserving current behavior.
-- `.hosted(local=True)` can express a hard local constraint when needed.
+- `.hosted(host=None)` expresses a hard local constraint when needed; omitting
+  `host` continues to select an available compatible remote Host automatically.
 - A module instance is assigned to exactly one Host. Replication or “all matching
   Hosts” requires a future explicit cardinality API.
 - Placement is resolved once at startup and recorded by Host ID. A later Host
