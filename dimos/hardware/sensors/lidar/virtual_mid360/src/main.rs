@@ -31,9 +31,7 @@ pub mod pipeline;
 pub mod wire;
 
 use crate::pcap::PcapReader;
-use crate::wire::{
-    self, AsyncControlAck, ControlFrame, DetectionAck, InternalInfoAck, KeyValue,
-};
+use crate::wire::{AsyncControlAck, ControlFrame, DetectionAck, InternalInfoAck, KeyValue};
 use dimos_module::{native_config, run_with_transport, Module};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
