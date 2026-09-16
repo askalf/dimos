@@ -326,11 +326,32 @@ jobs:
       # the lint job, which enter each module's devShell; what is left here is the
       # test run, over each workspace root in turn.
       - name: cargo test
+        # This runner has a bare cargo and no nix, so it can only test the workspaces
+        # that build against system libraries it already has. The two skipped below
+        # link librealsense and a GPU toolkit respectively, and were excluded from the
+        # old repo-wide workspace for the same reason -- splitting that workspace into
+        # one per module turned an implicit exclusion into a job that tried to build
+        # them. Their nix builds still cover them: `Native builds (C++ and Rust)`
+        # builds every module through its own flake, where those libraries are
+        # declared, and the lint job clippies them inside each module's devShell.
         run: |
           set -euo pipefail
+          needs_system_libs=(
+            dimos/hardware/sensors/camera/realsense/rust  # librealsense
+            dimos/mapping/dim_slam/rust                   # metal / cuda
+          )
+          for skipped in "${needs_system_libs[@]}"; do
+            test -f "$skipped/Cargo.toml" \
+              || { echo "::error::$skipped is gone -- drop it from needs_system_libs"; exit 1; }
+          done
           git ls-files "*Cargo.toml" | while read -r m; do
             cargo locate-project --manifest-path "$m" --workspace --message-format plain
           done | sort -u | while read -r root; do
+            dir=${root%/Cargo.toml}
+            dir=${dir#$PWD/}
+            case " ${needs_system_libs[*]} " in
+              *" $dir "*) echo "skipping $dir: needs system libraries this runner lacks"; continue ;;
+            esac
             echo "::group::cargo test $root"
             cargo test --manifest-path "$root" --workspace --all-features --locked
             echo "::endgroup::"
