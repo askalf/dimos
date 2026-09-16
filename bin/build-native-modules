@@ -25,6 +25,12 @@ Modes:
                  while the push daemon drains. cachix-action reports push
                  failures without failing the build, so CI must run this
                  before trusting a build enough to save the publish marker.
+  --clippy       Build every module's `checks.<system>.clippy` instead of its
+                 package: the same crate graph compiled with clippy-driver, so
+                 the dependency derivations are the ones the package build
+                 already published and only first-party crates are compiled.
+                 Modules whose flake declares no such check (the C++ ones) are
+                 skipped.
   --record-links Print `result-symlink store-path` per built module. The
                  publish job stores this in the marker cache entry so consumers
                  can materialise binaries without evaluating anything.
@@ -531,6 +537,60 @@ def _declared_systems(module: DiscoveredModule) -> frozenset[str] | None:
         return None
 
 
+def _clippy_attr(module: DiscoveredModule) -> str | None:
+    """`<flake ref>#checks.<system>.clippy`, or None if the module declares no check.
+
+    A C++ module's flake has no `checks` at all, and asking is narrower than
+    catching the failure: a module that declares checks but not this one is a
+    typo and must still fail loudly.
+    """
+    ref = _flake_ref_of(module).split("#", 1)[0] or "."
+    proc = subprocess.run(
+        [
+            "nix",
+            "eval",
+            "--json",
+            f"{ref}#checks.{current_system()}",
+            "--apply",
+            "builtins.attrNames",
+        ],
+        cwd=str(REPO_ROOT / module.build_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        names = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return f"{ref}#checks.{current_system()}.clippy" if "clippy" in names else None
+
+
+def clippy_one(module: DiscoveredModule) -> tuple[str, bool, str]:
+    name = module.qualname.rsplit(".", 1)[-1]
+    build_dir = REPO_ROOT / module.build_dir
+    systems = _declared_systems(module)
+    if systems is not None and current_system() not in systems:
+        return name, False, f"SKIP:  {name} declares no packages for {current_system()}"
+    attr = _clippy_attr(module)
+    if attr is None:
+        return name, False, f"SKIP:  {name} declares no clippy check"
+    _log(f"START: clippy {name} in {build_dir}: {attr}")
+    proc = subprocess.run(
+        ["nix", "build", "-L", attr, "--no-link"],
+        cwd=str(build_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    body = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        raise RuntimeError(f"clippy {name} exited {proc.returncode}\n{body}")
+    return name, False, f"DONE:  clippy {name}"
+
+
 def build_one(module: DiscoveredModule, dry_run: bool) -> tuple[str, bool, str]:
     name = module.qualname.rsplit(".", 1)[-1]
     command = module.build_command + (" --dry-run" if dry_run else "")
@@ -568,6 +628,11 @@ def main() -> None:
         help="check the built out paths are downloadable from the Cachix cache",
     )
     mode.add_argument(
+        "--clippy",
+        action="store_true",
+        help="build every module's checks.<system>.clippy instead of its package",
+    )
+    mode.add_argument(
         "--record-links",
         action="store_true",
         help="print each built module's result symlink and its store path",
@@ -602,10 +667,17 @@ def main() -> None:
     failed = 0
     pending: list[str] = []
     workers = int(os.environ.get("BUILD_WORKERS") or os.cpu_count() or 2)
-    verb = "Checking" if args.dry_run else "Building"
+    verb = "Linting" if args.clippy else "Checking" if args.dry_run else "Building"
     _log(f"{verb} {len(modules)} module(s) with up to {workers} workers")
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(build_one, module, args.dry_run): module for module in modules}
+        futures = {
+            (
+                executor.submit(clippy_one, module)
+                if args.clippy
+                else executor.submit(build_one, module, args.dry_run)
+            ): module
+            for module in modules
+        }
         for future in as_completed(futures):
             try:
                 name, needs_build, status = future.result()

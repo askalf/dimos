@@ -157,6 +157,15 @@ jobs:
         env:
           BUILD_WORKERS: "1"
         run: python3 bin/build-native-modules
+      # Clippy as a derivation, sharing the dependency crates the step above just
+      # built: only first-party crates compile, and cachix-action pushes the result
+      # so a rerun substitutes it. This is what lets the lint job skip its
+      # cargo-clippy hook, which had no view of the nix store and recompiled every
+      # module's ~340 dependency crates from scratch on every run.
+      - name: Clippy native modules
+        env:
+          BUILD_WORKERS: "1"
+        run: python3 bin/build-native-modules --clippy
       - name: Verify Cachix holds the built paths
         env:
           CACHIX_CACHE_NAME: dimensionalos
@@ -316,9 +325,18 @@ jobs:
             cargo-lint-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Run pre-commit
+        env:
+          # cargo-clippy runs here as `cargo clippy` inside each module's devShell,
+          # which cannot see the nix store and so recompiles every module's whole
+          # dependency graph -- 11 of this job's 25 minutes. The `Clippy native
+          # modules` step in the native job covers the same crates and the same
+          # targets as a derivation, reusing the dependency crates it has already
+          # built. The hook stays in the config so a local commit still lints
+          # before the push.
+          SKIP: cargo-clippy
         uses: pre-commit/action@v3.0.1
         with:
-          # Always show hook output. Both rust hooks report how long each module's
+          # Always show hook output. The rust hook reports how long each module's
           # devShell and cargo run took, and a passing hook hides that otherwise --
           # which is how a 25-minute lint job went unexplained.
           extra_args: --all-files --verbose

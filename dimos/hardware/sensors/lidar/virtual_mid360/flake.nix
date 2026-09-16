@@ -21,12 +21,26 @@
 
   outputs = { self, dimos-native-rust, flake-utils }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
-      let shared = dimos-native-rust.lib.${system}; in {
-        packages.dimos-virtual-mid360 = shared.buildNativeModule {
+      let
+        shared = dimos-native-rust.lib.${system};
+        module = {
           name = "dimos-virtual-mid360";
           path = "dimos/hardware/sensors/lidar/virtual_mid360";
           src = ./.;
         };
+      in {
+        packages.dimos-virtual-mid360 = shared.buildNativeModule module;
+
+        # Lints this module's own crates with clippy-driver, on the very dependency
+        # derivations the package build already put on Cachix -- no dependency is
+        # compiled a second time. `runTests` defaults on, so this reaches test
+        # targets too, the way `cargo clippy --all-targets` did.
+        checks.clippy = shared.clippyNativeModule module;
+
+        # `nix build .#clippy` from the module directory, which is what a person
+        # actually types; `checks` is what `nix flake check` walks. One derivation,
+        # two names for it.
+        packages.clippy = shared.clippyNativeModule module;
 
         devShells.default = dimos-native-rust.devShells.${system}.default;
       });

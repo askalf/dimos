@@ -36,9 +36,9 @@
           cu-vslam-rs.packages.${system};
         variants = map (nixpkgs.lib.removePrefix "sdk-") (builtins.attrNames sdkPackages);
 
-        packageFor = variant:
+        moduleFor = variant:
           let sdkPackage = sdkPackages."sdk-${variant}"; in
-          shared.buildNativeModule {
+          {
             name = "dim-slam-module";
             path = "dimos/mapping/dim_slam/rust";
             src = ./.;
@@ -51,8 +51,26 @@
               dim-slam-module = _: { DEP_CUVSLAM_LIB_DIR = "${sdkPackage}/lib"; };
             };
           };
+        packageFor = variant: shared.buildNativeModule (moduleFor variant);
+        clippyFor = variant: shared.clippyNativeModule (moduleFor variant);
+        # Lint once, against the first SDK variant. The variants differ only in which
+        # cu_vslam SDK the build script links; the rust this lints is the same in all
+        # of them, and linting each would rebuild this module's crates per variant for
+        # no new findings.
+        lintedVariant = builtins.head (builtins.sort builtins.lessThan variants);
       in {
-        packages = nixpkgs.lib.genAttrs variants packageFor;
+        packages = nixpkgs.lib.genAttrs variants packageFor // {
+          # `nix build .#clippy` from the module directory, which is what a person
+          # actually types; `checks` is what `nix flake check` walks. One derivation,
+          # two names for it.
+          clippy = clippyFor lintedVariant;
+        };
+
+        # Lints this module's own crates with clippy-driver, on the very dependency
+        # derivations the package build already put on Cachix -- no dependency is
+        # compiled a second time. `runTests` defaults on, so this reaches test
+        # targets too, the way `cargo clippy --all-targets` did.
+        checks.clippy = clippyFor lintedVariant;
 
         # script needs to detect cuda/non-cuda to pick the right things to load.
         # The toolchain has to come from here: this used to be entered from inside
