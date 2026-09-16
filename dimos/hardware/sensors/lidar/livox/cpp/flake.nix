@@ -2,8 +2,21 @@
   description = "Livox SDK2 packaging, consumed by the C++ LIO module flakes";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    # This flake builds no dimos module, so it wants nothing from the shared C++
+    # SDK except the one thing every C++ flake here has to agree on: the nixpkgs
+    # revision. native/cpp is where that revision is chosen. Resolving
+    # `nixos-unstable` here instead would put this livox-sdk2 on a different stdenv
+    # than the copies inlined into pointlio and fastlio2, and the three would then
+    # share no cache at all.
+    # NOTE: pinned to the branch that introduces native/{rust,cpp}/flake.nix,
+    # because the default branch does not have those files yet. Point it at
+    # `ref=main` once those land -- they are their own pull request, ahead of this
+    # one, so the window is short. Nobody has to remember: the test
+    # test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream goes red
+    # as soon as the shared flakes appear on the default branch.
+    dimos-native-cpp.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/cpp";
+    nixpkgs.follows = "dimos-native-cpp/nixpkgs";
+    flake-utils.follows = "dimos-native-cpp/flake-utils";
   };
 
   outputs = { self, nixpkgs, flake-utils, ... }:

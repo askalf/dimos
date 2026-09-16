@@ -3,8 +3,15 @@
 
   inputs = {
     zenoh.url = "github:jeff-hykin/zenoh_flake";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    zenoh.inputs.nixpkgs.follows = "nixpkgs";
+    zenoh.inputs.flake-utils.follows = "flake-utils";
+    # One nixpkgs for the whole C++ side. native/cpp is the single place the
+    # revision is chosen and every module follows it, rather than each module
+    # resolving `nixos-unstable` on its own clock. Independent resolution is
+    # exactly what left these modules on a February nixpkgs while the shared SDK
+    # had moved to September: two stdenvs, and no binary cache shared between them.
+    nixpkgs.follows = "dimos-native-cpp/nixpkgs";
+    flake-utils.follows = "dimos-native-cpp/flake-utils";
     lcm-extended = {
       url = "github:jeff-hykin/lcm_extended";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -30,8 +37,6 @@
     # test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream goes red
     # as soon as the shared flakes appear on the default branch.
     dimos-native-cpp.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/cpp";
-    dimos-native-cpp.inputs.nixpkgs.follows = "nixpkgs";
-    dimos-native-cpp.inputs.flake-utils.follows = "flake-utils";
   };
 
   outputs = { self, nixpkgs, zenoh, flake-utils, lcm-extended, dimos-lcm, pfr, dimos-native-cpp, ... }:

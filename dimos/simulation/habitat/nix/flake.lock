@@ -1,12 +1,52 @@
 {
   "nodes": {
+    "dimos-native-cpp": {
+      "inputs": {
+        "flake-utils": "flake-utils",
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "dir": "native/cpp",
+        "lastModified": 1789542527,
+        "narHash": "sha256-FP+LewMZB54n6MPdfwnM3oXZErK0q13S/94J9eDRECM=",
+        "owner": "dimensionalOS",
+        "repo": "dimos",
+        "rev": "0bed970cb64764d6fcbaaf50b60ac2785d256de8",
+        "type": "github"
+      },
+      "original": {
+        "dir": "native/cpp",
+        "owner": "dimensionalOS",
+        "ref": "jeff/fix/native_build_cargo_path",
+        "repo": "dimos",
+        "type": "github"
+      }
+    },
+    "flake-utils": {
+      "inputs": {
+        "systems": "systems"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1788752844,
-        "narHash": "sha256-VaWGJ6+cIYN2erfSecbRV+4ljI185Ty2wUrXyvQbgOw=",
+        "lastModified": 1789286504,
+        "narHash": "sha256-eiEK7cKZORNEvX0GeF3RtNEF/JXhgf2RqSp3230q13E=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "dc5d91f840324650bac8c379428c7037a416959a",
+        "rev": "ef34387ddd751e1ab8857adf4676492d32eb24ec",
         "type": "github"
       },
       "original": {
@@ -18,7 +58,26 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "dimos-native-cpp": "dimos-native-cpp",
+        "nixpkgs": [
+          "dimos-native-cpp",
+          "nixpkgs"
+        ]
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
       }
     }
   },

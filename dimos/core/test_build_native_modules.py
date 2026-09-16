@@ -439,6 +439,116 @@ def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
     )
 
 
+# A lock records `follows` as a path of input names read from the root, and a direct
+# pin as a node name. Resolving both is what separates the nixpkgs a flake builds
+# against from the ones that merely appear in the file.
+_BUILD_EDGES = ("nixpkgs", "dimos-native-rust", "dimos-native-cpp")
+
+
+def _resolve(nodes: dict, node: str, name: str) -> str | None:
+    """The node `name` refers to from `node`, resolving a `follows` path from root."""
+    edge = nodes.get(node, {}).get("inputs", {}).get(name)
+    if edge is None:
+        return None
+    if isinstance(edge, str):
+        return edge
+    current = "root"
+    for step in edge:
+        following = _resolve(nodes, current, step)
+        if following is None:
+            return None
+        current = following
+    return current
+
+
+def _build_nixpkgs_revs(lock: Path) -> set[str]:
+    """Every nixpkgs revision a flake actually builds against.
+
+    Reached by walking only the edges that carry a build: a flake's own `nixpkgs`,
+    and the in-repo shared flakes, whose nixpkgs is the one their `buildNativeModule`
+    and C++ SDK use. Everything else in the graph is somebody's tooling -- crate2nix
+    pulls in cachix, which pins a nixpkgs of its own that no derivation here is built
+    from. Counting those would report a divergence that does not exist.
+    """
+    nodes = json.loads(lock.read_text()).get("nodes", {})
+    revs: set[str] = set()
+    seen: set[str] = set()
+    frontier = ["root"]
+    while frontier:
+        node = frontier.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        locked = nodes.get(node, {}).get("locked", {})
+        if locked.get("repo") == "nixpkgs" and locked.get("owner") in ("NixOS", "nixos"):
+            revs.add(locked["rev"])
+            continue
+        for name in _BUILD_EDGES:
+            if (target := _resolve(nodes, node, name)) is not None:
+                frontier.append(target)
+    return revs
+
+
+@pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to find the locks")
+def test_every_module_flake_builds_against_one_nixpkgs() -> None:
+    """One nixpkgs revision across every module flake.
+
+    A flake that resolves `nixos-unstable` itself picks whatever the channel held on
+    the day somebody last ran `nix flake lock` in that directory, so the flakes drift
+    apart silently -- the C++ modules sat on a February nixpkgs while the shared SDK
+    had moved to September. Two revisions means two stdenvs, and a derivation built
+    under one is not the derivation built under the other: nothing between them is
+    shared, in the store or in cachix, no matter how identical the source.
+
+    The fix each flake carries is to follow the shared flake rather than declare its
+    own, and this is the test that says so.
+
+    The flake at the repository root is deliberately out of scope. It builds no
+    module -- it is the development shell and the container image -- and it shares
+    nothing with a module build but the base stdenv, so moving it is a change to the
+    environment everyone works in rather than a cache fix. Worth doing on its own
+    terms, not as a side effect of this one.
+    """
+    per_flake = {
+        lock.parent.relative_to(DIMOS_PROJECT_ROOT).as_posix(): _build_nixpkgs_revs(lock)
+        for lock in DIMOS_PROJECT_ROOT.rglob("flake.lock")
+        if ".git" not in lock.parts and lock.parent != DIMOS_PROJECT_ROOT
+    }
+    revs = set().union(*per_flake.values()) if per_flake else set()
+    assert len(revs) <= 1, (
+        "these flakes do not agree on a nixpkgs revision, so they share no build "
+        f"cache: { {flake: sorted(r[:10] for r in got) for flake, got in per_flake.items()} } "
+        '-- give the odd ones out `nixpkgs.follows = "dimos-native-cpp/nixpkgs"` '
+        "(or `dimos-native-rust/nixpkgs`) instead of a `nixpkgs.url` of their own"
+    )
+
+
+def test_tooling_nixpkgs_is_not_counted_as_a_divergence(tmp_path: Path) -> None:
+    """The negative control for the walk above, in both directions.
+
+    A nixpkgs reached only through a tooling input is invisible to it, and a nixpkgs
+    reached through a build edge is not -- otherwise the test above would pass by
+    seeing nothing at all.
+    """
+    lock = tmp_path / "flake.lock"
+    tooling = {
+        "nodes": {
+            "root": {"inputs": {"nixpkgs": "pkgs", "crate2nix": "crate2nix"}},
+            "pkgs": {"locked": {"owner": "NixOS", "repo": "nixpkgs", "rev": "a" * 40}},
+            "crate2nix": {"inputs": {"cachix": "cachix"}},
+            "cachix": {"inputs": {"nixpkgs": "old"}},
+            "old": {"locked": {"owner": "NixOS", "repo": "nixpkgs", "rev": "b" * 40}},
+        }
+    }
+    lock.write_text(json.dumps(tooling))
+    assert _build_nixpkgs_revs(lock) == {"a" * 40}
+
+    tooling["nodes"]["root"]["inputs"]["dimos-native-cpp"] = "shared"
+    tooling["nodes"]["shared"] = {"inputs": {"nixpkgs": "old"}}
+    lock.write_text(json.dumps(tooling))
+    assert _build_nixpkgs_revs(lock) == {"a" * 40, "b" * 40}
+
+
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs git HEAD for object hashes")
 def test_manifest_is_deterministic() -> None:
     modules = _SCRIPT.discover()
