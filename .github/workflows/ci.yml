@@ -482,9 +482,15 @@ jobs:
       # not hashed, or not published.
       - name: List C++ native modules
         id: find-modules
+        # `native/` is excluded because it is the SDK the modules build against, not a
+        # module: nothing declares it as a NativeModuleConfig, so the build step below
+        # never produces a `build/` for it and the ctest loop would fail on the missing
+        # directory. It is not going untested -- the Configure/Build/Test steps above
+        # build it at build/native-cpp and run its 76 cases there.
         run: |
           modules=$(git ls-files '*/flake.nix' \
             | sed 's|/flake.nix$||' \
+            | grep -v '^native/' \
             | while read -r dir; do
                 [ -f "$dir/CMakeLists.txt" ] && echo "$dir"
               done \
