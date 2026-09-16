@@ -365,6 +365,52 @@ jobs:
         # `nix build -L path:.#<package>`; nothing here builds them with cargo.
         run: uv run pytest -m native_e2e dimos/hardware/sensors/lidar/livox/test_e2e.py --no-cov
 
+  flake-locks-current:
+    # The gap this repo had: every nix invocation in CI passed `--no-write-lock-file`,
+    # so a stale or incomplete flake.lock was silently tolerated and the build used
+    # whatever the lock happened to say. `nix flake lock --no-update-lock-file` makes
+    # that an error -- it fails if the lock would have to change to evaluate.
+    #
+    # Deliberately not `nix flake check`: the rust modules generate their build through
+    # crate2nix, which is import-from-derivation, and `--no-build` refuses to realise
+    # the intermediate derivation IFD needs ("path '...-source.drv' is not valid").
+    # Without `--no-build` it would rebuild everything the `native` job already builds.
+    # Lock currency is the part `native` does not cover, so that is what this checks.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # For checkout
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Nix
+        env:
+          INPUT_EXTRA_NIX_CONFIG: |
+            extra-substituters = https://dimensionalos.cachix.org
+            extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
+          INPUT_SET_AS_TRUSTED_USER: "true"
+        run: bash docker/ros/install-nix.sh
+      - name: Every flake.lock is current
+        # No bash arrays or `mapfile`: this loop is meant to be runnable by hand on a
+        # developer machine, and macOS ships bash 3.2.
+        run: |
+          set -u
+          git ls-files '*flake.nix' | sed 's|/flake.nix$||;s|^flake.nix$|.|' | sort -u > /tmp/flakes
+          : > /tmp/stale
+          while read -r dir; do
+            echo "::group::$dir"
+            nix flake lock --no-update-lock-file "path:$dir" || echo "$dir" >> /tmp/stale
+            echo "::endgroup::"
+          done < /tmp/flakes
+          if [ -s /tmp/stale ]; then
+            while read -r dir; do
+              echo "::error::flake.lock is stale or incomplete in $dir -- run 'nix flake lock' there and commit it"
+            done < /tmp/stale
+            exit 1
+          fi
+          echo "$(wc -l < /tmp/flakes) flake locks are current"
+
   native:
     name: Native builds (C++ and Rust)
     timeout-minutes: 30
@@ -1171,6 +1217,7 @@ jobs:
     - lint
     - rust
     - native
+    - flake-locks-current
     - md-babel
     - web
     - tests
