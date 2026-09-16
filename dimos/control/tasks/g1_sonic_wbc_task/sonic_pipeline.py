@@ -32,17 +32,15 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
 import math
 from pathlib import Path
 import time
-from typing import Any, Final, Literal, TypeAlias, cast
+from typing import Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
 import onnxruntime as ort  # type: ignore[import-untyped]
 
-from dimos.control.tasks.g1_sonic_wbc_task.model_sources import MODEL_FILES
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_onnx_runtime import (
     create_sonic_session,
     prepare_sonic_onnx_runtime,
@@ -146,62 +144,10 @@ SONIC_KD: list[float] = [
 
 NUM_JOINTS = 29
 HISTORY_LEN = 10
+ENCODER_OBS_DIM = 1751
 ENCODER_REFERENCE_FRAMES = 10
-
-SonicTeleopPipeline: TypeAlias = Literal["sonic-v1.1", "sonic-low-latency"]
-SONIC_V1_1_PIPELINE: Final[SonicTeleopPipeline] = "sonic-v1.1"
-SONIC_LOW_LATENCY_PIPELINE: Final[SonicTeleopPipeline] = "sonic-low-latency"
-
-
-@dataclass(frozen=True)
-class SonicModelProfile:
-    """One indivisible NVIDIA SONIC model and observation-layout contract."""
-
-    name: SonicTeleopPipeline
-    model_subdir: str
-    encoder_obs_dim: int
-    smpl_frames: int
-    g1_frame_stride: int
-    heading_normalized: bool
-    encoder_sha256: str
-    decoder_sha256: str
-
-    @property
-    def smpl_anchor_offset(self) -> int:
-        return SMPL_JOINTS_OFFSET + self.smpl_frames * 72
-
-    @property
-    def wrists_offset(self) -> int:
-        return self.smpl_anchor_offset + self.smpl_frames * 6
-
-
-SONIC_MODEL_PROFILES: Final[dict[SonicTeleopPipeline, SonicModelProfile]] = {
-    SONIC_V1_1_PIPELINE: SonicModelProfile(
-        name=SONIC_V1_1_PIPELINE,
-        model_subdir="sonic_v1_1",
-        encoder_obs_dim=1751,
-        smpl_frames=10,
-        g1_frame_stride=5,
-        heading_normalized=True,
-        encoder_sha256=MODEL_FILES["sonic_v1_1/model_encoder.onnx"],
-        decoder_sha256=MODEL_FILES["sonic_v1_1/model_decoder.onnx"],
-    ),
-    SONIC_LOW_LATENCY_PIPELINE: SonicModelProfile(
-        name=SONIC_LOW_LATENCY_PIPELINE,
-        model_subdir="low_latency",
-        encoder_obs_dim=1247,
-        smpl_frames=4,
-        g1_frame_stride=1,
-        heading_normalized=False,
-        encoder_sha256=MODEL_FILES["low_latency/model_encoder.onnx"],
-        decoder_sha256=MODEL_FILES["low_latency/model_decoder.onnx"],
-    ),
-}
-
-
-def sonic_model_profile(name: SonicTeleopPipeline) -> SonicModelProfile:
-    """Return the exact released model contract selected by the CLI."""
-    return SONIC_MODEL_PROFILES[name]
+ENCODER_FRAME_STRIDE = 5
+SMPL_REFERENCE_FRAMES = 10
 
 
 # ONNX index -> DDS index (isaaclab_to_mujoco in the C++)
@@ -379,6 +325,8 @@ LOWERBODY_VEL_OFFSET = 770  # motion_joint_velocities_lowerbody_10frame_step5: 1
 VR_POS_OFFSET = 890  # vr_3point_local_target: 9
 VR_ORN_OFFSET = 899  # vr_3point_local_orn_target: 12
 SMPL_JOINTS_OFFSET = 911  # smpl_joints_10frame_step1: 720
+SMPL_ANCHOR_OFFSET = SMPL_JOINTS_OFFSET + SMPL_REFERENCE_FRAMES * 72
+WRISTS_OFFSET = SMPL_ANCHOR_OFFSET + SMPL_REFERENCE_FRAMES * 6
 
 DEFAULT_HEIGHT = 0.788740
 POLICY_DT = 0.02
@@ -581,9 +529,7 @@ class SonicPipeline:
         encoder_path: str | Path,
         decoder_path: str | Path,
         planner_path: str | Path,
-        profile: SonicTeleopPipeline = SONIC_V1_1_PIPELINE,
     ) -> None:
-        self._profile = sonic_model_profile(profile)
         prepare_sonic_onnx_runtime()
         self._encoder = create_sonic_session("encoder", encoder_path, allow_cpu_shape_ops=False)
         self._decoder = create_sonic_session("decoder", decoder_path, allow_cpu_shape_ops=False)
@@ -596,18 +542,17 @@ class SonicPipeline:
         # Fail loudly on a mismatched checkpoint (e.g. the pre-v1.1 release,
         # whose encoder takes 1762 floats and a different field layout).
         enc_dim = int(cast("int", self._encoder.get_inputs()[0].shape[-1]))
-        if enc_dim != self._profile.encoder_obs_dim:
+        if enc_dim != ENCODER_OBS_DIM:
             raise ValueError(
-                f"SONIC {profile} encoder obs dim {enc_dim} != "
-                f"{self._profile.encoder_obs_dim}; use the matching NVIDIA "
-                f"{self._profile.model_subdir}/ encoder, decoder, and observation config"
+                f"SONIC v1.1 encoder obs dim {enc_dim} != {ENCODER_OBS_DIM}; "
+                "use the NVIDIA sonic_v1_1 encoder, decoder, and observation config"
             )
         decoder_dim = int(cast("int", self._decoder.get_inputs()[0].shape[-1]))
         if decoder_dim != DECODER_OBS_DIM:
-            raise ValueError(f"SONIC {profile} decoder obs dim {decoder_dim} != {DECODER_OBS_DIM}")
+            raise ValueError(f"SONIC v1.1 decoder obs dim {decoder_dim} != {DECODER_OBS_DIM}")
         logger.info(
             "SonicPipeline models loaded",
-            sonic_pipeline=profile,
+            sonic_pipeline="sonic-v1.1",
             onnxruntime_version=getattr(ort, "__version__", "unknown"),
             encoder_providers=self._encoder.get_providers(),
             decoder_providers=self._decoder.get_providers(),
@@ -662,19 +607,12 @@ class SonicPipeline:
         self._cur_q_dds = DEFAULT_ANGLES_DDS.copy()
         self._nan_reported = 0
         self._last_targets_dds = DEFAULT_ANGLES_DDS.copy()
-        self._last_reference_token: NDArray[Any] | None = None
-        self._last_token_was_stream = False
 
         # Streamed reference motion (pose messages via apply_pose_message)
         self._merger = StreamedMotionMerger()
         self._streamed: StreamedMotion | None = None
         self._streamed_frame = 0
         self._use_stream = False
-        self._reference_transition_start_token: NDArray[Any] | None = None
-        self._reference_transition_step = 0
-        self._reference_transition_steps = 0
-        self._planner_transition_preparing = False
-        self._planner_transition_ready = False
         # Direct planner command (set_planner_command); None -> twist-derived
         self._planner_cmd: dict[str, Any] | None = None
         self._upper_vel_dds: NDArray[Any] | None = None
@@ -806,8 +744,6 @@ class SonicPipeline:
 
     def set_source_stream(self, use_stream: bool) -> None:
         """Command-topic planner-flag inverse: True -> pose-topic motion."""
-        self._clear_reference_transition()
-        self._clear_planner_transition_prepare()
         if use_stream != self._use_stream:
             self._needs_replan = not use_stream
             # Motion-source switch = heading re-anchor (C++ sets
@@ -817,141 +753,6 @@ class SonicPipeline:
             # mocap heading and the policy turns instead of tracking.
             self._reset_heading_alignment()
         self._use_stream = bool(use_stream)
-
-    @property
-    def reference_transition_active(self) -> bool:
-        """Whether an encoder-token source blend is in progress."""
-        return self._reference_transition_start_token is not None
-
-    @property
-    def reference_transition_progress(self) -> float:
-        """Completed fraction of the active encoder-token source blend."""
-        if not self.reference_transition_active or self._reference_transition_steps <= 0:
-            return 0.0
-        return min(
-            1.0,
-            self._reference_transition_step / self._reference_transition_steps,
-        )
-
-    def begin_stream_transition(self, duration_seconds: float) -> bool:
-        """Blend from the last planner token to the live streamed reference.
-
-        The streamed motion must already be loaded. Returns ``False`` until
-        at least one planner policy step has produced a reference token.
-        """
-        self._validate_reference_transition_duration(duration_seconds)
-        if (
-            self._use_stream
-            or self._streamed is None
-            or self._streamed.timesteps <= 0
-            or self._last_reference_token is None
-            or self._last_token_was_stream
-        ):
-            return False
-
-        start_token = self._last_reference_token.copy()
-        self.set_source_stream(True)
-        self._start_reference_transition(start_token, duration_seconds)
-        return True
-
-    @property
-    def planner_transition_preparing(self) -> bool:
-        return self._planner_transition_preparing
-
-    @property
-    def planner_transition_ready(self) -> bool:
-        return self._planner_transition_preparing and self._planner_transition_ready
-
-    def prepare_planner_transition(self) -> bool:
-        """Request a fresh planner trajectory while continuing the pose stream."""
-        if (
-            not self._use_stream
-            or self._last_reference_token is None
-            or not self._last_token_was_stream
-        ):
-            return False
-        self._planner_transition_preparing = True
-        self._planner_transition_ready = False
-        self._discard_pending_planner()
-        self._needs_replan = True
-        return True
-
-    def retry_planner_transition(self) -> bool:
-        """Discard a failed/stale planner request and submit from measured state again."""
-        if not self._planner_transition_preparing:
-            return False
-        self._planner_transition_ready = False
-        self._discard_pending_planner()
-        self._needs_replan = True
-        return True
-
-    def begin_planner_transition(self, duration_seconds: float) -> bool:
-        """Blend from the held stream token to a freshly prepared planner."""
-        self._validate_reference_transition_duration(duration_seconds)
-        if (
-            not self._use_stream
-            or not self.planner_transition_ready
-            or self._last_reference_token is None
-            or not self._last_token_was_stream
-            or self._trajectory is None
-            or self._trajectory.num_frames <= 0
-        ):
-            return False
-
-        start_token = self._last_reference_token.copy()
-        self._use_stream = False
-        self._streamed = None
-        self._streamed_frame = 0
-        self._merger.reset()
-        self._needs_replan = False
-        self._reset_heading_alignment()
-        self._anchor_planner_heading()
-        self._clear_planner_transition_prepare()
-        self._start_reference_transition(start_token, duration_seconds)
-        return True
-
-    def _discard_pending_planner(self) -> None:
-        if self._planner_future is not None and not self._planner_future.done():
-            self._planner_future.cancel()
-        self._planner_future = None
-        self._planner_generation_frame = None
-        self._planner_started_at = None
-
-    def _clear_planner_transition_prepare(self) -> None:
-        self._planner_transition_preparing = False
-        self._planner_transition_ready = False
-
-    @staticmethod
-    def _validate_reference_transition_duration(duration_seconds: float) -> None:
-        if not math.isfinite(duration_seconds) or duration_seconds <= 0.0:
-            raise ValueError("reference transition duration must be positive and finite")
-
-    def _start_reference_transition(
-        self,
-        start_token: NDArray[Any],
-        duration_seconds: float,
-    ) -> None:
-        self._reference_transition_start_token = start_token
-        self._reference_transition_step = 0
-        self._reference_transition_steps = max(1, math.ceil(duration_seconds / POLICY_DT))
-
-    def _clear_reference_transition(self) -> None:
-        self._reference_transition_start_token = None
-        self._reference_transition_step = 0
-        self._reference_transition_steps = 0
-
-    def _blend_reference_token(self, target_token: NDArray[Any]) -> NDArray[Any]:
-        start_token = self._reference_transition_start_token
-        if start_token is None:
-            return target_token
-
-        self._reference_transition_step = min(
-            self._reference_transition_step + 1,
-            self._reference_transition_steps,
-        )
-        linear = self._reference_transition_step / self._reference_transition_steps
-        alpha = linear * linear * (3.0 - 2.0 * linear)
-        return ((1.0 - alpha) * start_token + alpha * target_token).astype(np.float32)
 
     def _reset_heading_alignment(self) -> None:
         self._heading_delta_quat = np.array([1, 0, 0, 0], dtype=np.float64)
@@ -997,7 +798,6 @@ class SonicPipeline:
         current heading (mirrors the C++ reference-motion switch)."""
         self._streamed = motion
         self._streamed_frame = 0
-        self._clear_reference_transition()
         self._use_stream = True
         self._reset_heading_alignment()
 
@@ -1005,13 +805,11 @@ class SonicPipeline:
         """Back to planner-driven locomotion (heading re-anchors on the next
         planner trajectory - see set_source_stream)."""
         self._use_stream = False
-        self._clear_reference_transition()
         self._streamed = None
         self._streamed_frame = 0
         self._merger.reset()
         self._needs_replan = True
         self._reset_heading_alignment()
-        self._clear_planner_transition_prepare()
 
     def apply_pose_message(self, fields: dict[str, NDArray[Any]]) -> dict[str, Any]:
         """Merge one decoded pose-topic chunk; returns a merge summary."""
@@ -1074,10 +872,6 @@ class SonicPipeline:
         self._streamed = None
         self._streamed_frame = 0
         self._use_stream = False
-        self._clear_reference_transition()
-        self._clear_planner_transition_prepare()
-        self._last_reference_token = None
-        self._last_token_was_stream = False
         self._planner_cmd = None
         self._upper_vel_dds = None
         self._ub17_pos = None
@@ -1087,7 +881,7 @@ class SonicPipeline:
     # -- encoder ----------------------------------------------------------
 
     def _build_standing_token(self) -> NDArray[Any]:
-        enc_obs = np.zeros(self._profile.encoder_obs_dim, dtype=np.float32)
+        enc_obs = np.zeros(ENCODER_OBS_DIM, dtype=np.float32)
         for i in range(ENCODER_REFERENCE_FRAMES):
             enc_obs[4 + i * NUM_JOINTS : 4 + (i + 1) * NUM_JOINTS] = DEFAULT_ANGLES_ONNX
             enc_obs[ANCHOR_HIST_OFFSET + i * 6 : ANCHOR_HIST_OFFSET + (i + 1) * 6] = _IDENTITY_6D
@@ -1130,23 +924,23 @@ class SonicPipeline:
                 enc_obs[vel + idx] = upper_vels[k]
 
     def _build_encoder_obs(self, base_quat: NDArray[Any]) -> NDArray[Any]:
-        enc_obs = np.zeros(self._profile.encoder_obs_dim, dtype=np.float32)
+        enc_obs = np.zeros(ENCODER_OBS_DIM, dtype=np.float32)
         traj = self._trajectory
         assert traj is not None
         f_curr = min(self._traj_frame, traj.num_frames - 1)
 
         for i in range(ENCODER_REFERENCE_FRAMES):
-            f = min(f_curr + i * self._profile.g1_frame_stride, traj.num_frames - 1)
+            f = min(f_curr + i * ENCODER_FRAME_STRIDE, traj.num_frames - 1)
             enc_obs[4 + i * NUM_JOINTS : 4 + (i + 1) * NUM_JOINTS] = traj.joint_pos[f]
             enc_obs[294 + i * NUM_JOINTS : 294 + (i + 1) * NUM_JOINTS] = traj.joint_vel[f]
 
         if self._has_upper_body_targets():
             self._inject_upper_body(enc_obs)
 
-        # The selected bundle defines heading-normalized or body-frame anchors.
-        q_left_inv = self._reference_orientation_inverse(base_quat)
+        # SONIC v1.1 uses heading-normalized anchors.
+        q_left_inv = _calc_heading_quat_inv(base_quat)
         for i in range(ENCODER_REFERENCE_FRAMES):
-            f = min(f_curr + i * self._profile.g1_frame_stride, traj.num_frames - 1)
+            f = min(f_curr + i * ENCODER_FRAME_STRIDE, traj.num_frames - 1)
             q_aligned = _quat_multiply(
                 self._heading_delta_quat, traj.root_quat[f].astype(np.float64)
             )
@@ -1162,14 +956,14 @@ class SonicPipeline:
         orientation, VR 3-point blocks. All other fields stay zero - the C++
         gathers ONLY the active mode's required observations into a zeroed
         buffer (GatherEncoderObservations)."""
-        enc_obs = np.zeros(self._profile.encoder_obs_dim, dtype=np.float32)
+        enc_obs = np.zeros(ENCODER_OBS_DIM, dtype=np.float32)
         enc_obs[0] = 1.0  # encoder_mode_4: scalar mode id, rest zeros
         traj = self._trajectory
         assert traj is not None
         f_curr = min(self._traj_frame, traj.num_frames - 1)
 
         for i in range(ENCODER_REFERENCE_FRAMES):
-            f = min(f_curr + i * self._profile.g1_frame_stride, traj.num_frames - 1)
+            f = min(f_curr + i * ENCODER_FRAME_STRIDE, traj.num_frames - 1)
             enc_obs[LOWERBODY_POS_OFFSET + i * 12 : LOWERBODY_POS_OFFSET + (i + 1) * 12] = (
                 traj.joint_pos[f][LOWER_BODY_MJC_IN_ONNX]
             )
@@ -1177,7 +971,7 @@ class SonicPipeline:
                 traj.joint_vel[f][LOWER_BODY_MJC_IN_ONNX]
             )
 
-        q_left_inv = self._reference_orientation_inverse(base_quat)
+        q_left_inv = _calc_heading_quat_inv(base_quat)
         q_aligned = _quat_multiply(
             self._heading_delta_quat, traj.root_quat[f_curr].astype(np.float64)
         )
@@ -1189,11 +983,6 @@ class SonicPipeline:
         enc_obs[VR_POS_OFFSET : VR_POS_OFFSET + 9] = self._vr_pos
         enc_obs[VR_ORN_OFFSET : VR_ORN_OFFSET + 12] = self._vr_orn
         return enc_obs
-
-    def _reference_orientation_inverse(self, base_quat: NDArray[Any]) -> NDArray[Any]:
-        if self._profile.heading_normalized:
-            return _calc_heading_quat_inv(base_quat)
-        return _quat_conjugate(np.asarray(base_quat, dtype=np.float64))
 
     # -- planner ----------------------------------------------------------
 
@@ -1216,11 +1005,7 @@ class SonicPipeline:
 
     def _build_planner_context(self) -> NDArray[Any]:
         context = np.zeros((4, 36), dtype=np.float32)
-        if (
-            not self._planner_transition_preparing
-            and self._trajectory is not None
-            and self._trajectory.num_frames > 4
-        ):
+        if self._trajectory is not None and self._trajectory.num_frames > 4:
             traj = self._trajectory
             start = min(self._traj_frame + LOOK_AHEAD_FRAMES, traj.num_frames - 1)
             for n in range(4):
@@ -1249,9 +1034,9 @@ class SonicPipeline:
             )
         speed = math.hypot(self._vx, self._vy)
         yaw = self._desired_heading
-        if yaw is None or self._planner_transition_preparing:
+        if yaw is None:
             yaw = _yaw_from_quat(self._cur_quat)
-        if self._heading_initialized and not self._planner_transition_preparing:
+        if self._heading_initialized:
             # The trajectory is in the planner's reference frame; the encoder
             # applies this alignment when tracking it in the robot's world frame.
             yaw -= _yaw_from_quat(self._heading_delta_quat)
@@ -1333,9 +1118,7 @@ class SonicPipeline:
         inputs = self._build_planner_inputs()
         self._planner_generation_frame = (
             min(self._traj_frame + LOOK_AHEAD_FRAMES, self._trajectory.num_frames - 1)
-            if not self._planner_transition_preparing
-            and self._trajectory is not None
-            and self._trajectory.num_frames > 4
+            if self._trajectory is not None and self._trajectory.num_frames > 4
             else None
         )
         self._planner_started_at = time.perf_counter()
@@ -1356,8 +1139,6 @@ class SonicPipeline:
             self._apply_planner_result(self._planner_future.result())
         except Exception as exc:
             raise SonicSafetyError("planner inference failed") from exc
-        if self._planner_transition_preparing and not self._planner_transition_ready:
-            self._needs_replan = True
         if self._planner_started_at is not None:
             self._planner_durations_ms.append(
                 (time.perf_counter() - self._planner_started_at) * 1000.0
@@ -1375,8 +1156,7 @@ class SonicPipeline:
         new_traj = self._resample_to_50hz(qpos_30hz, num_frames)
 
         if (
-            not self._planner_transition_preparing
-            and self._trajectory is not None
+            self._trajectory is not None
             and self._trajectory.num_frames > 0
             and self._planner_generation_frame is not None
         ):
@@ -1404,12 +1184,7 @@ class SonicPipeline:
 
         self._trajectory = new_traj
         self._traj_frame = 0
-        if self._planner_transition_preparing:
-            # Keep the stream's heading alignment unchanged until the source
-            # switch. The fresh planner is anchored immediately before blend.
-            self._planner_transition_ready = True
-        else:
-            self._anchor_planner_heading()
+        self._anchor_planner_heading()
 
     def _anchor_planner_heading(self) -> None:
         if self._heading_initialized or self._trajectory is None:
@@ -1528,7 +1303,7 @@ class SonicPipeline:
             and self._traj_frame > self._trajectory.num_frames - 20
             and moving
         )
-        if (not self._use_stream or self._planner_transition_preparing) and (
+        if not self._use_stream and (
             self._needs_replan or (self._replan_timer >= interval and moving) or traj_low
         ):
             # Preserve command changes, including a stop, while the worker is busy.
@@ -1551,7 +1326,7 @@ class SonicPipeline:
         elif self._trajectory is not None and self._trajectory.num_frames > 0:
             token = self._run_encoder(self._build_encoder_obs(self._cur_quat))
         elif self._has_upper_body_targets():
-            enc_obs = np.zeros(self._profile.encoder_obs_dim, dtype=np.float32)
+            enc_obs = np.zeros(ENCODER_OBS_DIM, dtype=np.float32)
             for i in range(ENCODER_REFERENCE_FRAMES):
                 enc_obs[4 + i * NUM_JOINTS : 4 + (i + 1) * NUM_JOINTS] = DEFAULT_ANGLES_ONNX
                 enc_obs[ANCHOR_HIST_OFFSET + i * 6 : ANCHOR_HIST_OFFSET + (i + 1) * 6] = (
@@ -1561,7 +1336,6 @@ class SonicPipeline:
             token = self._run_encoder(enc_obs)
         else:
             token = self._standing_token
-        token = self._blend_reference_token(token)
 
         # Proprio history (ONNX order)
         q_onnx = self._cur_q_dds[ONNX_TO_DDS]
@@ -1594,13 +1368,6 @@ class SonicPipeline:
         actions = out[0].squeeze()[:NUM_JOINTS].astype(np.float32)
         if self._nan_check("actions", actions):
             raise SonicSafetyError("non-finite decoder output")
-        self._last_reference_token = token.copy()
-        self._last_token_was_stream = self._use_stream
-        if (
-            self.reference_transition_active
-            and self._reference_transition_step >= self._reference_transition_steps
-        ):
-            self._clear_reference_transition()
         self._last_action = actions.copy()
 
         # All 29 decoder actions applied directly - no post-decoder override
@@ -1624,14 +1391,14 @@ class SonicPipeline:
         """
         motion = self._streamed
         assert motion is not None
-        enc_obs = np.zeros(self._profile.encoder_obs_dim, dtype=np.float32)
+        enc_obs = np.zeros(ENCODER_OBS_DIM, dtype=np.float32)
         enc_obs[0] = float(motion.encode_mode)
         f_curr = min(self._streamed_frame, motion.timesteps - 1)
-        q_left_inv = self._reference_orientation_inverse(base_quat)
+        q_left_inv = _calc_heading_quat_inv(base_quat)
 
         if motion.encode_mode == 0:
             for i in range(ENCODER_REFERENCE_FRAMES):
-                f = min(f_curr + i * self._profile.g1_frame_stride, motion.timesteps - 1)
+                f = min(f_curr + i * ENCODER_FRAME_STRIDE, motion.timesteps - 1)
                 enc_obs[4 + i * NUM_JOINTS : 4 + (i + 1) * NUM_JOINTS] = motion.joint_pos[f]
                 enc_obs[294 + i * NUM_JOINTS : 294 + (i + 1) * NUM_JOINTS] = motion.joint_vel[f]
                 q_aligned = _quat_multiply(
@@ -1645,7 +1412,7 @@ class SonicPipeline:
                 self._inject_upper_body(enc_obs)
         else:
             assert motion.smpl_joints is not None
-            for i in range(self._profile.smpl_frames):
+            for i in range(SMPL_REFERENCE_FRAMES):
                 f = min(f_curr + i, motion.timesteps - 1)
                 o = SMPL_JOINTS_OFFSET + i * 72
                 enc_obs[o : o + 72] = motion.smpl_joints[f].ravel()
@@ -1653,17 +1420,17 @@ class SonicPipeline:
                     self._heading_delta_quat, motion.root_quat[f].astype(np.float64)
                 )
                 q_rel = _quat_multiply(q_left_inv, q_aligned)
-                ao = self._profile.smpl_anchor_offset + i * 6
+                ao = SMPL_ANCHOR_OFFSET + i * 6
                 enc_obs[ao : ao + 6] = _rotmat_to_6d(_quat_to_rotmat(q_rel))
-                wo = self._profile.wrists_offset + i * 6
+                wo = WRISTS_OFFSET + i * 6
                 enc_obs[wo : wo + 6] = motion.joint_pos[f][WRIST_ONNX_INDICES]
         return enc_obs
 
     def _run_encoder(self, enc_obs: NDArray[Any]) -> NDArray[Any]:
-        if enc_obs.shape != (self._profile.encoder_obs_dim,):
+        if enc_obs.shape != (ENCODER_OBS_DIM,):
             raise ValueError(
-                f"SONIC {self._profile.name} encoder observation has shape "
-                f"{enc_obs.shape}, expected ({self._profile.encoder_obs_dim},)"
+                f"SONIC v1.1 encoder observation has shape "
+                f"{enc_obs.shape}, expected ({ENCODER_OBS_DIM},)"
             )
         started = time.perf_counter()
         out = self._encoder.run(None, {self._encoder_input: enc_obs.reshape(1, -1)})
@@ -1681,9 +1448,9 @@ class SonicPipeline:
             else 0
         )
         return {
-            "sonic_pipeline": self._profile.name,
-            "encoder_obs_dim": self._profile.encoder_obs_dim,
-            "smpl_reference_frames": self._profile.smpl_frames,
+            "sonic_pipeline": "sonic-v1.1",
+            "encoder_obs_dim": ENCODER_OBS_DIM,
+            "smpl_reference_frames": SMPL_REFERENCE_FRAMES,
             "mode": mode,
             "mode_override": self._mode_override,
             "mode_queue": list(self._mode_queue),
@@ -1699,10 +1466,6 @@ class SonicPipeline:
             "stream_frame": self._streamed_frame,
             "stream_backlog_frames": stream_backlog_frames,
             "stream_encode_mode": self._streamed.encode_mode if self._streamed else -1,
-            "reference_transition_active": self.reference_transition_active,
-            "reference_transition_progress": self.reference_transition_progress,
-            "planner_transition_preparing": self._planner_transition_preparing,
-            "planner_transition_ready": self.planner_transition_ready,
             "vr_active": self._vr_active(),
             "vr_age_sec": (
                 round(time.perf_counter() - self._vr_time, 3) if self._vr_pos is not None else -1.0

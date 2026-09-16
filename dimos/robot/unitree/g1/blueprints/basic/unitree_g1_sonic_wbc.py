@@ -38,13 +38,11 @@ from typing import Any, cast
 from dimos.control.components import HardwareComponent, HardwareType, make_humanoid_joints
 from dimos.control.coordinator import TaskConfig
 from dimos.control.tasks.g1_sonic_wbc_task.coordinator import SonicCoordinator
-from dimos.control.tasks.g1_sonic_wbc_task.model_sources import sonic_model_directory
+from dimos.control.tasks.g1_sonic_wbc_task.models import sonic_model_directory
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import (
     DEFAULT_ANGLES_DDS,
     SONIC_KD,
     SONIC_KP,
-    SONIC_V1_1_PIPELINE,
-    sonic_model_profile,
 )
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import COMMAND_TIMEOUT_SECONDS
 from dimos.core.coordination.blueprints import autoconnect
@@ -240,16 +238,8 @@ _coordinator = SonicCoordinator.blueprint(
             priority=50,
             auto_start=True,
             params={
-                "encoder_onnx": str(
-                    _SONIC_RELEASE_DIR
-                    / sonic_model_profile(SONIC_V1_1_PIPELINE).model_subdir
-                    / "model_encoder.onnx"
-                ),
-                "decoder_onnx": str(
-                    _SONIC_RELEASE_DIR
-                    / sonic_model_profile(SONIC_V1_1_PIPELINE).model_subdir
-                    / "model_decoder.onnx"
-                ),
+                "encoder_onnx": str(_SONIC_RELEASE_DIR / "sonic_v1_1" / "model_encoder.onnx"),
+                "decoder_onnx": str(_SONIC_RELEASE_DIR / "sonic_v1_1" / "model_decoder.onnx"),
                 "planner_onnx": str(_SONIC_PLANNER_PATH),
                 "hardware_id": "g1",
                 "auto_arm": _auto_arm,

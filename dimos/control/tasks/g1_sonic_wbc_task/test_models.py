@@ -24,7 +24,6 @@ def assets(monkeypatch):
     contents = {
         "planner_sonic.onnx": b"planner",
         "sonic_v1_1/model_encoder.onnx": b"encoder",
-        "low_latency/model_encoder.onnx": b"low latency encoder",
     }
     monkeypatch.setattr(
         models,
@@ -35,7 +34,7 @@ def assets(monkeypatch):
     return contents
 
 
-def test_setup_downloads_pinned_planner_and_selected_profile(tmp_path, assets, mocker):
+def test_setup_downloads_pinned_models(tmp_path, assets, mocker):
     def download(*, filename, local_dir, **kwargs):
         path = local_dir / filename
         path.parent.mkdir(parents=True, exist_ok=True)

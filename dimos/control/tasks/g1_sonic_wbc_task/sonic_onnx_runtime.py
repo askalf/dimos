@@ -54,7 +54,7 @@ def validate_jetson_ort_version() -> None:
         jetpack = major - 30
         raise RuntimeError(
             f"SONIC on JetPack {jetpack} requires validated ONNX Runtime {expected}; "
-            f"found {actual}. Run bin/hardware/g1/setup-sonic-jp{jetpack}."
+            f"found {actual}. Run bin/hardware/g1/setup-sonic."
         )
 
 

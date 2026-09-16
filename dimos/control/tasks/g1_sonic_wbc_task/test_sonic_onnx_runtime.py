@@ -57,13 +57,13 @@ def test_prepare_rejects_cpu_only_runtime_before_loading_models(mocker: Any) -> 
         sonic_onnx_runtime.prepare_sonic_onnx_runtime()
 
 
-@pytest.mark.parametrize(("release", "setup"), [(35, "jp5"), (36, "jp6")])
-def test_prepare_rejects_unvalidated_ort_version_on_jetson(jetson, mocker, release, setup):
+@pytest.mark.parametrize("release", [35, 36])
+def test_prepare_rejects_unvalidated_ort_version_on_jetson(jetson, mocker, release):
     jetson.write_text(f"# R{release} (release), REVISION: 4.3\n")
     mocker.patch.object(sonic_onnx_runtime.platform, "machine", return_value="aarch64")
     mocker.patch.object(ort, "__version__", "1.23.2")
 
-    with pytest.raises(RuntimeError, match=f"setup-sonic-{setup}"):
+    with pytest.raises(RuntimeError, match="setup-sonic"):
         sonic_onnx_runtime.prepare_sonic_onnx_runtime()
 
 

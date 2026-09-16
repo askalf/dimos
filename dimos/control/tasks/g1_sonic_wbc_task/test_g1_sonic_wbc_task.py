@@ -143,10 +143,14 @@ def test_motion_menu_omits_unavailable_face_down_mode(make_task):
     assert modes["CRAWLING"] == 8
 
 
-def test_auto_arm_finishes_ramp_before_first_policy_step(make_task: Any) -> None:
+@pytest.mark.parametrize("auto_arm", [False, True])
+def test_arm_starts_policy_only_after_ramp(make_task, auto_arm):
     factory, pipeline = make_task
-    task = factory(auto_arm=True, default_ramp_seconds=0.0)
+    task = factory(auto_arm=auto_arm, default_ramp_seconds=0.0)
     task.start()
+    if not auto_arm:
+        task.compute(_state(0.98))
+        task.arm()
 
     initialization_output = task.compute(_state(1.0))
 
@@ -169,13 +173,6 @@ def test_start_without_auto_arm_holds_measured_pose(make_task: Any) -> None:
 
     assert task.control_state is SonicControlState.UNARMED
     assert output is not None and output.positions == pytest.approx([0.25] * 29)
-    snapshot = task.state_snapshot()
-    assert snapshot["active"] is True
-    assert snapshot["armed"] is False
-    assert snapshot["arming"] is False
-    assert snapshot["arm_pending"] is False
-    assert snapshot["dry_run"] is False
-    assert snapshot["arming_duration"] == 3.0
     pipeline.step.assert_not_called()
 
 
@@ -198,23 +195,6 @@ def test_arm_snapshots_current_pose_then_ramps_to_default(make_task: Any) -> Non
     assert complete is not None and complete.positions == pytest.approx(DEFAULT_ANGLES_DDS.tolist())
     assert task.control_state is SonicControlState.CONTROL
     pipeline.step.assert_not_called()
-
-
-def test_manual_arm_starts_policy_only_after_ramp(make_task: Any) -> None:
-    factory, pipeline = make_task
-    task = factory(auto_arm=False, default_ramp_seconds=0.0)
-    task.start()
-    task.compute(_state(1.0))
-
-    assert task.control_state is SonicControlState.UNARMED
-    assert task.arm()
-
-    task.compute(_state(1.02))
-    assert task.control_state is SonicControlState.CONTROL
-    pipeline.step.assert_not_called()
-
-    task.compute(_state(1.04))
-    pipeline.step.assert_called_once()
 
 
 def test_disarm_returns_to_measured_pose_hold_and_planner(make_task: Any) -> None:
@@ -370,36 +350,16 @@ def test_coordinator_estop_reaches_sonic_damping(make_task, coordinator):
     pipeline.step.assert_not_called()
 
 
-def test_policy_timing_is_observational(make_task: Any) -> None:
-    factory, _pipeline = make_task
-    task = factory(auto_arm=True, default_ramp_seconds=0.0)
-
-    task._record_policy_timing(0.201, 1.0)
-    task._record_policy_timing(0.005, 1.02)
-
-    assert task._policy_timing_snapshot() == {
-        "step_ms": {"samples": 2, "mean": 103.0, "p95": 191.2, "p99": 199.04, "max": 201.0},
-        "start_interval_ms": {
-            "samples": 1,
-            "mean": 20.0,
-            "p95": 20.0,
-            "p99": 20.0,
-            "max": 20.0,
-        },
-    }
-
-
-def test_task_factory_fails_fast_when_selected_model_bundle_is_missing(tmp_path: Path) -> None:
+def test_task_factory_fails_fast_when_models_are_missing(tmp_path: Path) -> None:
     cfg = SimpleNamespace(
         name="sonic",
         joint_names=_JOINT_NAMES,
         priority=50,
         params={
-            "encoder_onnx": tmp_path / "low_latency/model_encoder.onnx",
-            "decoder_onnx": tmp_path / "low_latency/model_decoder.onnx",
+            "encoder_onnx": tmp_path / "sonic_v1_1/model_encoder.onnx",
+            "decoder_onnx": tmp_path / "sonic_v1_1/model_decoder.onnx",
             "planner_onnx": tmp_path / "planner_sonic.onnx",
             "hardware_id": "g1",
-            "sonic_pipeline": "sonic-low-latency",
         },
     )
 

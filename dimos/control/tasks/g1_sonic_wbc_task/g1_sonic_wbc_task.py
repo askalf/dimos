@@ -56,9 +56,7 @@ from dimos.control.tasks.g1_sonic_wbc_task.sonic_pipeline import (
     DEFAULT_ANGLES_DDS,
     LOCOMOTION_MODES,
     NUM_JOINTS,
-    SONIC_V1_1_PIPELINE,
     SonicPipeline,
-    SonicTeleopPipeline,
 )
 from dimos.control.tasks.g1_sonic_wbc_task.sonic_safety import (
     JOINT_VELOCITY_LIMIT,
@@ -95,13 +93,9 @@ class G1SonicWBCTaskConfig:
     auto_arm: bool = False
     auto_dry_run: bool = False
     default_ramp_seconds: float = 3.0
-    sonic_pipeline: SonicTeleopPipeline = SONIC_V1_1_PIPELINE
-    pose_transition_seconds: float = 0.5
     joint_velocity_limit: float = JOINT_VELOCITY_LIMIT
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.pose_transition_seconds) or self.pose_transition_seconds <= 0.0:
-            raise ValueError("pose transition duration must be positive and finite")
         if not math.isfinite(self.joint_velocity_limit) or self.joint_velocity_limit <= 0.0:
             raise ValueError("joint velocity limit must be positive and finite")
 
@@ -146,7 +140,6 @@ class G1SonicWBCTask(BaseControlTask):
             encoder_path=config.encoder_onnx,
             decoder_path=config.decoder_onnx,
             planner_path=config.planner_onnx,
-            profile=config.sonic_pipeline,
         )
 
         self._default_29 = DEFAULT_ANGLES_DDS.copy()
@@ -773,20 +766,6 @@ class G1SonicWBCTask(BaseControlTask):
         if self.policy_active:
             self._pipeline.set_source_stream(self._stream_source_requested)
 
-    def _begin_stream_reference_transition(self, duration_seconds: float) -> bool:
-        if not self.policy_active:
-            return False
-        started = self._pipeline.begin_stream_transition(duration_seconds)
-        self._stream_source_requested = started
-        return started
-
-    def _begin_planner_reference_transition(self, duration_seconds: float) -> bool:
-        if not self.policy_active:
-            return False
-        started = self._pipeline.begin_planner_transition(duration_seconds)
-        self._stream_source_requested = False
-        return started
-
     def _return_to_planner_reference(self) -> None:
         self._stream_source_requested = False
         self._pipeline.stop_clip()
@@ -809,8 +788,6 @@ class G1SonicWBCTaskParams(BaseConfig):
     auto_dry_run: bool = False
     default_ramp_seconds: float = 3.0
     decimation: int | None = None
-    sonic_pipeline: SonicTeleopPipeline = SONIC_V1_1_PIPELINE
-    pose_transition_seconds: float = Field(default=0.5, gt=0.0, allow_inf_nan=False)
     joint_velocity_limit: float = Field(default=JOINT_VELOCITY_LIMIT, gt=0.0, allow_inf_nan=False)
 
 
@@ -830,8 +807,7 @@ def _create_task(
         raise FileNotFoundError(
             "SONIC model files are missing: "
             f"{', '.join(missing_models)}. Run "
-            "`dimos-sonic-models "
-            f"--profile {params.sonic_pipeline}` from the active DimOS environment "
+            "`dimos-sonic-models` from the active DimOS environment "
             "before starting SONIC."
         )
     hw = hardware.get(params.hardware_id) if hardware else None
@@ -856,8 +832,6 @@ def _create_task(
         auto_arm=params.auto_arm,
         auto_dry_run=params.auto_dry_run,
         default_ramp_seconds=params.default_ramp_seconds,
-        sonic_pipeline=params.sonic_pipeline,
-        pose_transition_seconds=params.pose_transition_seconds,
         joint_velocity_limit=params.joint_velocity_limit,
     )
     if params.decimation is not None:

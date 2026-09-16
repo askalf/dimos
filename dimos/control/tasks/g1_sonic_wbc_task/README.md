@@ -24,7 +24,7 @@ the Git LFS data directory. `SONIC_MODEL_DIR` overrides this location for
 both the installer and blueprint. The installer pins the Hugging Face revision and verifies SHA-256 hashes for
 the policy, planner and observation configuration. The 13 example motion clips
 come from a pinned NVIDIA deployment revision. `--check` performs no downloads.
-Use `--profile all` to also install the low-latency policy bundle.
+SONIC v1.1 is the single supported policy bundle.
 
 MuJoCo starts in the SONIC pose and waits for a complete control command before
 advancing physics. Simulation arms automatically. Commands from a second shell:
@@ -47,9 +47,11 @@ E-stop latches damping. Releasing a control, resetting runtime state, or arming
 again cannot clear it; recovery requires restarting the stack. Hardware also
 checks feedback and command freshness in its independent motor publisher.
 
-For JetPack 5 or 6, use `bin/hardware/g1/setup-sonic-jp5` or
-`bin/hardware/g1/setup-sonic-jp6`. These install the matching ONNX Runtime and
-the same model assets. Hardware starts unarmed with policy outputs in dry-run.
+For JetPack 5 or 6, use `bin/hardware/g1/setup-sonic`. It detects the release and
+installs the matching ONNX Runtime and model assets; `--check` checks system
+prerequisites only. JetPack 5 requires CUDA 11.8 with its compatibility driver
+and cuDNN 8; JetPack 6 requires CUDA 12.6 and cuDNN 9.
+Hardware starts unarmed with policy outputs in dry-run.
 The updated controller has not been validated by another physical activation.
 
 Squat and kneeling request zero translation. Centered sticks stop crawling
