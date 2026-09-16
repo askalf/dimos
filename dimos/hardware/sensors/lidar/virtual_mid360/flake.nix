@@ -10,10 +10,10 @@
   # picks up every smudged git-lfs blob under data/.
   inputs = {
     # NOTE: pinned to the branch that introduces native/{rust,cpp}/flake.nix,
-    # because the default branch does not have those files yet. Drop the `ref=`
-    # once this is on main -- without it the input follows the default branch,
-    # which is what we want from then on. Nobody has to remember: the test
-    # test_shared_flake_inputs_are_unpinned_once_they_exist_upstream goes red
+    # because the default branch does not have those files yet. Point it at
+    # `ref=main` once those land -- they are their own pull request, ahead of this
+    # one, so the window is short. Nobody has to remember: the test
+    # test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream goes red
     # as soon as the shared flakes appear on the default branch.
     dimos-native-rust.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/rust";
     flake-utils.follows = "dimos-native-rust/flake-utils";
