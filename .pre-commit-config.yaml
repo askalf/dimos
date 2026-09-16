@@ -97,6 +97,16 @@ repos:
         entry: bin/hooks/lfs_check
         language: script
 
+      # `nix build path:.#…` copies a module's whole directory, so an untracked file
+      # sitting in one changes that module's derivation hash and costs a Cachix hit.
+      # Catch it at commit time, while it is still easy to delete.
+      - id: module-dir-guard
+        name: No untracked files in a native-module dir
+        always_run: true
+        pass_filenames: false
+        entry: bin/module-dir-guard
+        language: script
+
       - id: largefiles-check
         name: Large files check
         always_run: true
