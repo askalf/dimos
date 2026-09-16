@@ -147,13 +147,18 @@ repos:
         stages: [pre-commit]
 
       # Every rust crate now lives in its own cargo workspace with its own flake, so
-      # both hooks walk the workspace roots and enter each one's own devShell. There
-      # is no repo-root fallback: a repo-root flake ref would copy the entire tree,
-      # git-lfs blobs and all, into the store on every commit. The walk itself lives
-      # in bin/hooks/rust-module-foreach, which also reports per-module timings.
+      # both hooks walk the workspace roots. There is no repo-root fallback: a
+      # repo-root flake ref would copy the entire tree, git-lfs blobs and all, into
+      # the store on every commit. The walk itself lives in
+      # bin/hooks/rust-module-foreach, which also reports per-module timings.
+      #
+      # fmt takes `--shell native/rust`, clippy does not. rustfmt only parses, so
+      # the per-module shells buy it nothing -- and dim_slam's, which carries the
+      # cuVSLAM SDK, cost 595 s of a CI run to realise for it. clippy compiles, so
+      # it still needs each module's own libraries.
       - id: cargo-fmt
         name: cargo fmt
-        entry: bin/hooks/rust-module-foreach fmt --all
+        entry: bin/hooks/rust-module-foreach --shell native/rust fmt --all
         language: system
         types: [rust]
         pass_filenames: false

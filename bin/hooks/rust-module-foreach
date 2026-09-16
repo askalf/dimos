@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
-# Run a cargo command in every rust module's own devShell.
+# Run a cargo command over every rust module's cargo workspace.
 #
 # Since the repo workspace was split there is no single `cargo <cmd> --workspace`
-# that reaches every crate: each module is its own workspace with its own lock,
-# and its system libraries (librealsense, sqlite, the cuVSLAM SDK) exist only
-# inside its own flake's devShell. So walk the workspace roots and enter each
-# shell in turn.
+# that reaches every crate: each module is its own workspace with its own lock.
+# So walk the workspace roots and run the command against each.
 #
-# Usage: rust-module-foreach <cargo subcommand> [args...]
-#   e.g. rust-module-foreach fmt --all
+# Usage: rust-module-foreach [--shell <dir>] <cargo subcommand> [args...]
+#   e.g. rust-module-foreach --shell native/rust fmt --all
 #        rust-module-foreach clippy --workspace --all-targets -- -D warnings
 # `--manifest-path` is inserted right after the subcommand, so a trailing
 # `-- -D warnings` stays trailing.
+#
+# Which devShell to enter:
+#   default      each module's own -- the only place its system libraries
+#                (librealsense, sqlite, the cuVSLAM SDK) exist, so anything that
+#                COMPILES needs this.
+#   --shell DIR  that one shell for every module. Right for a tool that only
+#                parses, like rustfmt: it never compiles, never runs build.rs and
+#                never links, so the system libraries are dead weight. Measured:
+#                realising dim_slam's own shell for `cargo fmt` cost 595 s of a
+#                14.7-minute CI lint job, purely to fetch a cuVSLAM SDK rustfmt
+#                does not open. Every module resolves the same rustfmt anyway --
+#                one nixpkgs for the whole repo makes that a single store path --
+#                so the shared shell is not a version compromise.
 #
 # Every module reports its own devShell and cargo timings, because a passing
 # pre-commit hook prints nothing and that is how a 25-minute CI lint job went
@@ -20,6 +31,12 @@ set -euo pipefail
 
 top=$(git rev-parse --show-toplevel)
 system=$(nix eval --raw --impure --expr builtins.currentSystem)
+
+shared_shell=""
+if [ "${1:-}" = "--shell" ]; then
+    shared_shell=$2
+    shift 2
+fi
 subcommand=$1
 shift
 
@@ -38,20 +55,28 @@ while read -r root; do
         exit 1
     fi
 
-    # A module may declare it does not support this platform: realsense links
-    # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off
-    # Linux. Such a module has no devShell here and cannot be linted here either,
-    # so skip it rather than block the commit. CI lints on Linux, where the
-    # devShell does exist.
-    if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
-        echo "skipping ${root#"$top"/}: $dir declares no devShell for $system" >&2
-        continue
+    if [ -n "$shared_shell" ]; then
+        # The shared shell exists on every platform, so a module whose own flake
+        # skips this system is still covered -- realsense gets formatted on macOS
+        # now, where it used to be skipped for want of a devShell it did not need.
+        shell_dir=$shared_shell
+    else
+        shell_dir=$dir
+        # A module may declare it does not support this platform: realsense links
+        # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off
+        # Linux. Such a module has no devShell here and cannot be linted here
+        # either, so skip it rather than block the commit. CI lints on Linux,
+        # where the devShell does exist.
+        if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
+            echo "skipping ${root#"$top"/}: $dir declares no devShell for $system" >&2
+            continue
+        fi
     fi
 
     started=$(date +%s)
-    nix develop "path:$dir" -c true
+    nix develop "path:$shell_dir" -c true
     entered=$(date +%s)
-    nix develop "path:$dir" -c cargo "$subcommand" --manifest-path "$root" "$@"
+    nix develop "path:$shell_dir" -c cargo "$subcommand" --manifest-path "$root" "$@"
     finished=$(date +%s)
     printf '  cargo %s %s: devShell %ss, cargo %ss\n' \
         "$subcommand" "${dir#"$top"/}" "$((entered - started))" "$((finished - entered))" >&2
