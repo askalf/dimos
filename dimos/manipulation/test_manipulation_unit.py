@@ -1195,14 +1195,7 @@ def _cancelled(coordinator) -> list[str]:
 
 
 def test_refresh_recovers_from_a_stranded_executing_state(module_factory) -> None:
-    """A terminal result nobody waited on must not pin the module in EXECUTING.
-
-    Regression: a nonblocking execute() whose motion ended before any caller waited left
-    the manager COMPLETED and the module EXECUTING. _refresh_execution_status only polled
-    while the manager was ACCEPTED/EXECUTING, so nothing ever applied that result and
-    can_plan() refused every later plan - the viser Plan button disabled itself with no
-    error to explain why.
-    """
+    """A terminal result nobody waited on must not pin the module in EXECUTING."""
     module = module_factory()
     module._state = ManipulationState.EXECUTING
     module._execution_manager = MagicMock()
