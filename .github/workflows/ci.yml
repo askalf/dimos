@@ -381,10 +381,6 @@ jobs:
             dimos/navigation/nav_3d/mls_planner/test_transformer.py
       - name: Bake e2e tests
         run: uv run pytest -m bake_e2e dimos/cli/bake/test_bake_e2e.py --no-cov
-      - name: Native module e2e tests
-        # NativeModule builds these itself, through each module's own
-        # `nix build -L path:.#<package>`; nothing here builds them with cargo.
-        run: uv run pytest -m native_e2e dimos/hardware/sensors/lidar/livox/test_e2e.py --no-cov
 
   flake-locks-current:
     # The gap this repo had: every nix invocation in CI passed `--no-write-lock-file`,
@@ -534,6 +530,21 @@ jobs:
               echo "::endgroup::"
             fi
           done
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          prune-cache: true
+      - name: Native module e2e tests
+        # These spawn the module binaries, so they belong to the job that built them:
+        # `bin/build-native-modules` leaves each module's `result` symlink behind and
+        # the test resolves `result/bin/<name>` through it. The rust job used to host
+        # them because a root cargo workspace could `cargo build -p dimos-livox`; with
+        # one workspace per module those binaries come from nix, which that job has no
+        # reason to install.
+        run: |
+          uv sync --group tests --frozen
+          uv run pytest -m native_e2e dimos/hardware/sensors/lidar/livox/test_e2e.py --no-cov
 
   md-babel:
     timeout-minutes: 15
