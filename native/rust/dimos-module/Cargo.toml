@@ -5,6 +5,11 @@ edition = "2021"
 description = "Rust native module SDK for dimos NativeModule framework"
 license = "Apache-2.0"
 
+# Its own workspace root, not a member of one. `native/rust` is copied into every
+# module's build sandbox crate-by-crate, where no parent workspace manifest exists,
+# so anything else would resolve differently locally than it does in the build.
+[workspace]
+
 [dependencies]
 dimos-lcm = { git = "https://github.com/dimensionalOS/dimos-lcm.git", branch = "rust-codegen" }
 dimos-module-macros = { version = "=0.1.0", path = "../dimos-module-macros" }
