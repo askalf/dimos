@@ -130,33 +130,86 @@ def _progress_columns(width: int) -> list[Any]:
 
 
 class _Ticker:
-    """Feeds backend progress into one rich task per phase.
+    """Feeds backend progress into one rich task per phase, under a one-line
+    context: the file, its size on disk, and once known, the compressed size
+    actually crossing the wire.
 
     A fresh task per phase gives an indeterminate phase a pulsing bar instead of
     "0%" of the previous phase's total (rich reads total=None as "unchanged"),
-    and a speed and ETA that describe this phase rather than the last one.
+    and a speed and ETA that describe this phase rather than the last one. The
+    context line exists because each phase measures a different byte count —
+    compress works on the raw file, transfer on the compressed one — and none
+    of them is the size the user knows; this line says which is which.
     """
 
-    def __init__(self, bar: Any, name: str) -> None:
+    def __init__(
+        self,
+        bar: Any,
+        name: str,
+        raw: int | None = None,
+        wire: int | None = None,
+        down: bool = False,
+        compressed: bool = False,
+        live: Any = None,
+    ) -> None:
         self.bar, self.name, self.phase = bar, _short(name), "reading"
+        self.raw, self.wire, self.down, self.compressed, self.live = (
+            raw,
+            wire,
+            down,
+            compressed,
+            live,
+        )
         self.task = bar.add_task(f"reading {self.name}", total=None)
+        self._render()
+
+    def context(self) -> str:
+        from rich.filesize import decimal
+
+        r, w = self.raw, self.wire
+        if r and w and r != w:
+            if self.down:
+                return f"{self.name} · {decimal(w)} compressed → {decimal(r)} on disk"
+            return f"{self.name} · {decimal(r)} → {decimal(w)} compressed"
+        known = r or w
+        if not known:
+            return self.name
+        tag = " compressed" if (self.down and self.compressed and w and not r) else ""
+        return f"{self.name} · {decimal(known)}{tag}"
+
+    def _render(self) -> None:
+        if self.live is None:
+            return
+        from rich.console import Group
+        from rich.text import Text
+
+        self.live.update(Group(Text(self.context(), style="grey50"), self.bar))
 
     def __call__(self, phase: str, done: int, total: int) -> None:
+        if phase in ("upload", "download") and total:
+            self.wire = total  # the bytes actually crossing the wire
         if phase != self.phase:
             self.bar.remove_task(self.task)
             label = f"{_PHASE.get(phase, phase)} {self.name}"
             self.task = self.bar.add_task(label, total=total or None)
             self.phase = phase
         self.bar.update(self.task, completed=done, total=total or None)
+        self._render()
 
 
 @contextlib.contextmanager
-def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
-    """Rich's own progress bar. Inline and transient; the summary line printed
-    after it is what stays. Note: like any inline bar (rich's, pip's, curl's) it
-    can smear if the window is resized mid-transfer, because the terminal reflows
-    the line it already drew. Only the alternate screen avoids that, at the cost
-    of taking over the terminal."""
+def _bar(
+    name: str,
+    raw: int | None = None,
+    wire: int | None = None,
+    down: bool = False,
+    compressed: bool = False,
+) -> Iterator[Callable[[str, int, int], None]]:
+    """Rich's progress bar under a one-line size context, both transient; the
+    summary line printed after is what stays. Inline, so like any inline bar
+    (rich's, pip's, curl's) it can smear if the window is resized mid-transfer,
+    because the terminal reflows the line it already drew; only the alternate
+    screen avoids that, at the cost of taking over the terminal."""
     from dimos.cli import theme
 
     if not theme.enabled():  # piped or CI: draw nothing, just the summary line after
@@ -165,11 +218,15 @@ def _bar(name: str) -> Iterator[Callable[[str, int, int], None]]:
 
     import shutil
 
+    from rich.live import Live
     from rich.progress import Progress
 
     width = shutil.get_terminal_size((100, 24)).columns
-    with Progress(*_progress_columns(width), transient=True) as bar:
-        yield _Ticker(bar, name)
+    progress = Progress(*_progress_columns(width), auto_refresh=False)  # the Live below renders it
+    with Live(transient=True, refresh_per_second=12) as live:
+        yield _Ticker(
+            progress, name, raw=raw, wire=wire, down=down, compressed=compressed, live=live
+        )
 
 
 @handle_fail
@@ -185,7 +242,7 @@ def upload(
     failed = False
     for t in targets:
         try:
-            with _bar(t.name) as tick:
+            with _bar(t.name, raw=t.stat().st_size) as tick:
                 r = cloud.upload(
                     t,
                     robot_id=robot,
@@ -261,9 +318,16 @@ def pull(upload_id: str | None, dest: Path | None) -> None:
     upload_id = None if upload_id == "latest" else upload_id
     cloud = CloudData()
     row = cloud.resolve(upload_id)
-    with _bar(row["filename"]) as tick:
+    with _bar(
+        row["filename"],
+        wire=int(row.get("size") or 0),
+        down=True,
+        compressed=bool(row.get("content_encoding")),
+    ) as tick:
         out = cloud.pull(str(row["id"]), dest, progress=tick)
-    typer.echo(f"pulled to {out}")
+    from rich.filesize import decimal
+
+    typer.echo(f"pulled to {out} · {decimal(out.stat().st_size)} on disk")
 
 
 @handle_fail

@@ -80,3 +80,37 @@ def test_bar_is_silent_off_a_terminal(monkeypatch, capsys) -> None:
     with cli._bar("rec.db") as tick:
         tick("upload", 1, 2)  # a no-op, must not raise
     assert capsys.readouterr().out == ""
+
+
+def test_context_line_names_the_sizes_as_they_become_known() -> None:
+    """Each phase measures a different byte count; the context line says which."""
+    bar = Progress(console=Console(file=io.StringIO(), force_terminal=True, width=100))
+    # upload: on-disk size known up front, the wire size learned from the upload phase
+    up = cli._Ticker(bar, "rec.db", raw=1_900_000_000)
+    assert up.context() == "rec.db · 1.9 GB"
+    up("compress", 10, 1_900_000_000)
+    assert up.context() == "rec.db · 1.9 GB", "compress works on the raw file; nothing new yet"
+    up("upload", 5, 952_800_000)
+    assert up.context() == "rec.db · 1.9 GB → 952.8 MB compressed"
+    # pull: only the compressed size is known up front; on-disk size comes after decompress
+    down = cli._Ticker(bar, "rec.db.lz4", wire=952_800_000, down=True, compressed=True)
+    assert down.context() == "rec.db.lz4 · 952.8 MB compressed"
+    # no compression involved: just the one size, no claim
+    same = cli._Ticker(bar, "raw.bin", raw=500)
+    same("upload", 1, 500)
+    assert same.context() == "raw.bin · 500 bytes"
+
+
+def test_ticker_renders_context_above_the_bar() -> None:
+    seen: list = []
+
+    class FakeLive:
+        def update(self, renderable):
+            seen.append(renderable)
+
+    bar = Progress(console=Console(file=io.StringIO(), force_terminal=True, width=100))
+    t = cli._Ticker(bar, "rec.db", raw=1_900_000_000, live=FakeLive())
+    t("upload", 1, 952_800_000)
+    header, body = seen[-1].renderables
+    assert header.plain == "rec.db · 1.9 GB → 952.8 MB compressed"
+    assert body is bar, "the bar itself sits under the context line"
