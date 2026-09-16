@@ -6,7 +6,7 @@ permissions: {}
 
 jobs:
   lint:
-    timeout-minutes: 1
+    timeout-minutes: 2
     runs-on: ubuntu-latest
     permissions:
       contents: read  # For checkout
@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the shared-flake check diffs against the PR base
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
@@ -31,20 +33,6 @@ jobs:
       - name: uv lock
         run: uv lock
 
-      - name: autofix.ci
-        uses: autofix-ci/action@v1
-
-  relock-shared-flakes:
-    timeout-minutes: 5
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read  # For checkout
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - name: Did native/{rust,cpp} change?
         id: shared
         run: |
@@ -61,6 +49,6 @@ jobs:
       - name: Relock the modules onto this revision
         if: steps.shared.outputs.changed == 'true'
         run: python3 bin/relock-shared-flakes
+      # Unguarded: it commits the ruff and uv fixes too, which every PR may need.
       - name: autofix.ci
-        if: steps.shared.outputs.changed == 'true'
         uses: autofix-ci/action@v1
