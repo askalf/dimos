@@ -36,7 +36,19 @@ class HabitatConnectionConfig(NativeModuleConfig):
     # target/habitat (outside the package tree); the wrapper is the build sentinel.
     cwd: str | None = "nix"
     executable: str = str(DIMOS_PROJECT_ROOT / "target" / "habitat" / "habitat-native")
-    build_command: str | None = "nix develop path:. -c ./install.sh"
+    # No auto-build. Every other native module builds with `nix build -L path:.#<pkg>`;
+    # this one cannot, and pretending otherwise was the last `nix develop` hiding in a
+    # build_command. habitat-sim comes from the aihabitat conda channel, the install
+    # downloads a multi-gigabyte HM3D scene, and headless rendering needs the host's own
+    # EGL driver -- none of which a derivation can express, which is why
+    # dimos/simulation/habitat/nix/flake.nix offers a devShell and no package.
+    #
+    # Provision it once, by hand:
+    #     cd dimos/simulation/habitat/nix && nix develop path:. -c ./install.sh
+    #
+    # That writes target/habitat/habitat-native, the executable above. Delete
+    # target/habitat/env to redo it. See docs/capabilities/navigation/habitat.md.
+    build_command: str | None = None
     stdin_config: bool = True
     log_format: LogFormat = LogFormat.TEXT
 
