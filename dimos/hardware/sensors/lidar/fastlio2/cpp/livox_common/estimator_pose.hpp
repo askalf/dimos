@@ -10,9 +10,6 @@ namespace dimos {
 
 inline constexpr double kQuatNormTolerance = 1e-3;
 
-// True once the estimator has produced a real pose. The SLAM cores hand their
-// pose out through a result that starts as uninitialized memory, whose
-// quaternion part is almost never unit length.
 inline bool has_estimate(const std::vector<double>& pose) {
     if (pose.size() != 7) {
         return false;

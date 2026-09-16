@@ -19,15 +19,11 @@ socket2 = "0.6"
 tracing = "0.1"
 validator = { version = "0.21", features = ["derive"] }
 
-# The copied livox pcap.rs tests write a temp pcap. Copying the module meant
-# copying its test dependency too.
 [dev-dependencies]
 tempfile = "3"
 
 [workspace]
 
-# Carried from the old root workspace. Cargo only honours a profile at the workspace
-# root, so every module that is now its own root has to state it.
 [profile.release]
 lto = "thin"
 codegen-units = 1

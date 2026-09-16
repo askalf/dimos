@@ -37,8 +37,6 @@ inline std_msgs::Header make_header(const std::string& frame_id, double ts) {
 inline constexpr int32_t kXyziFieldCount = 4;
 inline constexpr int32_t kXyziPointStep = kXyziFieldCount * sizeof(float);
 
-// Empty XYZI PointCloud2 sized for num_points. The caller fills each point
-// through xyzi_point() below.
 inline sensor_msgs::PointCloud2 make_xyzi_cloud(const std::string& frame_id, double ts,
                                                 int num_points) {
     sensor_msgs::PointCloud2 pc;

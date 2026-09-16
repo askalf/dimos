@@ -110,8 +110,6 @@ impl FrameAssembler {
                 self.frame_start_ns = Some(ts_ns);
                 frame
             }
-            // A full interval backwards is a clock discontinuity, not
-            // reordering. Re-anchor or no frame would ever cut again.
             Some(start) if start.saturating_sub(ts_ns) >= self.frame_interval_ns => {
                 tracing::warn!(
                     anchor_ns = start,
@@ -130,8 +128,6 @@ impl FrameAssembler {
         };
 
         let frame_start = self.frame_start_ns.expect("set above");
-        // Offset 0 = "at the frame stamp": clamp rather than wrap when a UDP
-        // packet arrives out of order with a stamp older than the frame start.
         self.append_points(packet, ts_ns.saturating_sub(frame_start));
 
         if completed.is_none() && self.points.len() >= MAX_FRAME_POINTS {

@@ -23,10 +23,6 @@ tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 validator = { version = "0.21", features = ["derive"] }
 
-# Full LTO, not the "thin" every other module uses: this is the SLAM hot path. The
-# cost is that it refingerprints the shared target dir (.cargo/config.toml) when you
-# build it beside another module. test_the_generated_crate_reuses_the_module_profiles
-# names this file as a deliberate deviation; a new one there would fail.
 [profile.release]
 lto = true
 

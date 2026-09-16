@@ -157,11 +157,6 @@ jobs:
         env:
           BUILD_WORKERS: "1"
         run: python3 bin/build-native-modules
-      # Clippy as a derivation, sharing the dependency crates the step above just
-      # built: only first-party crates compile, and cachix-action pushes the result
-      # so a rerun substitutes it. This is what lets the lint job skip its
-      # cargo-clippy hook, which had no view of the nix store and recompiled every
-      # module's ~340 dependency crates from scratch on every run.
       - name: Clippy native modules
         env:
           BUILD_WORKERS: "1"
@@ -253,16 +248,8 @@ jobs:
           key: cachix-published-${{ runner.os }}-${{ runner.arch }}-${{ needs.cachix-build-check.outputs.inputs-hash }}
 
   lint:
-    # Not 10 minutes any more: this job now runs the cargo-fmt and cargo-clippy hooks,
-    # and with no shared cargo workspace left they compile each module's dependency
-    # graph in turn. The cache below makes repeat runs cheap; a cold run is the
-    # expensive one.
-    timeout-minutes: 30
+    timeout-minutes: 10
     runs-on: ubuntu-latest
-    env:
-      # A fresh runner never reuses an incremental build, and it is 600+ MB of
-      # cache entry that would be restored only to be thrown away.
-      CARGO_INCREMENTAL: "0"
     permissions:
       contents: read  # For checkout
 
@@ -290,11 +277,6 @@ jobs:
           deno-version: ${{ steps.deno-version.outputs.version }}
           cache: true
 
-      # The cargo-fmt and cargo-clippy hooks enter each module's own devShell, which
-      # is the only place a module's system libraries (librealsense, sqlite, the
-      # cuVSLAM SDK) exist. They used to be skipped here and approximated in the rust
-      # job with a rustup toolchain and `--workspace`, which silently linted neither
-      # dim_slam nor realsense -- they are not members of any shared workspace.
       - name: Install Nix
         env:
           INPUT_EXTRA_NIX_CONFIG: |
@@ -303,54 +285,13 @@ jobs:
           INPUT_SET_AS_TRUSTED_USER: "true"
         run: bash docker/ros/install-nix.sh
 
-      # The clippy hook compiles every module's dependency graph. They all share the
-      # repo-root target dir (.cargo/config.toml), so one cache entry covers the lot.
-      #
-      # Not Swatinem/rust-cache: it runs `cargo metadata` at the repo root, and since
-      # the root workspace was split there is no root Cargo.toml for it to find. It
-      # failed with exit 101 and fell back to a key that considered no Cargo.lock at
-      # all, so every run recompiled every module from scratch. Keying on the module
-      # locks by hand is the whole of what it was doing for us.
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-            !target/debug/incremental
-          key: cargo-lint-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-lint-${{ runner.os }}-${{ runner.arch }}-
-
       - name: Run pre-commit
         env:
-          # The clippy hook is a `nix build` now, and the cachix-build job already
-          # builds those same derivations with the substituter configured and pushes
-          # them. Running it here too would realise the whole crate graph a second
-          # time on a runner that has no substituter for it.
           SKIP: native-module-clippy
         uses: pre-commit/action@v3.0.1
         with:
-          # Always show hook output. The rust hook reports how long each module's
-          # devShell and cargo run took, and a passing hook hides that otherwise --
-          # which is how a 25-minute lint job went unexplained.
           extra_args: --all-files --verbose
 
-      # Only main writes the cache, so a PR run cannot evict main's entry from the
-      # repo's 10GB budget. PR runs still restore from it.
-      - name: Save cargo build cache
-        if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-            !target/debug/incremental
-          key: cargo-lint-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
 
   rust:
     timeout-minutes: 30
@@ -367,8 +308,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      # Same reason as the lint job: Swatinem/rust-cache needs a root Cargo.toml,
-      # which the workspace split removed, so it cached nothing.
       - name: Restore cargo build cache
         uses: actions/cache/restore@v4
         with:
@@ -381,19 +320,7 @@ jobs:
           key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-test-${{ runner.os }}-${{ runner.arch }}-
-      # There is no repo-wide cargo workspace any more: every module is its own
-      # workspace with its own lock. fmt and clippy moved to the pre-commit hooks in
-      # the lint job, which enter each module's devShell; what is left here is the
-      # test run, over each workspace root in turn.
       - name: cargo test
-        # This runner has a bare cargo and no nix, so it can only test the workspaces
-        # that build against system libraries it already has. The two skipped below
-        # link librealsense and a GPU toolkit respectively, and were excluded from the
-        # old repo-wide workspace for the same reason -- splitting that workspace into
-        # one per module turned an implicit exclusion into a job that tried to build
-        # them. Their nix builds still cover them: `Native builds (C++ and Rust)`
-        # builds every module through its own flake, where those libraries are
-        # declared, and the lint job clippies them inside each module's devShell.
         run: |
           set -euo pipefail
           needs_system_libs=(
@@ -442,8 +369,6 @@ jobs:
       - name: Bake e2e tests
         run: uv run pytest -m bake_e2e dimos/cli/bake/test_bake_e2e.py --no-cov
 
-      # Only main writes the cache, so a PR run cannot evict main's entry from the
-      # repo's 10GB budget. PR runs still restore from it.
       - name: Save cargo build cache
         if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
@@ -457,16 +382,6 @@ jobs:
           key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
 
   flake-locks-current:
-    # The gap this repo had: every nix invocation in CI passed `--no-write-lock-file`,
-    # so a stale or incomplete flake.lock was silently tolerated and the build used
-    # whatever the lock happened to say. `nix flake lock --no-update-lock-file` makes
-    # that an error -- it fails if the lock would have to change to evaluate.
-    #
-    # Deliberately not `nix flake check`: the rust modules generate their build through
-    # crate2nix, which is import-from-derivation, and `--no-build` refuses to realise
-    # the intermediate derivation IFD needs ("path '...-source.drv' is not valid").
-    # Without `--no-build` it would rebuild everything the `native` job already builds.
-    # Lock currency is the part `native` does not cover, so that is what this checks.
     timeout-minutes: 30
     runs-on: ubuntu-latest
     permissions:
@@ -483,8 +398,6 @@ jobs:
           INPUT_SET_AS_TRUSTED_USER: "true"
         run: bash docker/ros/install-nix.sh
       - name: Every flake.lock is current
-        # No bash arrays or `mapfile`: this loop is meant to be runnable by hand on a
-        # developer machine, and macOS ships bash 3.2.
         run: |
           set -u
           git ls-files '*flake.nix' | sed 's|/flake.nix$||;s|^flake.nix$|.|' | sort -u > /tmp/flakes
@@ -522,8 +435,6 @@ jobs:
           sudo apt-get update
           # lcm.pc carries `Requires: glib-2.0`, so pkg-config cannot resolve
           # lcm at all without glib's own .pc file
-          # portaudio is not for the modules -- it is for the `uv sync` further down,
-          # whose test group builds pyaudio from source and needs its headers.
           sudo apt-get install -y liblcm-dev libglib2.0-dev nlohmann-json3-dev \
             portaudio19-dev
           base=https://github.com/eclipse-zenoh
@@ -548,18 +459,8 @@ jobs:
       - name: Test
         run: ctest --test-dir build/native-cpp --output-on-failure
 
-      # `bin/build-native-modules` is the single discovery mechanism: it reads every
-      # NativeModuleConfig's own build_command. This job used to run a second,
-      # independent `find -name flake.nix` glob, and the repo-root flake a third
-      # (`findDepsFiles`); a module missed by any one of them was silently not built,
-      # not hashed, or not published.
       - name: List C++ native modules
         id: find-modules
-        # `native/` is excluded because it is the SDK the modules build against, not a
-        # module: nothing declares it as a NativeModuleConfig, so the build step below
-        # never produces a `build/` for it and the ctest loop would fail on the missing
-        # directory. It is not going untested -- the Configure/Build/Test steps above
-        # build it at build/native-cpp and run its 76 cases there.
         run: |
           modules=$(git ls-files '*/flake.nix' \
             | sed 's|/flake.nix$||' \
@@ -591,9 +492,6 @@ jobs:
           INPUT_SET_AS_TRUSTED_USER: "true"
         run: bash docker/ros/install-nix.sh
       # PCL, GTSAM and the SLAM cores come from each module's flake, not apt.
-      # Builds every native module, C++ and rust alike, each with the exact command
-      # its own NativeModuleConfig declares -- so CI cannot build something different
-      # from what a developer's machine builds.
       - name: Build native modules
         run: python3 bin/build-native-modules
       - name: Test C++ native modules
@@ -613,12 +511,6 @@ jobs:
           enable-cache: true
           prune-cache: true
       - name: Native module e2e tests
-        # These spawn the module binaries, so they belong to the job that built them:
-        # `bin/build-native-modules` leaves each module's `result` symlink behind and
-        # the test resolves `result/bin/<name>` through it. The rust job used to host
-        # them because a root cargo workspace could `cargo build -p dimos-livox`; with
-        # one workspace per module those binaries come from nix, which that job has no
-        # reason to install.
         run: |
           uv sync --group tests --frozen
           uv run pytest -m native_e2e dimos/hardware/sensors/lidar/livox/test_e2e.py --no-cov
@@ -1100,8 +992,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build rust native modules
         if: contains(matrix.markers, 'self_hosted')
-        # Each module owns its build: NativeModule runs the module's own
-        # `nix build -L path:.#<package>`, and this script runs exactly those.
         run: python3 bin/build-native-modules
       - name: Run tests
         run: uv run pytest --cov=dimos/ --junitxml=junit.xml -m '(${{ matrix.markers }}) and not mujoco'

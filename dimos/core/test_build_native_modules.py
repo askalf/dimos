@@ -250,15 +250,9 @@ def test_no_module_reaches_the_repository_root() -> None:
         )
 
 
-# The shared flakes live in this repository, so the very change that introduces
-# native/rust/flake.nix cannot reference it on the default branch -- it is not there
-# yet. Until it merges, the module inputs name that branch. That pin must not outlive
-# the merge, and a comment is not a mechanism: these tests are.
 _SHARED_FLAKES = ("native/rust/flake.nix", "native/cpp/flake.nix")
 _DEFAULT_BRANCH = "main"
 
-# `github:dimensionalOS/dimos?ref=<branch>&dir=<subdir>` -- the in-repo input every
-# native module takes for the shared crates and the C++ SDK.
 _IN_REPO_INPUT = re.compile(r'url = "github:dimensionalOS/dimos\?(?P<query>[^"]*)"')
 
 
@@ -396,8 +390,6 @@ def _tree_at(rev: str, path: str) -> str | None:
 
     if (tree := read()) is not None:
         return tree
-    # CI checks out at depth 1, so a locked revision is usually absent. Ask for that
-    # one commit rather than giving up -- a full history here is 36 GB.
     subprocess.run(
         ("git", "-C", str(DIMOS_PROJECT_ROOT), "fetch", "--depth=1", "origin", rev),
         capture_output=True,
@@ -439,9 +431,6 @@ def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
     )
 
 
-# A lock records `follows` as a path of input names read from the root, and a direct
-# pin as a node name. Resolving both is what separates the nixpkgs a flake builds
-# against from the ones that merely appear in the file.
 _BUILD_EDGES = ("nixpkgs", "dimos-native-rust", "dimos-native-cpp")
 
 

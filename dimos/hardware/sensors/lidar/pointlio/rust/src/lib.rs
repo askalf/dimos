@@ -15,11 +15,6 @@
 // dimos glue around pointlio-core.
 pub mod module;
 
-// The Livox wire protocol, frame assembly and pcap reader, copied verbatim from
-// `dimos/hardware/sensors/lidar/livox/rust/src/`. Copied rather than depended on:
-// a native module may only reach the shared `native/rust` crates, and livox is a
-// specific sensor rather than part of that generic API. Keep these three files
-// byte-identical to livox's so a protocol fix can be moved across with `cp`.
 #[allow(dead_code)]
 pub mod pcap;
 #[allow(dead_code)]

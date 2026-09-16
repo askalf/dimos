@@ -63,9 +63,6 @@ def test_the_generated_crate_reuses_the_module_profiles() -> None:
     generated = tomllib.loads(render_cargo_toml("go2-nav", [MAPPER, PLANNER], Path("/repo")))
     release = {k: v for k, v in generated["profile"]["release"].items() if k != "package"}
 
-    # dim_slam sets `lto = true` rather than "thin" -- a deliberate, pre-dating choice
-    # for the SLAM binary, and it was never a member of the old root workspace either.
-    # It is named here rather than filtered by a rule, so any *new* deviation fails.
     deliberate_deviations = {"dimos/mapping/dim_slam/rust/Cargo.toml"}
 
     roots = [

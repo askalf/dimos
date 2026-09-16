@@ -149,11 +149,6 @@ def generate_crate(
     src.mkdir(parents=True, exist_ok=True)
 
     (directory / "Cargo.toml").write_text(render_cargo_toml(host, modules, root))
-    # No lockfile is seeded. This used to copy the repo-root Cargo.lock so the host
-    # resolved the same dependency versions as the workspace; there is no repo-root
-    # workspace any more, and no single module's lock is the right one either -- a host
-    # aggregates crates from several modules, each with its own. Cargo resolves the
-    # host's own graph, and `dimos bake` commits the lock it produces.
     (src / "main.rs").write_text(render_main_rs(host, modules, graph))
     (src / "default_topics.json").write_text(json.dumps(graph.topics(), indent=2) + "\n")
     (src / "default_qos.json").write_text(json.dumps(graph.qos(), indent=2) + "\n")

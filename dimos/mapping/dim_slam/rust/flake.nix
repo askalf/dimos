@@ -1,21 +1,7 @@
 {
   description = "dimSLAM native module for DimOS: the dim_slam library behind an LCM wrapper";
 
-  # The shared crates come in as a remote git input, not a relative path. A `path:..`
-  # input is unresolvable from a `path:.` build (`..` escapes the store path), and a
-  # relative `git+file:` is deprecated (nix#12281); the remote ref is also the only
-  # form that survives this module moving into a repository of its own. It costs one
-  # 25 MB store path, shared by every module locked to the same revision -- against
-  # the ~16 GB the old whole-repo input copied (a `path:` ref four levels up),
-  # because a local ref reads the working tree and so picks up every smudged
-  # git-lfs blob.
   inputs = {
-    # NOTE: pinned to the branch that introduces native/{rust,cpp}/flake.nix,
-    # because the default branch does not have those files yet. Point it at
-    # `ref=main` once those land -- they are their own pull request, ahead of this
-    # one, so the window is short. Nobody has to remember: the test
-    # test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream goes red
-    # as soon as the shared flakes appear on the default branch.
     dimos-native-rust.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/rust";
     flake-utils.follows = "dimos-native-rust/flake-utils";
     nixpkgs.follows = "dimos-native-rust/nixpkgs";
@@ -45,38 +31,19 @@
             crateOverrides = _: {
               # cu_vslam_rs's build.rs compiles its shim against this SDK.
               cu_vslam_rs = _: { CUVSLAM_SDK_DIR = sdkPackage; };
-              # buildRustCrate names DEP_ vars after the crate, cargo after the
-              # `links` key, so cu_vslam_rs's lib_dir never reaches our build.rs
-              # and the binary comes out with no rpath for libcuvslam.
               dim-slam-module = _: { DEP_CUVSLAM_LIB_DIR = "${sdkPackage}/lib"; };
             };
           };
         packageFor = variant: shared.buildNativeModule (moduleFor variant);
         clippyFor = variant: shared.clippyNativeModule (moduleFor variant);
-        # Lint once, against the first SDK variant. The variants differ only in which
-        # cu_vslam SDK the build script links; the rust this lints is the same in all
-        # of them, and linting each would rebuild this module's crates per variant for
-        # no new findings.
         lintedVariant = builtins.head (builtins.sort builtins.lessThan variants);
       in {
         packages = nixpkgs.lib.genAttrs variants packageFor // {
-          # `nix build .#clippy` from the module directory, which is what a person
-          # actually types; `checks` is what `nix flake check` walks. One derivation,
-          # two names for it.
           clippy = clippyFor lintedVariant;
         };
 
-        # Lints this module's own crates with clippy-driver, on the very dependency
-        # derivations the package build already put on Cachix -- no dependency is
-        # compiled a second time. `runTests` defaults on, so this reaches test
-        # targets too, the way `cargo clippy --all-targets` did.
         checks.clippy = clippyFor lintedVariant;
 
-        # script needs to detect cuda/non-cuda to pick the right things to load.
-        # The toolchain has to come from here: this used to be entered from inside
-        # the nix/rust toolchain shell, and that shell is gone, so a devShell with
-        # only a shellHook would silently hand cargo/clippy back to whatever the
-        # host has on PATH.
         devShells.default = nixpkgs.legacyPackages.${system}.mkShellNoCC {
           packages = shared.rustTools;
           shellHook = ''

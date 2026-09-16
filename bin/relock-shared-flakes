@@ -95,10 +95,6 @@ def main() -> int:
                 failed += 1
         if lock.read_text() != before:
             touched.append(lock.relative_to(REPO_ROOT).as_posix())
-        # Updating moves the pin to whatever the remote branch holds. If this commit
-        # is not on the remote yet, that is still not this commit's tree, and the
-        # lock stays stale -- silently, because `nix flake update` itself succeeded.
-        # Say so rather than leave a rewritten-but-wrong lock behind.
         if stale_inputs(lock):
             print(
                 f"STILL STALE  {lock.relative_to(REPO_ROOT).as_posix()}:"

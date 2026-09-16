@@ -85,8 +85,6 @@
           { vals.pkg=pkgs.uv;                             flags={}; }
           { vals.pkg=pkgs.pre-commit;                   flags={}; }
 
-          ### Rust (for ad-hoc cargo use in this shell; native modules build
-          ### through their own flakes, not this one)
           { vals.pkg=pkgs.cargo;                        flags={}; }
           { vals.pkg=pkgs.rustc;                        flags={}; }
 

@@ -24,10 +24,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-# `lib.cleanSource` drops these, and the shared flakes additionally drop `target/`,
-# `build/` and `__pycache__/`. A file matching one of these cannot change a
-# derivation hash, so leaving it in a module directory is harmless. Keep this list
-# in step with the filters in `native/rust/flake.nix` and `native/cpp/flake.nix`.
 EXEMPT_NAMES = {"target", "build", "__pycache__"}
 EXEMPT_PREFIXES = ("result",)  # `nix build` writes result, result-1, result-2, ...
 EXEMPT_SUFFIXES = ("~", ".o", ".so")

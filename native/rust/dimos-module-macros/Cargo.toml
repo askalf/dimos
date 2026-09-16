@@ -5,9 +5,6 @@ edition = "2021"
 description = "Proc-macros for dimos-module"
 license = "Apache-2.0"
 
-# Its own workspace root, not a member of one. `native/rust` is copied into every
-# module's build sandbox crate-by-crate, where no parent workspace manifest exists,
-# so anything else would resolve differently locally than it does in the build.
 [workspace]
 
 [lib]

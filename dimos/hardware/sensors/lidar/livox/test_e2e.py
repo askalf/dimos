@@ -46,9 +46,6 @@ from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.utils.data import get_data
 
-# Each native module is built by its own flake and leaves its binary behind at
-# `<module dir>/result/bin/<name>`; there is no shared cargo target dir output any
-# more, because there is no shared cargo workspace.
 _LIDAR = DIMOS_PROJECT_ROOT / "dimos" / "hardware" / "sensors" / "lidar"
 _MODULE_OF = {
     "mid360_native": (_LIDAR / "livox" / "rust", "dimos-livox"),

@@ -46,8 +46,6 @@ nalgebra = "0.35.0"
 [workspace]
 members = ["py"]
 
-# Carried from the old root workspace. Cargo only honours a profile at the workspace
-# root, so every module that is now its own root has to state it.
 [profile.release]
 lto = "thin"
 codegen-units = 1

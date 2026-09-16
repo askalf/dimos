@@ -122,9 +122,6 @@ class SourceConfig(BaseModel):
 class DimSlamConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     executable: str = "result/bin/dim_slam"
-    # Same `nix build -L path:.#<package>` shape as every other native module. The
-    # package name is the cuVSLAM SDK variant rather than a fixed string, because the
-    # SDK a build links decides what the binary can run on.
     build_command: str | None = Field(
         default_factory=lambda: f"nix build -L path:.#{sdk_variant()}"
     )

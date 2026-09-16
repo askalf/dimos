@@ -5,23 +5,8 @@
     zenoh.url = "github:jeff-hykin/zenoh_flake";
     zenoh.inputs.nixpkgs.follows = "nixpkgs";
     zenoh.inputs.flake-utils.follows = "flake-utils";
-    # One nixpkgs for the whole C++ side. native/cpp is the single place the
-    # revision is chosen and every module follows it, rather than each module
-    # resolving `nixos-unstable` on its own clock. Independent resolution is
-    # exactly what left these modules on a February nixpkgs while the shared SDK
-    # had moved to September: two stdenvs, and no binary cache shared between them.
     nixpkgs.follows = "dimos-native-cpp/nixpkgs";
     flake-utils.follows = "dimos-native-cpp/flake-utils";
-    # The shared C++ SDK, as a remote ref rather than the bare path literal that
-    # used to climb six directories to reach native/cpp. Under the `path:.` build
-    # ref this module now uses, such a literal escapes the module's store path, and
-    # back when it resolved at all it resolved by copying the whole repository.
-    # NOTE: pinned to the branch that introduces native/{rust,cpp}/flake.nix,
-    # because the default branch does not have those files yet. Point it at
-    # `ref=main` once those land -- they are their own pull request, ahead of this
-    # one, so the window is short. Nobody has to remember: the test
-    # test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream goes red
-    # as soon as the shared flakes appear on the default branch.
     dimos-native-cpp.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/cpp";
     dimos-lcm = {
       url = "github:dimensionalOS/dimos-lcm/main";
@@ -82,11 +67,6 @@
           inherit system;
           overlays = [ darwinDepFixes ];
         };
-        # Livox SDK2, built here rather than taken from the livox module's flake.
-        # A native module may not reach sideways into another module's directory, and
-        # livox is a specific sensor rather than part of the shared SDK, so the
-        # derivation is copied. Keep it in step with
-        # `dimos/hardware/sensors/lidar/livox/cpp/flake.nix`, which is the original.
         livox-sdk2 = pkgs.stdenv.mkDerivation rec {
           pname = "livox-sdk2";
           version = "1.2.5";
@@ -113,12 +93,6 @@
               --replace-fail "add_subdirectory(samples)" ""
             sed -i '1i #include <cstdint>' sdk_core/comm/define.h
             sed -i '1i #include <cstdint>' sdk_core/logger_handler/file_manager.h
-            # Livox-SDK2 bundles an old rapidjson whose RAPIDJSON_DIAG_OFF(foo-bar)
-            # macros stringify with spaces under newer clang, producing invalid
-            # warning-group names.  It also has an unused FastCRC field.  Both
-            # explode under -Werror, and passing -DCMAKE_CXX_FLAGS=-Wno-error is
-            # overridden by add_compile_options(-Werror) deeper in the sdk_core
-            # CMakeLists.  Strip -Werror in-place instead.
             find . -name CMakeLists.txt -exec sed -i 's/-Werror//g' {} +
           '';
         };
@@ -126,8 +100,6 @@
         zenohc = zenoh.packages.${system}.zenoh-c;
         zenohcpp = zenoh.packages.${system}.zenoh-cpp;
 
-        # Copied from `dimos/hardware/sensors/lidar/common/`, for the same reason
-        # as the SDK above.
         livox-common = ./livox_common;
 
         # Patch the Point-LIO fork in place: resize (not reserve) the per-point
@@ -144,8 +116,6 @@
           pname = "pointlio_native";
           version = "0.2.0";
 
-          # Not `./.`: a bare directory hands nix the `result` symlink of the previous
-          # build, which changes this derivation's hash and loses the Cachix hit.
           src = dimos-native-cpp.lib.${system}.cleanModuleSource ./.;
 
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];

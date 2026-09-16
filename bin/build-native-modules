@@ -455,9 +455,6 @@ def _result_links(modules: tuple[DiscoveredModule, ...]) -> list[tuple[str, str]
     for module in modules:
         links = sorted((REPO_ROOT / module.build_dir).glob("result*"))
         if not links:
-            # A module whose flake declares no packages for this system was skipped
-            # rather than built, so it has nothing to publish or verify here. Any
-            # other empty directory means the build never ran.
             systems = _declared_systems(module)
             if systems is not None and current_system() not in systems:
                 continue

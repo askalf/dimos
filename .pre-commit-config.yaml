@@ -39,8 +39,6 @@ repos:
     rev: v4.6.0
     hooks:
       - id: check-case-conflict
-      # These three rewrite bytes, so they are kept off files that must stay
-      # byte-identical to something outside this repo: upstream patches.
       - id: trailing-whitespace
         language: python
         types: [text]
@@ -97,9 +95,6 @@ repos:
         entry: bin/hooks/lfs_check
         language: script
 
-      # `nix build path:.#…` copies a module's whole directory, so an untracked file
-      # sitting in one changes that module's derivation hash and costs a Cachix hit.
-      # Catch it at commit time, while it is still easy to delete.
       - id: module-dir-guard
         name: No untracked files in a native-module dir
         always_run: true
@@ -146,16 +141,6 @@ repos:
         language: python
         stages: [pre-commit]
 
-      # Every rust crate now lives in its own cargo workspace with its own flake, so
-      # both hooks walk the workspace roots. There is no repo-root fallback: a
-      # repo-root flake ref would copy the entire tree, git-lfs blobs and all, into
-      # the store on every commit. The walk itself lives in
-      # bin/hooks/rust-module-foreach, which also reports per-module timings.
-      #
-      # fmt takes `--shell native/rust`, clippy does not. rustfmt only parses, so
-      # the per-module shells buy it nothing -- and dim_slam's, which carries the
-      # cuVSLAM SDK, cost 595 s of a CI run to realise for it. clippy compiles, so
-      # it still needs each module's own libraries.
       - id: cargo-fmt
         name: cargo fmt
         entry: bin/hooks/rust-module-foreach --shell native/rust fmt --all
@@ -163,12 +148,6 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      # Not `cargo clippy` in a devShell any more: that had no view of the nix store,
-      # so it recompiled every module's ~340 dependency crates from scratch, and it
-      # left a `target/` in the module directory for the next `path:` build to copy
-      # into the store. `nix build path:<module>#clippy` lints the same crates and
-      # the same targets against the dependency derivations the package build already
-      # made, and no cargo ever runs in a module directory.
       - id: native-module-clippy
         name: clippy (nix)
         entry: bin/hooks/native-module-clippy
