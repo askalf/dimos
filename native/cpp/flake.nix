@@ -23,6 +23,21 @@
           chmod -R u+w $out
         '';
 
+        # A C++ module is built with `nix build path:.#…` from its own directory, and a
+        # `path:` ref copies that directory whole -- so everything in it is part of the
+        # derivation hash. `result` is the trap: `nix build` writes that symlink itself,
+        # which means a module's second build hashes differently from its first and
+        # misses the binary cache forever after. Every C++ module therefore filters its
+        # source through this rather than passing `./.` raw. The rust side gets the same
+        # treatment inside `native/rust`'s `buildNativeModule`.
+        lib.cleanModuleSource = src: pkgs.lib.cleanSourceWith {
+          src = pkgs.lib.cleanSource src;
+          filter = path: type:
+            let base = baseNameOf (toString path); in
+            !(type == "directory"
+              && (base == "build" || base == "target" || base == "__pycache__"));
+        };
+
         devShells.default = pkgs.mkShell {
           packages = [ pkgs.cmake pkgs.pkg-config pkgs.nlohmann_json ];
         };

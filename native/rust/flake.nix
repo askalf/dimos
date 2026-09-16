@@ -32,13 +32,16 @@
         # everything in the directory -- gitignored and untracked alike. Build output
         # is therefore an input to the next build unless it is filtered here: without
         # this, one `cargo build` in a module directory makes its next nix build a
-        # cache miss and drags 2+ GB of `target/` into the store. `cleanSource`
-        # already drops `.git`, editor backups and `result` symlinks.
+        # cache miss and drags 2+ GB of `target/` into the store. `__pycache__` is
+        # the same hazard in miniature: a module with python next to its crate grows
+        # one the moment anybody imports it. `cleanSource` already drops `.git`,
+        # editor backups and `result` symlinks.
         cleanModuleSource = src: pkgs.lib.cleanSourceWith {
           src = pkgs.lib.cleanSource src;
           filter = path: type:
             let base = baseNameOf (toString path); in
-            !(type == "directory" && (base == "target" || base == "build"));
+            !(type == "directory"
+              && (base == "target" || base == "build" || base == "__pycache__"));
         };
 
         # The tree a module's crate2nix build runs in: the module's own directory at

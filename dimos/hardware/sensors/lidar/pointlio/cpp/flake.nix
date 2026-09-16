@@ -139,7 +139,9 @@
           pname = "pointlio_native";
           version = "0.2.0";
 
-          src = ./.;
+          # Not `./.`: a bare directory hands nix the `result` symlink of the previous
+          # build, which changes this derivation's hash and loses the Cachix hit.
+          src = dimos-native-cpp.lib.${system}.cleanModuleSource ./.;
 
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
           buildInputs = [

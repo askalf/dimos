@@ -45,7 +45,9 @@
         packages.dimos-native-module-examples-cpp = pkgs.stdenv.mkDerivation {
           pname = "dimos-native-ping-pong";
           version = "0.1.0";
-          src = ./.;
+          # Not `./.`: a bare directory hands nix the `result` symlink of the previous
+          # build, which changes this derivation's hash and loses the Cachix hit.
+          src = dimos-native-cpp.lib.${system}.cleanModuleSource ./.;
 
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
           buildInputs = [ lcm pkgs.glib pkgs.nlohmann_json zenohc zenohcpp ];
