@@ -8,7 +8,7 @@ Give your coding agent this prompt (works before cloning or in an existing check
 
 ## Install from a terminal
 
-The guided installer sets up system dependencies, uv, Python 3.12, and dimOS. Run it from a terminal:
+The guided installer sets up system dependencies, uv, Python, and dimOS. Run it from a terminal:
 
 ```sh skip
 curl -fsSL https://raw.githubusercontent.com/dimensionalOS/dimos/main/scripts/install.sh | bash
