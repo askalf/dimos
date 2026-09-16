@@ -32,6 +32,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 from types import ModuleType
 from typing import NamedTuple
 
@@ -247,6 +248,52 @@ def test_no_module_reaches_the_repository_root() -> None:
         assert ref.startswith("path:.#") or ref.startswith("github:"), (
             f"{module.qualname}: flake ref {ref!r} is not the `path:.#<package>` convention"
         )
+
+
+# The shared flakes live in this repository, so the very change that introduces
+# native/rust/flake.nix cannot reference it on the default branch -- it is not there
+# yet. Until it merges, the module inputs name this branch. That pin must not outlive
+# the merge, and a comment is not a mechanism: this test is.
+_SHARED_FLAKES = ("native/rust/flake.nix", "native/cpp/flake.nix")
+
+
+def _default_branch_has_shared_flakes() -> bool:
+    """True once the shared flakes exist on the default branch we can see locally."""
+    for ref in ("origin/HEAD", "origin/main", "main"):
+        for flake in _SHARED_FLAKES:
+            done = subprocess.run(
+                ("git", "-C", str(DIMOS_PROJECT_ROOT), "cat-file", "-e", f"{ref}:{flake}"),
+                capture_output=True,
+            )
+            if done.returncode == 0:
+                return True
+    return False
+
+
+@pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
+def test_shared_flake_inputs_are_unpinned_once_they_exist_upstream() -> None:
+    """A module input may name a branch only while the shared flakes are not upstream.
+
+    `github:dimensionalOS/dimos?dir=native/rust` with no `ref=` follows the default
+    branch, which is what every module should do. The branch-pinned form exists purely
+    to bootstrap the change that first adds those flakes; once they are on the default
+    branch the pin is stale -- it freezes every module on one commit of a branch that
+    may be deleted. This test goes red the moment that bootstrap window closes, so
+    nobody has to remember.
+    """
+    if not _default_branch_has_shared_flakes():
+        pytest.skip("shared flakes are not on the default branch yet; the pin is the bootstrap")
+    pinned = [
+        flake.relative_to(DIMOS_PROJECT_ROOT).as_posix()
+        for flake in DIMOS_PROJECT_ROOT.rglob("flake.nix")
+        if ".git" not in flake.parts
+        and re.search(r'url = "github:dimensionalOS/dimos\?ref=', flake.read_text())
+    ]
+    assert not pinned, (
+        "these flakes still pin the shared input to a branch, now that it is on the "
+        f"default branch: {sorted(pinned)} -- drop the `ref=` so the input follows the "
+        "default branch"
+    )
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs git HEAD for object hashes")
