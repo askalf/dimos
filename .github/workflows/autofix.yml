@@ -34,40 +34,16 @@ jobs:
       - name: autofix.ci
         uses: autofix-ci/action@v1
 
-  # Its own job, so `lint` keeps its one-minute budget: installing nix and relocking
-  # fourteen locks cannot fit in that, and raising lint's timeout would let every
-  # ordinary run hang for fifteen minutes instead of failing fast.
-  shared-flakes-changed:
-    timeout-minutes: 2
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read  # For checkout
-    outputs:
-      changed: ${{ steps.check.outputs.changed }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # diffing against the PR base needs history
-      - name: Did native/{rust,cpp} change?
-        id: check
-        run: |
-          set -euo pipefail
-          base=${{ github.event.pull_request.base.sha }}
-          if git diff --quiet "$base"...HEAD -- native/rust native/cpp; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
+  # Its own job, so `lint` keeps its one-minute budget: installing nix cannot fit in
+  # that, and raising lint's timeout would let every ordinary run hang for fifteen
+  # minutes instead of failing fast.
+  #
   # The shared flakes live in this repository, so a change to native/{rust,cpp} lands
   # with every module's lock still pinning the revision before it. That cannot be
   # fixed at commit time: a lock records a narHash of the FETCHED tree, so the
   # revision has to be on the remote first. Here it is -- so relock and let autofix
   # commit the result back, the way it already does for ruff and uv.
   relock-shared-flakes:
-    needs: shared-flakes-changed
-    if: needs.shared-flakes-changed.outputs.changed == 'true'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:
@@ -77,10 +53,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0  # comparing a pinned revision's tree with this one needs history
+          # Diffing against the PR base, and comparing a pinned revision's tree with
+          # this one, are both unanswerable from a depth-1 checkout.
+          fetch-depth: 0
+      # Guarded because installing nix costs more than everything else here, and most
+      # PRs touch neither shared flake.
+      - name: Did native/{rust,cpp} change?
+        id: shared
+        run: |
+          set -euo pipefail
+          base=${{ github.event.pull_request.base.sha }}
+          if git diff --quiet "$base"...HEAD -- native/rust native/cpp; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install Nix
+        if: steps.shared.outputs.changed == 'true'
         run: bash docker/ros/install-nix.sh
       - name: Relock the modules onto this revision
+        if: steps.shared.outputs.changed == 'true'
         run: python3 bin/relock-shared-flakes
       - name: autofix.ci
+        if: steps.shared.outputs.changed == 'true'
         uses: autofix-ci/action@v1
