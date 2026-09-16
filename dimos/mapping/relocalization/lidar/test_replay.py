@@ -19,6 +19,8 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
+pytest.importorskip("dimos_voxel_ray_tracing")
+
 from dimos.mapping.relocalization.lidar.replay import (
     LOADED_MAP_STREAM,
     fix_error,
