@@ -353,6 +353,81 @@ def test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream() -> No
     )
 
 
+def _locked_in_repo_inputs() -> dict[str, list[tuple[str, str]]]:
+    """flake.lock path -> the (rev, dir) of each in-repo input it pins."""
+    locked: dict[str, list[tuple[str, str]]] = {}
+    for lock in DIMOS_PROJECT_ROOT.rglob("flake.lock"):
+        if ".git" in lock.parts:
+            continue
+        nodes = json.loads(lock.read_text()).get("nodes", {})
+        pins = [
+            (node["locked"]["rev"], node["locked"]["dir"])
+            for node in nodes.values()
+            if node.get("locked", {}).get("repo") == "dimos"
+            and node["locked"].get("owner") == "dimensionalOS"
+            and "dir" in node["locked"]
+        ]
+        if pins:
+            locked[lock.relative_to(DIMOS_PROJECT_ROOT).as_posix()] = pins
+    return locked
+
+
+def _tree_at(rev: str, path: str) -> str | None:
+    """The git tree hash of `path` at `rev`, or None if the revision cannot be had."""
+
+    def read() -> str | None:
+        done = subprocess.run(
+            ("git", "-C", str(DIMOS_PROJECT_ROOT), "rev-parse", f"{rev}:{path}"),
+            capture_output=True,
+            text=True,
+        )
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    if (tree := read()) is not None:
+        return tree
+    # CI checks out at depth 1, so a locked revision is usually absent. Ask for that
+    # one commit rather than giving up -- a full history here is 36 GB.
+    subprocess.run(
+        ("git", "-C", str(DIMOS_PROJECT_ROOT), "fetch", "--depth=1", "origin", rev),
+        capture_output=True,
+        timeout=120,
+    )
+    return read()
+
+
+@pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
+def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
+    """A module's lock must name a revision whose shared tree is the one in this commit.
+
+    `nix flake lock` does not notice that the shared flake moved -- it only checks
+    that the lock is complete -- so a change to native/rust can land while every
+    module still builds against the revision before it, and nothing says so. The
+    revision itself is free to be older than HEAD; what must match is the content it
+    pins.
+
+    Shallow clones cannot answer the question at all, so this skips rather than
+    guesses when the pinned revision is not in the checkout.
+    """
+    stale: dict[str, list[str]] = {}
+    checked = 0
+    for lock, pins in _locked_in_repo_inputs().items():
+        for rev, subdir in pins:
+            pinned = _tree_at(rev, subdir)
+            if pinned is None:
+                continue  # shallow clone: the revision is not here to compare
+            checked += 1
+            here = _tree_at("HEAD", subdir)
+            if pinned != here:
+                stale.setdefault(lock, []).append(f"{subdir} @ {rev[:10]}")
+    if not checked:
+        pytest.skip("no pinned revision is present in this checkout to compare against")
+    assert not stale, (
+        "these locks pin a revision whose shared tree is not the one in this commit, "
+        f"so the modules build against the older shared flake: {stale} -- run "
+        "`nix flake update <input>` in each and commit the lock"
+    )
+
+
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs git HEAD for object hashes")
 def test_manifest_is_deterministic() -> None:
     modules = _SCRIPT.discover()
