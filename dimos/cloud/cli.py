@@ -118,9 +118,13 @@ def _progress_columns(width: int) -> list[Any]:
         TransferSpeedColumn,
     )
 
+    from dimos.cli import theme
+
     cols: list[Any] = [
         TextColumn("[progress.description]{task.description}"),
-        BarColumn(bar_width=None),
+        # The theme's green, so the fill matches the sign-in card's edge instead
+        # of rich's magenta default.
+        BarColumn(bar_width=None, complete_style=theme.AGENT, finished_style=theme.AGENT),
         TaskProgressColumn(),
         DownloadColumn(),
     ]

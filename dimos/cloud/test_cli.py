@@ -114,3 +114,13 @@ def test_ticker_renders_context_above_the_bar() -> None:
     header, body = seen[-1].renderables
     assert header.plain == "rec.db · 1.9 GB → 952.8 MB compressed"
     assert body is bar, "the bar itself sits under the context line"
+
+
+def test_bar_fills_in_the_theme_green() -> None:
+    from rich.progress import BarColumn
+
+    from dimos.cli import theme
+
+    (bar,) = [c for c in cli._progress_columns(100) if isinstance(c, BarColumn)]
+    assert str(bar.complete_style) == theme.AGENT
+    assert str(bar.finished_style) == theme.AGENT
