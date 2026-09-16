@@ -248,8 +248,12 @@ jobs:
     # and with no shared cargo workspace left they compile each module's dependency
     # graph in turn. The cache below makes repeat runs cheap; a cold run is the
     # expensive one.
-    timeout-minutes: 60
+    timeout-minutes: 30
     runs-on: ubuntu-latest
+    env:
+      # A fresh runner never reuses an incremental build, and it is 600+ MB of
+      # cache entry that would be restored only to be thrown away.
+      CARGO_INCREMENTAL: "0"
     permissions:
       contents: read  # For checkout
 
@@ -292,19 +296,52 @@ jobs:
 
       # The clippy hook compiles every module's dependency graph. They all share the
       # repo-root target dir (.cargo/config.toml), so one cache entry covers the lot.
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+      #
+      # Not Swatinem/rust-cache: it runs `cargo metadata` at the repo root, and since
+      # the root workspace was split there is no root Cargo.toml for it to find. It
+      # failed with exit 101 and fell back to a key that considered no Cargo.lock at
+      # all, so every run recompiled every module from scratch. Keying on the module
+      # locks by hand is the whole of what it was doing for us.
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@v4
         with:
-          # Only main writes the cache, so a PR run cannot evict main's entry
-          # from the repo's 10GB budget. PR runs still restore from it.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            !target/debug/incremental
+          key: cargo-lint-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-lint-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
+        with:
+          # Always show hook output. Both rust hooks report how long each module's
+          # devShell and cargo run took, and a passing hook hides that otherwise --
+          # which is how a 25-minute lint job went unexplained.
+          extra_args: --all-files --verbose
+
+      # Only main writes the cache, so a PR run cannot evict main's entry from the
+      # repo's 10GB budget. PR runs still restore from it.
+      - name: Save cargo build cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            !target/debug/incremental
+          key: cargo-lint-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
 
   rust:
     timeout-minutes: 30
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
     permissions:
       contents: read  # For checkout
 
@@ -315,12 +352,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+      # Same reason as the lint job: Swatinem/rust-cache needs a root Cargo.toml,
+      # which the workspace split removed, so it cached nothing.
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@v4
         with:
-          # Only main writes the cache, so a PR run cannot evict main's entry
-          # from the repo's 10GB budget. PR runs still restore from it.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            !target/debug/incremental
+          key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-${{ runner.arch }}-
       # There is no repo-wide cargo workspace any more: every module is its own
       # workspace with its own lock. fmt and clippy moved to the pre-commit hooks in
       # the lint job, which enter each module's devShell; what is left here is the
@@ -381,6 +426,20 @@ jobs:
             dimos/navigation/nav_3d/mls_planner/test_transformer.py
       - name: Bake e2e tests
         run: uv run pytest -m bake_e2e dimos/cli/bake/test_bake_e2e.py --no-cov
+
+      # Only main writes the cache, so a PR run cannot evict main's entry from the
+      # repo's 10GB budget. PR runs still restore from it.
+      - name: Save cargo build cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            !target/debug/incremental
+          key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
 
   flake-locks-current:
     # The gap this repo had: every nix invocation in CI passed `--no-write-lock-file`,

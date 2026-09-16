@@ -149,69 +149,18 @@ repos:
       # Every rust crate now lives in its own cargo workspace with its own flake, so
       # both hooks walk the workspace roots and enter each one's own devShell. There
       # is no repo-root fallback: a repo-root flake ref would copy the entire tree,
-      # git-lfs blobs and all, into the store on every commit.
+      # git-lfs blobs and all, into the store on every commit. The walk itself lives
+      # in bin/hooks/rust-module-foreach, which also reports per-module timings.
       - id: cargo-fmt
         name: cargo fmt
-        entry: |
-          bash -c '
-            set -euo pipefail
-            top=$(git rev-parse --show-toplevel)
-            system=$(nix eval --raw --impure --expr builtins.currentSystem)
-            git ls-files "*Cargo.toml" | while read -r m; do
-              cargo locate-project --manifest-path "$m" --workspace --message-format plain
-            done | sort -u | while read -r root; do
-              dir=$(dirname "$root")
-              while [ "$dir" != "$top" ] && [ ! -f "$dir/flake.nix" ]; do dir=$(dirname "$dir"); done
-              if [ "$dir" = "$top" ]; then
-                echo "no module flake above $root -- refusing to fall back to the repo-root" >&2
-                echo "flake, which would copy the whole tree (git-lfs blobs included)." >&2
-                exit 1
-              fi
-              # A module may declare it does not support this platform: realsense links
-              # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off
-              # Linux. Such a module has no devShell here and cannot be linted here
-              # either, so skip it rather than block the commit. CI lints on Linux,
-              # where the devShell does exist.
-              if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
-                echo "skipping $root: $dir declares no devShell for $system" >&2
-                continue
-              fi
-              nix develop "path:$dir" -c cargo fmt --manifest-path "$root" --all
-            done
-          '
+        entry: bin/hooks/rust-module-foreach fmt --all
         language: system
         types: [rust]
         pass_filenames: false
 
       - id: cargo-clippy
         name: cargo clippy
-        entry: |
-          bash -c '
-            set -euo pipefail
-            top=$(git rev-parse --show-toplevel)
-            system=$(nix eval --raw --impure --expr builtins.currentSystem)
-            git ls-files "*Cargo.toml" | while read -r m; do
-              cargo locate-project --manifest-path "$m" --workspace --message-format plain
-            done | sort -u | while read -r root; do
-              dir=$(dirname "$root")
-              while [ "$dir" != "$top" ] && [ ! -f "$dir/flake.nix" ]; do dir=$(dirname "$dir"); done
-              if [ "$dir" = "$top" ]; then
-                echo "no module flake above $root -- refusing to fall back to the repo-root" >&2
-                echo "flake, which would copy the whole tree (git-lfs blobs included)." >&2
-                exit 1
-              fi
-              # A module may declare it does not support this platform: realsense links
-              # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off
-              # Linux. Such a module has no devShell here and cannot be linted here
-              # either, so skip it rather than block the commit. CI lints on Linux,
-              # where the devShell does exist.
-              if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
-                echo "skipping $root: $dir declares no devShell for $system" >&2
-                continue
-              fi
-              nix develop "path:$dir" -c cargo clippy --manifest-path "$root" --workspace --all-targets -- -D warnings
-            done
-          '
+        entry: bin/hooks/rust-module-foreach clippy --workspace --all-targets -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false

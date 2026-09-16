@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Run a cargo command in every rust module's own devShell.
+#
+# Since the repo workspace was split there is no single `cargo <cmd> --workspace`
+# that reaches every crate: each module is its own workspace with its own lock,
+# and its system libraries (librealsense, sqlite, the cuVSLAM SDK) exist only
+# inside its own flake's devShell. So walk the workspace roots and enter each
+# shell in turn.
+#
+# Usage: rust-module-foreach <cargo subcommand> [args...]
+#   e.g. rust-module-foreach fmt --all
+#        rust-module-foreach clippy --workspace --all-targets -- -D warnings
+# `--manifest-path` is inserted right after the subcommand, so a trailing
+# `-- -D warnings` stays trailing.
+#
+# Every module reports its own devShell and cargo timings, because a passing
+# pre-commit hook prints nothing and that is how a 25-minute CI lint job went
+# unexplained.
+set -euo pipefail
+
+top=$(git rev-parse --show-toplevel)
+system=$(nix eval --raw --impure --expr builtins.currentSystem)
+subcommand=$1
+shift
+
+# Not `... | while read`, which would run the loop in a subshell and turn the
+# hard failure below into a silent pass.
+roots=$(git ls-files "*Cargo.toml" | while read -r manifest; do
+    cargo locate-project --manifest-path "$manifest" --workspace --message-format plain
+done | sort -u)
+
+while read -r root; do
+    dir=$(dirname "$root")
+    while [ "$dir" != "$top" ] && [ ! -f "$dir/flake.nix" ]; do dir=$(dirname "$dir"); done
+    if [ "$dir" = "$top" ]; then
+        echo "no module flake above $root -- refusing to fall back to the repo-root" >&2
+        echo "flake, which would copy the whole tree (git-lfs blobs included)." >&2
+        exit 1
+    fi
+
+    # A module may declare it does not support this platform: realsense links
+    # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off
+    # Linux. Such a module has no devShell here and cannot be linted here either,
+    # so skip it rather than block the commit. CI lints on Linux, where the
+    # devShell does exist.
+    if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
+        echo "skipping ${root#"$top"/}: $dir declares no devShell for $system" >&2
+        continue
+    fi
+
+    started=$(date +%s)
+    nix develop "path:$dir" -c true
+    entered=$(date +%s)
+    nix develop "path:$dir" -c cargo "$subcommand" --manifest-path "$root" "$@"
+    finished=$(date +%s)
+    printf '  cargo %s %s: devShell %ss, cargo %ss\n' \
+        "$subcommand" "${dir#"$top"/}" "$((entered - started))" "$((finished - entered))" >&2
+done <<< "$roots"
