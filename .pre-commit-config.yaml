@@ -146,6 +146,7 @@ repos:
           bash -c '
             set -euo pipefail
             top=$(git rev-parse --show-toplevel)
+            system=$(nix eval --raw --impure --expr builtins.currentSystem)
             git ls-files "*Cargo.toml" | while read -r m; do
               cargo locate-project --manifest-path "$m" --workspace --message-format plain
             done | sort -u | while read -r root; do
@@ -155,6 +156,15 @@ repos:
                 echo "no module flake above $root -- refusing to fall back to the repo-root" >&2
                 echo "flake, which would copy the whole tree (git-lfs blobs included)." >&2
                 exit 1
+              fi
+              # A module may declare it does not support this platform: realsense links
+              # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off
+              # Linux. Such a module has no devShell here and cannot be linted here
+              # either, so skip it rather than block the commit. CI lints on Linux,
+              # where the devShell does exist.
+              if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
+                echo "skipping $root: $dir declares no devShell for $system" >&2
+                continue
               fi
               nix develop "path:$dir" -c cargo fmt --manifest-path "$root" --all
             done
@@ -169,6 +179,7 @@ repos:
           bash -c '
             set -euo pipefail
             top=$(git rev-parse --show-toplevel)
+            system=$(nix eval --raw --impure --expr builtins.currentSystem)
             git ls-files "*Cargo.toml" | while read -r m; do
               cargo locate-project --manifest-path "$m" --workspace --message-format plain
             done | sort -u | while read -r root; do
@@ -178,6 +189,15 @@ repos:
                 echo "no module flake above $root -- refusing to fall back to the repo-root" >&2
                 echo "flake, which would copy the whole tree (git-lfs blobs included)." >&2
                 exit 1
+              fi
+              # A module may declare it does not support this platform: realsense links
+              # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off
+              # Linux. Such a module has no devShell here and cannot be linted here
+              # either, so skip it rather than block the commit. CI lints on Linux,
+              # where the devShell does exist.
+              if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
+                echo "skipping $root: $dir declares no devShell for $system" >&2
+                continue
               fi
               nix develop "path:$dir" -c cargo clippy --manifest-path "$root" --workspace --all-targets -- -D warnings
             done
