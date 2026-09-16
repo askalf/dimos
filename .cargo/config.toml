@@ -1,12 +1,17 @@
 [registry]
 global-min-publish-age = "7 days"
 
-# Every native module is built with `nix build path:.#…`, and a `path:` flake ref
-# copies the whole directory -- gitignored output included. A module-local `target/`
-# would therefore be re-copied into the store on every rebuild (2.3 GB for dim_slam
-# alone). One shared target dir at the repo root keeps those directories clean, and
-# lets the modules, which no longer share a cargo workspace, still share build
-# artifacts. Paths here resolve against this config file's directory, so this is the
-# repo root's `target/` no matter which module cargo is invoked from.
+# Without this, cargo writes `target/` beside each crate -- which, now that the root
+# workspace is gone, means inside every module directory. `nix build path:.#…` copies
+# a module's whole directory, gitignored output included, so that `target/` becomes
+# part of the derivation: the hash changes after any local cargo build, the module
+# stops matching what CI published, and it recompiles from scratch instead of being
+# substituted from Cachix. This is true of every module -- dim_slam is only the
+# largest, at 2.3 GB.
+#
+# The root workspace used to give us this for free, since cargo puts `target/` at the
+# workspace root. Paths here resolve against this file's directory, so `target` is the
+# repo root's whichever module cargo runs in -- which is also what lets modules that
+# no longer share a workspace still share build artifacts.
 [build]
 target-dir = "target"
