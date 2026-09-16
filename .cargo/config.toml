@@ -1,2 +1,12 @@
 [registry]
 global-min-publish-age = "7 days"
+
+# Every native module is built with `nix build path:.#…`, and a `path:` flake ref
+# copies the whole directory -- gitignored output included. A module-local `target/`
+# would therefore be re-copied into the store on every rebuild (2.3 GB for dim_slam
+# alone). One shared target dir at the repo root keeps those directories clean, and
+# lets the modules, which no longer share a cargo workspace, still share build
+# artifacts. Paths here resolve against this config file's directory, so this is the
+# repo root's `target/` no matter which module cargo is invoked from.
+[build]
+target-dir = "target"
