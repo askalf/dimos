@@ -128,7 +128,9 @@ _rerun_config = {
         "world/rear_camera": _render_h265,
         "world/front_camera_info": _render_front_camera_info,
         "world/rear_camera_info": _render_rear_camera_info,
-        **planner_visual_override(PLANNER_VIZ_HZ, VOXEL_SIZE_M, WALL_CLEARANCE_M),
+        **planner_visual_override(
+            PLANNER_VIZ_HZ, voxel_size=VOXEL_SIZE_M, wall_clearance_m=WALL_CLEARANCE_M
+        ),
     },
     "static": {
         "world/robot_body": _static_robot_body,

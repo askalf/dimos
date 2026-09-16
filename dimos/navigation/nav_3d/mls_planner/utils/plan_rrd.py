@@ -31,7 +31,11 @@ import typer
 
 from dimos.mapping.ray_tracing.module import TF_MATCH_TOLERANCE_S
 from dimos.mapping.ray_tracing.transformer import RayTraceMap, pose_from_tf
-from dimos.mapping.ray_tracing.utils.loaded_map import first_loaded_map, place_loaded_map
+from dimos.mapping.ray_tracing.utils.loaded_map import (
+    LOADED_MAP_STREAM,
+    first_loaded_map,
+    place_loaded_map,
+)
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF, tf_stream
 from dimos.memory.type.observation import Observation
@@ -338,11 +342,6 @@ def _seed(
     return tiles_left
 
 
-def _apply_tile(planners: list[MLSPlanner]) -> int:
-    """Apply one tile on every planner. Returns the most tiles left."""
-    return max(p.apply_full_map_tile() or 0 for p in planners)
-
-
 def _build_planners(
     configs: list[tuple[float, float, float]],
     voxel_size: float,
@@ -514,7 +513,7 @@ def main(
         (0.0, 0.0, 0.0), "--goal", help="Planner goal xyz; override per recording"
     ),
     loaded_map_stream: str = typer.Option(
-        "loaded_map",
+        LOADED_MAP_STREAM,
         "--loaded-map-stream",
         help="Stream holding a map cloud to seed at its timestamp, placed by tf, when present",
     ),
@@ -662,7 +661,7 @@ def main(
                     tiles_left = _seed(ray, [p for _, _, p in planners], seed_pts, start)
                     loaded_map = None
                 elif tiles_left:
-                    tiles_left = _apply_tile([p for _, _, p in planners])
+                    tiles_left = max(p.apply_full_map_tile() or 0 for _, _, p in planners)
                     if tiles_left == 0:
                         print("\nfull map load finished")
                 if seeded_run:

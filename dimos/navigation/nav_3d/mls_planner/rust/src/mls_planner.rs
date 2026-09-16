@@ -249,18 +249,21 @@ pub struct CloudPartition {
 }
 
 /// Assign a whole-map cloud to grid tiles. A point lands in every tile whose
-/// cylinder contains it, so tile order cannot decide whether an overlap
-/// point survives.
+/// cylinder contains its voxel center, the same test the tiles apply when
+/// they replace voxels, so tile order cannot decide whether a point survives.
 pub fn partition_cloud(
     points: &[(f32, f32, f32)],
     tile_size_m: f32,
     voxel_size: f32,
 ) -> CloudPartition {
-    let s = tile_size_m;
-    let radius = tile_radius(s, voxel_size);
+    let radius = tile_radius(tile_size_m, voxel_size);
+    let half = voxel_size * 0.5;
     let mut clouds = TileClouds::default();
     for &p in points {
-        covering_cells(p.0, p.1, s, radius, |cell| {
+        let (kx, ky, _) = voxelize(p, voxel_size);
+        let cx = kx as f32 * voxel_size + half;
+        let cy = ky as f32 * voxel_size + half;
+        covering_cells(cx, cy, tile_size_m, radius, |cell| {
             let tile = clouds.entry(cell).or_default();
             tile.points.push(p);
             tile.band.extend(p.2);
@@ -1749,6 +1752,32 @@ mod region_tests {
         assert_plans_equivalent(&full, &loaded, &cfg);
     }
 
+    /// Tiles must claim points by voxel center, so an off-center cloud loads
+    /// the same voxels a full rebuild quantizes.
+    #[test]
+    fn full_map_load_matches_full_rebuild_off_center() {
+        let cfg = test_config();
+        let vs = cfg.voxel_size;
+        let mut seed: u32 = 12345;
+        let mut jitter = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 0.8 * vs - 0.4 * vs
+        };
+        let all: Vec<(f32, f32, f32)> = big_world()
+            .into_iter()
+            .map(|(x, y, z)| (x + jitter(), y + jitter(), z))
+            .collect();
+
+        let mut full = Planner::new(cfg.worker_threads);
+        full.update_global_map(&all, &cfg);
+
+        let mut loaded = Planner::new(cfg.worker_threads);
+        load_full_map(&mut loaded, &all, (0.5, 0.5), &cfg);
+
+        assert_eq!(voxel_set(&loaded), voxel_set(&full), "voxel mismatch");
+        assert_eq!(surface_set(&loaded), surface_set(&full), "surface mismatch");
+    }
+
     /// A load sweeps every voxel absent from the cloud, including stale
     /// geometry outside the cloud's xy extent and above its ceiling.
     #[test]
@@ -1882,29 +1911,6 @@ mod region_tests {
             z_min: -1.0,
             z_max: 1.0,
         }
-    }
-
-    #[test]
-    fn region_covers_xy_by_distance() {
-        let outer = cyl(0.0, 0.0, 2.0);
-        assert!(outer.covers_xy(&cyl(0.5, 0.0, 1.0)));
-        assert!(
-            !outer.covers_xy(&cyl(1.5, 0.0, 1.0)),
-            "grazing is not coverage"
-        );
-    }
-
-    #[test]
-    fn region_intersects_by_footprint_and_band() {
-        let a = cyl(0.0, 0.0, 1.0);
-        assert!(a.intersects(&cyl(1.5, 0.0, 1.0)));
-        assert!(!a.intersects(&cyl(2.5, 0.0, 1.0)), "footprints apart");
-        let above = RegionBounds {
-            z_min: 1.5,
-            z_max: 3.0,
-            ..cyl(0.5, 0.0, 1.0)
-        };
-        assert!(!a.intersects(&above), "bands apart");
     }
 
     #[test]

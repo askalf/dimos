@@ -260,18 +260,11 @@ class LidarRelocalizer:
     def relocalize(
         self, local_map: PointCloud, world_frame: str, map_frame: str
     ) -> Transform | None:
+        """The ``world_frame -> map_frame`` transform, or ``None`` when nothing was good enough."""
         return self.attempt(local_map, world_frame, map_frame).fix
 
     def attempt(self, local_map: PointCloud, world_frame: str, map_frame: str) -> RelocAttempt:
-        """The ``world_frame -> map_frame`` transform, or ``None`` when nothing was good enough.
-
-        Ready to publish: stamped with the frames the TF tree expects, and
-        already inverted from the placement open3d computes. Refusing is a
-        real answer and the common one for a place the prior map never saw.
-        Everything the decision rests on - the aligner's knobs and
-        ``fitness_threshold`` - is this object's config, so a caller
-        configures it once and checks whether it got a transform.
-        """
+        """The fix if accepted, ready to publish, with the registration it was scored on."""
         result = self.align(local_map)
         logger.info(f"align: fitness={result.fitness:.3f} rmse={result.inlier_rmse:.3f}")
         if result.fitness < self.config.fitness_threshold:

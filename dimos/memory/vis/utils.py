@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 
 # Rerun voxel render size at each replay tool's default voxel size.
 DEFAULT_RENDER_VOXEL = 0.05
+LOADED_MAP_COLOR = (130, 130, 130)
+PREMAP_POINT_RADIUS = 0.008
 
 
 def default_render_voxel(voxel_size: float, default_voxel_size: float) -> float:
@@ -52,7 +54,10 @@ def voxel_map_points(pts: NDArray[np.float32], voxel_size: float) -> Archetype:
 def log_loaded_map(points: NDArray[np.float32]) -> None:
     import rerun as rr
 
-    rr.log("world/loaded_map", rr.Points3D(points, colors=[[130, 130, 130]], radii=0.008))
+    rr.log(
+        "world/loaded_map",
+        rr.Points3D(points, colors=[LOADED_MAP_COLOR], radii=PREMAP_POINT_RADIUS),
+    )
 
 
 def mosaic(

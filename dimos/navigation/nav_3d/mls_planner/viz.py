@@ -17,8 +17,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeAlias
 
 import numpy as np
 
@@ -30,6 +31,9 @@ if TYPE_CHECKING:
     from rerun._baseclasses import Archetype
 
 GRAPH_Z_LIFT = 0.05
+
+# A bridge visual_override entry: a renderer, or None to hide the entity.
+VisualOverride: TypeAlias = "Callable[..., Archetype | None] | None"
 
 TIGHT_COLOR = (4.0, 8.0, 48.0)
 OPEN_COLOR = (150.0, 200.0, 255.0)
@@ -108,7 +112,7 @@ def planner_visual_override(
     voxel_size: float,
     wall_clearance_m: float,
     clearance_clamp_m: float = 1.0,
-) -> dict[str, Any]:
+) -> dict[str, VisualOverride]:
     """Bridge overrides for the planner's debug entities, keyed off its own publish rate.
 
     Pass the same values given to ``MLSPlannerNative.blueprint(...)``.

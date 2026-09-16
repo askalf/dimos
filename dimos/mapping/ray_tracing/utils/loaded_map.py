@@ -24,6 +24,8 @@ from dimos.memory.tf import StreamTF
 from dimos.memory.type.observation import Observation
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
+LOADED_MAP_STREAM = "loaded_map"
+
 
 def first_loaded_map(store: SqliteStore, stream: str) -> Observation[PointCloud2] | None:
     """The earliest loaded map in the recording, or None without the stream."""

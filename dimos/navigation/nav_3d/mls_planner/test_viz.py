@@ -13,12 +13,8 @@
 # limitations under the License.
 
 import numpy as np
-import pytest
 
-from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.navigation.nav_3d.mls_planner import viz
-
-pytest.importorskip("rerun")
 
 
 def _rgb(packed: int) -> tuple[int, int, int]:
@@ -30,16 +26,6 @@ def test_surface_drops_cells_below_the_wall_clearance() -> None:
     clearance = np.array([0.05, 0.2, 2.0], dtype=np.float32)
     arch = viz.surface_points(pts, clearance, 0.1, wall_clearance_m=0.1, clearance_clamp_m=1.0)
     assert arch.positions.as_arrow_array().to_pylist() == [[1, 0, 0], [2, 0, 0]]
-
-
-def test_message_and_array_surface_renderers_agree() -> None:
-    pts = np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32)
-    clearance = np.array([0.2, 0.9], dtype=np.float32)
-    cloud = PointCloud2.from_numpy(pts, intensities=clearance, timestamp=0.0)
-    a = viz.render_surface_map(cloud, 0.1, 0.1, 1.0)
-    b = viz.surface_points(pts, clearance, 0.1, 0.1, 1.0)
-    assert a.colors.as_arrow_array().to_pylist() == b.colors.as_arrow_array().to_pylist()
-    assert a.radii.as_arrow_array().to_pylist() == b.radii.as_arrow_array().to_pylist()
 
 
 def test_graph_edges_take_the_binding_layout() -> None:

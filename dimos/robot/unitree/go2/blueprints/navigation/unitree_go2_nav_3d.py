@@ -82,7 +82,7 @@ def _recording_dir() -> Path:
 _RECORDING_DIR = _recording_dir()
 
 
-nav_rerun_config = {
+_nav_rerun_config = {
     **rerun_config,
     "max_hz": {
         **rerun_config["max_hz"],
@@ -107,7 +107,7 @@ nav_rerun_config = {
 }
 
 unitree_go2_nav_3d = autoconnect(
-    vis_module(viewer_backend=global_config.viewer, rerun_config=nav_rerun_config),
+    vis_module(viewer_backend=global_config.viewer, rerun_config=_nav_rerun_config),
     # "mcf" for stair traversal
     GO2Connection.blueprint(
         lidar=False,

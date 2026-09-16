@@ -66,7 +66,9 @@ _nav_rerun_config = {
         "world/global_map": _render_global_map,
         "world/planner_path": None,
         "world/path": _render_path,
-        **planner_visual_override(planner_viz_hz, voxel_size, wall_clearance_m),
+        **planner_visual_override(
+            planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=wall_clearance_m
+        ),
     },
 }
 

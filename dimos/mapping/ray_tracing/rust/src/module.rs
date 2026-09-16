@@ -152,8 +152,7 @@ impl SeedLoad {
     }
 }
 
-/// Where the one loaded map is in its journey into the voxel map. Only Idle
-/// accepts a cloud.
+/// Stage of the one loaded map. Only Idle accepts a cloud.
 enum SeedState {
     Idle,
     Placing,

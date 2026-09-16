@@ -31,7 +31,11 @@ from numpy.typing import NDArray
 import typer
 
 from dimos.mapping.ray_tracing.module import TF_MATCH_TOLERANCE_S
-from dimos.mapping.ray_tracing.utils.loaded_map import first_loaded_map, place_loaded_map
+from dimos.mapping.ray_tracing.utils.loaded_map import (
+    LOADED_MAP_STREAM,
+    first_loaded_map,
+    place_loaded_map,
+)
 from dimos.mapping.ray_tracing.voxel_map import VoxelRayMapper
 from dimos.memory.store.sqlite import SqliteStore
 from dimos.memory.tf import StreamTF
@@ -150,7 +154,7 @@ def main(
         None, "--from-time", help="Start replay at this stream timestamp (s)"
     ),
     loaded_map_stream: str = typer.Option(
-        "loaded_map",
+        LOADED_MAP_STREAM,
         "--loaded-map-stream",
         help="Stream holding a map cloud to seed at its timestamp, placed by tf, when present",
     ),

@@ -157,9 +157,29 @@ def test_full_map_load_yields_to_an_overlapping_live_region() -> None:
     assert ghosts == []
 
 
+def test_full_map_load_keeps_voxels_at_tile_edges() -> None:
+    lone = (3.121, 1.361, 0.04)
+    filler = [(x, y, 0.04) for x in np.arange(4.5, 7.5, 0.2) for y in np.arange(0.5, 3.5, 0.2)]
+    pts = np.array([lone, *filler], dtype=np.float32)
+    ref = MLSPlanner(voxel_size=0.08, robot_height=0.4, full_map_tile_m=4.0)
+    ref.update_global_map(pts)
+    tiled = MLSPlanner(voxel_size=0.08, robot_height=0.4, full_map_tile_m=4.0)
+    tiled.start_full_map_load(pts, (2.0, 2.0))
+    while tiled.apply_full_map_tile():
+        pass
+    assert sorted(map(tuple, tiled.voxel_map())) == sorted(map(tuple, ref.voxel_map()))
+
+
 def test_clear_drops_a_pending_load() -> None:
     planner = make_planner()
     assert planner.start_full_map_load(flat_floor(), (0.0, 0.0)) > 1
     planner.clear()
     assert planner.apply_full_map_tile() is None
     assert planner.voxel_count() == 0
+
+
+def test_full_rebuild_drops_a_pending_load() -> None:
+    planner = make_planner()
+    assert planner.start_full_map_load(flat_floor(), (0.0, 0.0)) > 1
+    planner.update_global_map(flat_floor())
+    assert planner.apply_full_map_tile() is None

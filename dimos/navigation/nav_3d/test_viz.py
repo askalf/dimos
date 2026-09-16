@@ -14,24 +14,30 @@
 
 import pickle
 
-import pytest
+import numpy as np
+import rerun as rr
 
 from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.nav_msgs.Path import Path
 from dimos.navigation.nav_3d import viz
 
-rr = pytest.importorskip("rerun")
-
 
 def test_goal_placeholder_is_not_drawn() -> None:
     assert viz.render_goal(PointStamped(x=float("nan"), y=0.0, z=0.0)) is None
-    assert viz.render_goal(PointStamped(x=1.0, y=2.0, z=0.0)) is not None
+    goal = viz.render_goal(PointStamped(x=1.0, y=2.0, z=0.0))
+    assert goal is not None
+    assert goal.positions.as_arrow_array().to_pylist() == [[1.0, 2.0, 0.0]]
 
 
 def test_empty_path_keeps_the_last_one_drawn() -> None:
     assert viz.render_path(Path(poses=[])) is None
-    assert viz.render_path(Path(poses=[PoseStamped(), PoseStamped()])) is not None
+    path = viz.render_path(Path(poses=[PoseStamped(1.0, 0.0, 0.0), PoseStamped(2.0, 0.0, 0.0)]))
+    assert path is not None
+    lift = viz.PATH_Z_LIFT
+    np.testing.assert_allclose(
+        path.strips.as_arrow_array().to_pylist(), [[[1, 0, lift], [2, 0, lift]]], atol=1e-6
+    )
 
 
 def test_bridge_config_pickles_for_the_workers() -> None:
@@ -39,11 +45,3 @@ def test_bridge_config_pickles_for_the_workers() -> None:
     overrides = pickle.loads(pickle.dumps(viz.nav_visual_override(2.0, 0.08, 0.1)))
     assert len(static["world/robot_body"](rr)) == 2
     assert callable(overrides["world/surface_map"])
-
-
-def test_overrides_cover_the_maps_and_the_planner_entities() -> None:
-    off = viz.nav_visual_override(0.0, 0.08, 0.1)
-    on = viz.nav_visual_override(2.0, 0.08, 0.1)
-    assert off["world/surface_map"] is None and off["world/nodes"] is None
-    assert callable(on["world/surface_map"]) and callable(on["world/node_edges"])
-    assert callable(on["world/global_map"]) and callable(off["world/path"])

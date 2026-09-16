@@ -21,12 +21,12 @@ from collections.abc import Callable
 from functools import partial
 import math
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from dimos.memory.vis.utils import voxel_map_points
-from dimos.navigation.nav_3d.mls_planner.viz import planner_visual_override
+from dimos.navigation.nav_3d.mls_planner.viz import VisualOverride, planner_visual_override
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -128,7 +128,7 @@ def nav_visual_override(
     voxel_size: float,
     wall_clearance_m: float,
     clearance_clamp_m: float = 1.0,
-) -> dict[str, Any]:
+) -> dict[str, VisualOverride]:
     """Bridge overrides for the maps, path, goal and the planner's debug entities.
 
     Pass the same values given to ``MLSPlannerNative.blueprint(...)``.

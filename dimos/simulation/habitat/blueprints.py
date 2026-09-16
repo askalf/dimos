@@ -182,7 +182,9 @@ habitat_nav = autoconnect(
         rerun_config=_rerun_config(
             {
                 "world/path": _render_path,
-                **planner_visual_override(planner_viz_hz, voxel_size, wall_clearance_m),
+                **planner_visual_override(
+                    planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=wall_clearance_m
+                ),
             }
         ),
     ).remappings(
