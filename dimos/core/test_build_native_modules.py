@@ -281,13 +281,24 @@ def _in_repo_input_refs() -> dict[str, list[str | None]]:
     return refs
 
 
-def _current_branch() -> str:
+def _current_branch_names() -> set[str]:
+    """Every name this checkout answers to.
+
+    A pull request is checked out detached, where `--abbrev-ref HEAD` is the literal
+    string "HEAD" and names nothing; the branch is then only in the environment the
+    runner sets. Both are consulted so the same test means the same thing on a
+    developer's machine and on a runner.
+    """
     done = subprocess.run(
         ("git", "-C", str(DIMOS_PROJECT_ROOT), "rev-parse", "--abbrev-ref", "HEAD"),
         capture_output=True,
         text=True,
     )
-    return done.stdout.strip()
+    names = {done.stdout.strip()} - {"HEAD", ""}
+    names |= {
+        os.environ[key] for key in ("GITHUB_HEAD_REF", "GITHUB_REF_NAME") if os.environ.get(key)
+    }
+    return names
 
 
 def _default_branch_has_shared_flakes() -> bool:
@@ -316,7 +327,7 @@ def test_in_repo_flake_inputs_name_only_main_or_the_bootstrap_branch() -> None:
     first adds the shared flakes, which is unavoidable because those files do not
     exist on `main` until it merges. Anything else fails here.
     """
-    allowed = {_DEFAULT_BRANCH, None, _current_branch()}
+    allowed = {_DEFAULT_BRANCH, None} | _current_branch_names()
     wrong = {
         flake: [ref for ref in refs if ref not in allowed]
         for flake, refs in _in_repo_input_refs().items()
