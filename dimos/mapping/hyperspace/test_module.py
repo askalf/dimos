@@ -28,7 +28,7 @@ import pytest
 import torch
 import typer
 
-from dimos.mapping.hyperspace import cli, patches as hs, siglip_embedder
+from dimos.mapping.hyperspace import patches as hs, recording, siglip_embedder
 from dimos.mapping.hyperspace.FoundObject import FoundObject, detection_of
 from dimos.mapping.hyperspace.ingest import (
     COMPLETE_STREAM,
@@ -192,7 +192,7 @@ def test_ingest_writes_keyframes_and_one_vector_per_patch(store: SqliteStore) ->
     ingestor = fill(store, ring(3, 2.5))
     assert ingestor.stats["kept"] == 3
     assert store.stream(KEYFRAME_STREAM, dict).count() == 3
-    assert store.stream(cli.patch_stream_for("", "stub"), dict).count() == 3 * SIDE * SIDE
+    assert store.stream(recording.patch_stream_for("", "stub"), dict).count() == 3 * SIDE * SIDE
     first = store.stream(KEYFRAME_STREAM, dict).order_by("ts").first()
     assert first.data["camera_frame"] == CAMERA
     assert first.data["grid"].shape == (SIDE * SIDE, DIM)
@@ -429,7 +429,7 @@ def test_ensemble_keyframes_carry_every_member_and_pool_with_a_minimum(store: Sq
     assert (first["rows"], first["cols"]) == (24, 24)
     assert len(first["patch_depth"]) == 24 * 24
     # One searchable index PER MODEL, each holding that model's own cells.
-    assert cli.patch_stream_for("", "stub-a") == f"{PATCH_STREAM}__m_stub_a"
+    assert recording.patch_stream_for("", "stub-a") == f"{PATCH_STREAM}__m_stub_a"
     assert store.stream(f"{PATCH_STREAM}__m_stub_a", dict).count() == 3 * 8 * 8
     assert store.stream(f"{PATCH_STREAM}__m_stub_b_16", dict).count() == 3 * 4 * 4
 
@@ -608,8 +608,10 @@ def test_ensemble_cell_grid_follows_the_finest_member() -> None:
 
 
 def test_a_db_indexes_itself_and_only_an_mcap_gets_a_companion() -> None:
-    assert cli.memory_db_for(Path("/data/grocery.db")) == Path("/data/grocery.db")
-    assert cli.memory_db_for(Path("/data/grocery.mcap")) == Path("/data/grocery.hyperspace.db")
+    assert recording.memory_db_for(Path("/data/grocery.db")) == Path("/data/grocery.db")
+    assert recording.memory_db_for(Path("/data/grocery.mcap")) == Path(
+        "/data/grocery.hyperspace.db"
+    )
 
 
 def test_keyframes_alone_are_reusable_and_a_legacy_marker_is_dropped_with_them(
@@ -621,16 +623,16 @@ def test_keyframes_alone_are_reusable_and_a_legacy_marker_is_dropped_with_them(
     mid-ingest leaves keyframes that read as a finished index, and only --no-reuse
     replaces them.
     """
-    assert not cli.index_is_finished(store)
+    assert not recording.index_is_finished(store)
     fill(store, ring(3, 2.5))
     assert store.stream(KEYFRAME_STREAM, dict).count() == 3
-    assert cli.index_is_finished(store)
+    assert recording.index_is_finished(store)
 
     # Dbs indexed before the marker went away still carry one; dropping the index must
     # take it too, or it would vouch for keyframes that are no longer there.
     store.stream(COMPLETE_STREAM, String).append(String("3 keyframes"), ts=1.0)
-    cli.drop_index(store)
-    assert not cli.index_is_finished(store)
+    recording.drop_index(store)
+    assert not recording.index_is_finished(store)
     for name in (KEYFRAME_STREAM, PATCH_STREAM, COMPLETE_STREAM):
         assert name not in store.list_streams(), name
 
@@ -643,10 +645,10 @@ def test_an_empty_source_stream_is_refused_before_the_old_index_is_touched(
     store.stream("empty_camera_info", CameraInfo)  # named, never written to
 
     with pytest.raises(typer.BadParameter, match="nothing was changed"):
-        cli.refuse_unless_readable(store, (KEYFRAME_STREAM, "empty_camera_info"))
+        recording.refuse_unless_readable(store, (KEYFRAME_STREAM, "empty_camera_info"))
 
     # The refusal cost nothing: the index that was there is still there.
-    assert cli.index_is_finished(store)
+    assert recording.index_is_finished(store)
     assert store.stream(KEYFRAME_STREAM, dict).count() == 3
 
 
@@ -657,7 +659,7 @@ def test_reingesting_in_place_replaces_the_keyframes_rather_than_appending(
     fill(store, ring(3, 2.5))
     patches_after_one_run = store.stream(PATCH_STREAM, dict).count()
 
-    cli.drop_index(store)  # what the ingest does before it re-embeds
+    recording.drop_index(store)  # what the ingest does before it re-embeds
     fill(store, ring(3, 2.5))
 
     assert store.stream(KEYFRAME_STREAM, dict).count() == 3
@@ -675,7 +677,7 @@ def test_every_keyframe_and_patch_records_the_model_that_wrote_it(store: SqliteS
     assert first.data["model"], "a keyframe with no model is a keyframe nobody can place"
     assert "member_specs" in first.data and "members" in first.data
     assert first.tags["model"] == first.data["model"]
-    patch = store.stream(cli.patch_stream_for("", "stub"), dict).order_by("ts").first()
+    patch = store.stream(recording.patch_stream_for("", "stub"), dict).order_by("ts").first()
     assert patch.data["model"] == first.data["model"]
 
 
@@ -686,34 +688,34 @@ def test_a_second_model_gets_its_own_index_instead_of_overwriting_the_first(
     one = ["google/siglip2-base-patch16-224"]
     two = ["google/siglip2-base-patch16-384"]
 
-    assert cli.pick_index(store, one) == "", "the first model in takes the canonical streams"
+    assert recording.pick_index(store, one) == "", "the first model in takes the canonical streams"
     fill(store, ring(2, 2.5))  # writes the canonical pair
 
     # Same checkpoints again: the same index, so a re-ingest replaces rather than forks.
     specs = store.stream(KEYFRAME_STREAM, dict).order_by("ts").first().data["member_specs"]
-    assert cli.pick_index(store, specs) == ""
+    assert recording.pick_index(store, specs) == ""
 
     # A different checkpoint: its own streams, named after it.
-    slug = cli.pick_index(store, two)
-    assert slug == cli.index_slug(two) != ""
-    keyframes, patches = cli.stream_names(slug)
+    slug = recording.pick_index(store, two)
+    assert slug == recording.index_slug(two) != ""
+    keyframes, patches = recording.stream_names(slug)
     assert keyframes == f"{KEYFRAME_STREAM}__{slug}"
     assert patches == f"{PATCH_STREAM}__{slug}"
 
 
 def test_dropping_one_index_leaves_the_others_alone(store: SqliteStore) -> None:
     fill(store, ring(2, 2.5))
-    other = cli.index_slug(["google/siglip2-base-patch16-384"])
-    other_keyframes, other_patches = cli.stream_names(other)
+    other = recording.index_slug(["google/siglip2-base-patch16-384"])
+    other_keyframes, other_patches = recording.stream_names(other)
     store.stream(other_keyframes, dict).append({"model": other}, ts=1.0)
     store.stream(other_patches, dict).append({"model": other}, ts=1.0)
 
-    cli.drop_index(store, other)
+    recording.drop_index(store, other)
     assert other_keyframes not in store.list_streams()
-    assert cli.index_is_finished(store), "the canonical index must survive its neighbour"
+    assert recording.index_is_finished(store), "the canonical index must survive its neighbour"
 
-    cli.drop_index(store)
-    assert not cli.index_is_finished(store)
+    recording.drop_index(store)
+    assert not recording.index_is_finished(store)
 
 
 def test_every_model_gets_its_own_searchable_index(store: SqliteStore, tmp_path: Path) -> None:
@@ -725,7 +727,7 @@ def test_every_model_gets_its_own_searchable_index(store: SqliteStore, tmp_path:
     """
     # One model keeps the bare name, so stores written before ensembles still read.
     fill(store, ring(2, 2.5))
-    assert store.stream(cli.patch_stream_for("", "stub"), dict).count() == 2 * SIDE * SIDE
+    assert store.stream(recording.patch_stream_for("", "stub"), dict).count() == 2 * SIDE * SIDE
 
     other = SqliteStore(path=str(tmp_path / "ensemble.db"))
     other.start()
@@ -738,7 +740,7 @@ def test_every_model_gets_its_own_searchable_index(store: SqliteStore, tmp_path:
         assert other.stream(f"{PATCH_STREAM}__m_stub_a", dict).count() == 2 * 8 * 8
         assert other.stream(f"{PATCH_STREAM}__m_stub_b_16", dict).count() == 2 * 4 * 4
         # A re-ingest must replace them, not append a second copy of every vector.
-        cli.drop_index(other)
+        recording.drop_index(other)
         assert f"{PATCH_STREAM}__m_stub_a" not in set(other.list_streams())
     finally:
         other.stop()
@@ -775,7 +777,7 @@ def test_the_flat_layout_writes_patches_that_place_themselves(store: SqliteStore
 
     assert KEYFRAME_STREAM not in store.list_streams(), "the flat layout has no keyframe blob"
 
-    patches = store.stream(cli.patch_stream_for("", "stub"), dict)
+    patches = store.stream(recording.patch_stream_for("", "stub"), dict)
     assert patches.count() == 2 * SIDE * SIDE
     row = patches.order_by("ts").first().data
     assert row["camera_frame"] == CAMERA
@@ -785,7 +787,7 @@ def test_the_flat_layout_writes_patches_that_place_themselves(store: SqliteStore
     assert set(row) >= {"camera_frame", "ts", "cell", "grid", "ray", "depth", "member"}
 
     # the thumbnail is a point cloud in the CAMERA's frame, not a depth picture
-    thumbnails = store.stream(cli.thumbnail_stream_for(""), dict)
+    thumbnails = store.stream(recording.thumbnail_stream_for(""), dict)
     assert thumbnails.count() == 2
     cloud = np.asarray(thumbnails.order_by("ts").first().data["points_mm"])
     assert cloud.ndim == 2 and cloud.shape[1] == 3
@@ -796,10 +798,10 @@ def test_the_flat_layout_writes_patches_that_place_themselves(store: SqliteStore
 
 def test_dropping_a_flat_index_takes_its_thumbnails_too(store: SqliteStore) -> None:
     fill(store, ring(2, 2.5), flat=True)
-    assert cli.index_is_finished(store), "patch rows alone make an index answerable"
-    cli.drop_index(store)
-    assert not cli.index_is_finished(store)
-    assert cli.thumbnail_stream_for("") not in store.list_streams()
+    assert recording.index_is_finished(store), "patch rows alone make an index answerable"
+    recording.drop_index(store)
+    assert not recording.index_is_finished(store)
+    assert recording.thumbnail_stream_for("") not in store.list_streams()
 
 
 def test_hot_frames_reads_the_flat_layout_and_ranks_the_frames(store: SqliteStore) -> None:
@@ -979,7 +981,7 @@ def test_the_index_grows_while_the_ingest_is_still_writing(store: SqliteStore) -
             pass
 
     held = ResidentIndex()
-    members = [("stub", cli.patch_stream_for("", "stub"))]
+    members = [("stub", recording.patch_stream_for("", "stub"))]
 
     # Nothing written yet: an empty db is the normal state at boot, not an error.
     assert held.grow(store, members) == 0
@@ -1273,13 +1275,15 @@ def test_the_text_towers_never_just_follow_the_detector_onto_its_card(
 def test_one_device_chooser_for_the_cli_and_the_modules() -> None:
     """The CLI was fast on a Mac and the module was not, because there were TWO of these.
 
-    `cli.pick_device` allowed MPS and `module.pick_device` refused it, so the same question
-    got different answers depending on which door the caller came in. A shared function is
-    the whole fix; this test is what keeps the second copy from growing back.
+    The CLI's own copy allowed MPS and `module.pick_device` refused it, so the same question
+    got different answers depending on which door the caller came in. One function is the
+    whole fix; this test is what keeps a second copy from growing back, so it asks every
+    command that chooses a device, not just one of them.
     """
-    from dimos.mapping.hyperspace import module
+    from dimos.mapping.hyperspace import embed_cli, fill_cli, module
 
-    assert cli.pick_device is module.pick_device
+    for door in (embed_cli, fill_cli):
+        assert door.pick_device is module.pick_device, f"{door.__name__} chose its own"
 
 
 def test_a_named_device_is_never_second_guessed() -> None:

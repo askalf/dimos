@@ -23,8 +23,7 @@ checkpoint and the new index lands beside the ones already there rather than ove
 them -- which is the whole point of it being its own command. Comparing two encoders
 means holding both at once, and a tool that can only replace makes that impossible.
 
-`dimos map query` also builds an index, as a step on the way to answering something.
-This does only the building, so a long pass is not tangled with a question, and so a
+Only the building, never a question: a long pass is not tangled with an answer, and a
 recording can be prepared on one machine and asked on another.
 """
 
@@ -37,7 +36,13 @@ from typing import Any
 import typer
 
 from dimos.mapping.hyperspace import patches as hs
-from dimos.mapping.hyperspace.cli import (
+from dimos.mapping.hyperspace.ingest import (
+    IngestConfig,
+    index_slug,
+    stream_names,
+)
+from dimos.mapping.hyperspace.module import depth2depth_model_of, pick_device
+from dimos.mapping.hyperspace.recording import (
     WAL_CAP_BYTES,
     drop_index,
     fold_the_wal,
@@ -46,18 +51,11 @@ from dimos.mapping.hyperspace.cli import (
     ingest,
     memory_db_for,
     open_store,
-    pick_device,
     pick_index,
     pick_stream,
     refuse_unless_readable,
     wal_bytes,
 )
-from dimos.mapping.hyperspace.ingest import (
-    IngestConfig,
-    index_slug,
-    stream_names,
-)
-from dimos.mapping.hyperspace.module import depth2depth_model_of
 from dimos.mapping.hyperspace.siglip_embedder import DEFAULT_TRIO, PatchEnsemble
 from dimos.utils.logging_config import setup_logger
 

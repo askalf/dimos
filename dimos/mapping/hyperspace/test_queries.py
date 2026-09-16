@@ -123,9 +123,8 @@ def test_the_query_module_can_configure_everything_its_start_reads() -> None:
 
     `Hyperspace.start()` crashed on `max_depth_m` -- present on the ingest's config and
     missing from the query module's -- so the detector never loaded and the module was
-    unusable, while `map live` and `map find` were fine because they build the query
-    object directly and never go through the module. Nothing caught it because nothing
-    started the module. A missing field is an AttributeError at start, which on a robot
+    unusable. Anything that builds the query object directly and never goes through the
+    module was fine, which is why nothing caught it: nothing started the module. A missing field is an AttributeError at start, which on a robot
     is a module that is simply not there.
     """
     from pathlib import Path

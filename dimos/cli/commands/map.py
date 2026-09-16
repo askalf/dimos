@@ -22,11 +22,8 @@ from dimos.mapping.cli.rename import main as _map_rename_main
 from dimos.mapping.cli.replay import main as _map_replay_main
 from dimos.mapping.cli.replay_marker import main as _map_replay_marker_main
 from dimos.mapping.cli.view import main as _map_view_main
-from dimos.mapping.hyperspace.cli import main as _map_query_main
 from dimos.mapping.hyperspace.embed_cli import main as _map_embed_main
 from dimos.mapping.hyperspace.fill_cli import main as _map_fill_depth_main
-from dimos.mapping.hyperspace.find_cli import main as _map_find_main
-from dimos.mapping.hyperspace.live_cli import main as _map_live_main
 
 map_app = typer.Typer(help="Voxel-map tools over recorded sqlite datasets")
 map_app.command("global")(_map_main)
@@ -35,8 +32,5 @@ map_app.command("pose-fill")(_map_pose_fill_main)
 map_app.command("replay")(_map_replay_main)
 map_app.command("replay-marker")(_map_replay_marker_main)
 map_app.command("view")(_map_view_main)
-map_app.command("query")(_map_query_main)
-map_app.command("find")(_map_find_main)
 map_app.command("fill-depth")(_map_fill_depth_main)
 map_app.command("embed")(_map_embed_main)
-map_app.command("live")(_map_live_main)

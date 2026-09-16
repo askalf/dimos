@@ -14,11 +14,11 @@
 
 """The thing that answers a question, with everything it needs already loaded.
 
-This is the live query, and there is exactly one of it. The ``Hyperspace`` module holds
-one and its RPC delegates to it; ``dimos map live`` holds one over a recording on disk
-and asks it the same way. That is deliberate: an offline tool that reimplemented the
-query would drift from the robot's, and then the pages it draws would be a picture of
-something the robot does not do.
+This is the live query, and there is exactly one of it, reached through the
+``Hyperspace`` module whose RPCs delegate to it. Anything that wants to ask a recording
+a question builds this same object over a store on disk: an offline tool that
+reimplemented the query would drift from the robot's, and then the pages it draws would
+be a picture of something the robot does not do.
 
 What "live" means here, concretely:
 

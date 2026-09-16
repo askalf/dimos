@@ -31,16 +31,16 @@ import time
 
 import typer
 
-from dimos.mapping.hyperspace.cli import (
+from dimos.mapping.hyperspace.ingest import fill_depth, filled_stream_for
+from dimos.mapping.hyperspace.module import pick_device
+from dimos.mapping.hyperspace.recording import (
     WAL_CAP_BYTES,
     fold_the_wal,
     hold_the_wal,
     open_store,
-    pick_device,
     pick_stream,
     wal_bytes,
 )
-from dimos.mapping.hyperspace.ingest import fill_depth, filled_stream_for
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()

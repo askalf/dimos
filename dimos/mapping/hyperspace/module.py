@@ -379,9 +379,9 @@ class HyperspaceConfig(MemoryModuleConfig):
     owl_device: str = "auto"
     # Models the frames-first search ranks with. [] = every model in the index,
     # which is what the three-way agreement wants.
-    # MEMBER TAGS to search, as `dimos map live --models` takes them (for example
-    # "base_patch16_224"), NOT Hugging Face checkpoint names. Empty searches every model
-    # the recording holds, which is what the cross-model agreement wants.
+    # MEMBER TAGS to search (for example "base_patch16_224"), NOT Hugging Face
+    # checkpoint names. Empty searches every model the recording holds, which is what
+    # the cross-model agreement wants.
     detect_models: list[str] = []
     # Search this member over the whole index and score the others only on the frames it
     # liked; "auto" picks the cheapest member. See `DetectConfig.rank_with` for the
@@ -547,8 +547,8 @@ class Hyperspace(MemoryModule):
         box on the best frame of each, and that box plus the frame's depth becomes a box
         in the world. Answers come back strongest-first, one per place.
 
-        The same object `dimos map live` drives, so what a page shows offline is what
-        the robot does.
+        The one answering path there is, so what a page shows offline is what the
+        robot does.
         """
         self.live.config.top = top
         result = self.live.ask(text)
