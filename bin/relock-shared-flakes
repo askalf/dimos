@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Relock every module onto the current revision of the shared flakes.
+
+The shared flakes live in this repository, so a change to `native/rust` or
+`native/cpp` lands while every module's lock still pins the revision before it,
+and the modules keep building against the older shared flake.
+
+This cannot be fixed at commit time. A lock records a narHash of the *fetched*
+tree, so nix has to fetch the revision to write the lock -- and an unpushed
+commit is not there to fetch. The fix therefore belongs after the push, which is
+where autofix.ci runs.
+
+`nix flake lock` is not enough: it only checks that a lock is complete and never
+re-resolves a pin that is already there. Only `nix flake update <input>` moves it.
+
+What counts as stale is the pinned *content*, not the revision. A pin may name an
+older commit quite legitimately -- what matters is that the shared tree at that
+commit is the tree in this one. Updating on revision alone rewrites all fourteen
+locks on every push that touches anything at all, which is pure noise.
+
+Stdlib only, so it runs on a bare `python3` like the other bin/ scripts.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+REPO_ROOT = Path(
+    subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+)
+
+
+def tree_at(rev: str, subdir: str) -> str | None:
+    """The git tree hash of `subdir` at `rev`, or None if the revision is absent."""
+    proc = subprocess.run(
+        ["git", "rev-parse", f"{rev}:{subdir}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def stale_inputs(lock: Path) -> list[str]:
+    """In-repo inputs whose pinned tree is not the tree in this commit."""
+    nodes = json.loads(lock.read_text()).get("nodes", {})
+    root = nodes.get("root", {}).get("inputs", {})
+    names = []
+    for name, node_name in root.items():
+        if not isinstance(node_name, str):
+            continue  # a `follows` path, not a direct pin
+        locked = nodes.get(node_name, {}).get("locked", {})
+        if not (
+            locked.get("owner") == "dimensionalOS"
+            and locked.get("repo") == "dimos"
+            and "dir" in locked
+        ):
+            continue
+        subdir = locked["dir"]
+        pinned = tree_at(locked["rev"], subdir)
+        if pinned is None:
+            continue  # shallow clone: the revision is not here to compare
+        if pinned != tree_at("HEAD", subdir):
+            names.append(name)
+    return names
+
+
+def main() -> int:
+    failed = 0
+    touched = []
+    for lock in sorted(REPO_ROOT.rglob("flake.lock")):
+        if ".git" in lock.parts:
+            continue
+        names = stale_inputs(lock)
+        if not names:
+            continue
+        before = lock.read_text()
+        for name in names:
+            proc = subprocess.run(
+                ["nix", "flake", "update", name],
+                cwd=lock.parent,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            where = lock.parent.relative_to(REPO_ROOT).as_posix()
+            if proc.returncode != 0:
+                print(f"FAIL  {where}: {name}\n{proc.stderr}", file=sys.stderr)
+                failed += 1
+        if lock.read_text() != before:
+            touched.append(lock.relative_to(REPO_ROOT).as_posix())
+        # Updating moves the pin to whatever the remote branch holds. If this commit
+        # is not on the remote yet, that is still not this commit's tree, and the
+        # lock stays stale -- silently, because `nix flake update` itself succeeded.
+        # Say so rather than leave a rewritten-but-wrong lock behind.
+        if stale_inputs(lock):
+            print(
+                f"STILL STALE  {lock.relative_to(REPO_ROOT).as_posix()}:"
+                " the revision holding this commit's shared tree is not on the remote."
+                " Push first -- a lock records a narHash of the fetched tree, so it"
+                " cannot name a commit nobody can fetch.",
+                file=sys.stderr,
+            )
+            failed += 1
+
+    for path in touched:
+        print(f"relocked {path}")
+    if not touched and not failed:
+        print("every module already pins the shared flakes as they are in this commit")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

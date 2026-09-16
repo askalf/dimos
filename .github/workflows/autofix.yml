@@ -6,7 +6,7 @@ permissions: {}
 
 jobs:
   lint:
-    timeout-minutes: 1
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read  # For checkout
@@ -16,6 +16,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # The shared-flake guard below diffs against the PR base, and relocking
+          # compares the pinned revision's tree with this one -- neither is answerable
+          # from a depth-1 checkout.
+          fetch-depth: 0
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
@@ -30,5 +35,31 @@ jobs:
         run: uv run ruff format
       - name: uv lock
         run: uv lock
+
+      # The shared flakes live in this repository, so a change to native/{rust,cpp}
+      # lands with every module's lock still pinning the revision before it. That
+      # cannot be fixed at commit time: a lock records a narHash of the FETCHED tree,
+      # so the revision has to be on the remote first. Here it is -- so relock and let
+      # autofix commit the result back, the way it already does for ruff and uv.
+      #
+      # Guarded on the shared trees actually changing, because installing nix costs
+      # more than the rest of this job put together and most PRs touch neither.
+      - name: Did the shared flakes change?
+        id: shared
+        run: |
+          set -euo pipefail
+          base=${{ github.event.pull_request.base.sha }}
+          if git diff --quiet "$base"...HEAD -- native/rust native/cpp; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Nix
+        if: steps.shared.outputs.changed == 'true'
+        run: bash docker/ros/install-nix.sh
+      - name: Relock the modules onto this revision
+        if: steps.shared.outputs.changed == 'true'
+        run: python3 bin/relock-shared-flakes
+
       - name: autofix.ci
         uses: autofix-ci/action@v1
