@@ -316,8 +316,8 @@ Python extras do not install native RealSense binaries, vendor SDK setup,
 system libraries, or robot/model assets. Follow the hardware-specific setup
 instructions. Agentic blueprints require provider credentials; the default
 EdgeTAM backend requires CUDA or MPS. The bundle includes CPU ONNX inference;
-specialized CUDA backends, GraspGenX, dataset export (`learning`), and DDS remain
-separate extras. Linux x86_64 is the primary supported bundle platform; backend
+specialized CUDA backends, dataset export (`learning`), and DDS remain
+separate extras. GraspGenX prepares its own isolated Python environment on first use. Linux x86_64 is the primary supported bundle platform; backend
 and hardware wheel availability still limits macOS and ARM installations.
 
 Safety behavior for unsupported RoboPlan features:
@@ -427,8 +427,8 @@ telemetry snapshots.
 ### Perception + Agent
 
 ```bash
-# Coordinator + perception + manipulation + LLM agent (single command)
-XARM7_IP=<ip> dimos run coordinator-xarm7 xarm-perception-agent
+# Arm + camera + manipulation + LLM agent (single command)
+dimos run xarm-grasp-agent --xarm7-ip <ip>
 ```
 
 For a simulation walkthrough, see [Agentic xArm simulation](/docs/capabilities/manipulation/agentic.md).
@@ -500,8 +500,8 @@ planner is locked for its whole native call.
 | `xarm7-planner-coordinator` | XArm7 planner with coordinator integration |
 | `dual-xarm6-planner-coordinator` | Dual XArm6 planning with mock coordinator hardware |
 | `r1pro-planar-preview` | R1 Pro planar-base, torso, and bimanual planning preview with fake hardware |
-| `xarm-perception` | XArm7 + RealSense camera for perception |
-| `xarm-perception-agent` | XArm7 perception + LLM agent |
+| [`xarm-grasp`](/docs/capabilities/manipulation/xarm-grasp.md) | XArm7 grasping stack, on hardware or in MuJoCo |
+| `xarm-grasp-agent` | The grasping stack + LLM agent |
 | `xarm-perception-sim` | XArm7 simulation perception stack |
 | [`xarm-perception-sim-agent`](/docs/capabilities/manipulation/agentic.md) | XArm7 simulation perception stack + LLM agent |
 
@@ -530,7 +530,7 @@ planner is locked for its whole native call.
 | [`robot/manipulators/piper/blueprints/basic.py`](/dimos/robot/manipulators/piper/blueprints/basic.py) | Piper coordinator blueprint |
 | [`robot/manipulators/piper/blueprints/teleop.py`](/dimos/robot/manipulators/piper/blueprints/teleop.py) | Piper teleop blueprints |
 | [`robot/manipulators/xarm/blueprints/basic.py`](/dimos/robot/manipulators/xarm/blueprints/basic.py) | XArm coordinator and planner blueprints |
-| [`robot/manipulators/xarm/blueprints/perception.py`](/dimos/robot/manipulators/xarm/blueprints/perception.py) | XArm perception blueprint |
+| [`robot/manipulators/xarm/blueprints/grasp.py`](/dimos/robot/manipulators/xarm/blueprints/grasp.py) | XArm grasping blueprints, hardware or MuJoCo |
 | [`teleop/keyboard/keyboard_teleop_module.py`](/dimos/teleop/keyboard/keyboard_teleop_module.py) | Keyboard teleop module |
 | [`planning/world/drake_world.py`](/dimos/manipulation/planning/world/drake_world.py) | Drake physics backend |
 | [`planning/world/roboplan_world.py`](/dimos/manipulation/planning/world/roboplan_world.py) | RoboPlan scene, state, and collision backend |
