@@ -54,7 +54,11 @@
                 # that recompile is most of its cost. Dependencies are untouched,
                 # so nothing stops being shared.
                 release = false;
-                extraRustcOpts = (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" ];
+                # -C debuginfo=0 is not an optimisation: an unoptimised build emits a
+                # .dSYM *directory* beside each binary on darwin, and crate2nix's test
+                # runner copies binaries with a plain `cp`, which refuses a directory.
+                extraRustcOpts =
+                  (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" "-C" "debuginfo=0" ];
               });
         };
         buildOf = called:
