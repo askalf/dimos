@@ -28,6 +28,8 @@ inline constexpr uint8_t DATA_TYPE_IMU = 0x00;
 inline constexpr uint8_t DATA_TYPE_CARTESIAN_HIGH = 0x01;
 inline constexpr uint8_t DATA_TYPE_CARTESIAN_LOW = 0x02;
 
+// Width of the sn and lidar_ip fields in LivoxLidarInfo. Not null-terminated,
+// so a buffer reading one needs room for a terminator.
 inline constexpr std::size_t kInfoFieldLen = 16;
 
 // SDK network port configuration for Livox Mid-360
@@ -44,6 +46,15 @@ struct SdkPorts {
     int host_log_data   = 56501;
 };
 
+// Write Livox SDK JSON config to an in-memory (or ephemeral) file.
+// Returns {fd, path} — caller must close(fd) after LivoxLidarSdkInit reads it.
+//
+// Linux: memfd_create gives us a pure anonymous in-memory file, reached via
+//        /proc/self/fd/<fd>.
+// macOS: no memfd_create and no procfs.  We fall back to mkstemp() in /tmp
+//        and immediately unlink() the directory entry, so the inode lives
+//        only as long as the fd is open.  The SDK reaches it via /dev/fd/<fd>
+//        (Darwin's equivalent of /proc/self/fd).
 inline std::pair<int, std::string> write_sdk_config(const std::string& host_ip,
                                                      const std::string& lidar_ip,
                                                      const SdkPorts& ports) {
@@ -54,6 +65,9 @@ inline std::pair<int, std::string> write_sdk_config(const std::string& host_ip,
         return {-1, ""};
     }
 #elif defined(__APPLE__) && defined(__MACH__)
+    // mkstemp replaces the 6 X's in place — e.g. livox_sdk_config.aB3xY9.
+    // Honor $TMPDIR when set (sandboxed macOS apps and CI runners point
+    // it at a per-process scratch dir); fall back to /tmp.
     const char* tmpdir = std::getenv("TMPDIR");
     if (tmpdir == nullptr || tmpdir[0] == '\0') {
         tmpdir = "/tmp";
@@ -78,6 +92,11 @@ inline std::pair<int, std::string> write_sdk_config(const std::string& host_ip,
         return {-1, ""};
     }
 
+    // On macOS the synthetic lidar/host IPs are lo0 aliases, and a multicast send
+    // source-bound to an alias fails ("No route to host"), so the virtual_mid360
+    // replayer unicasts point/IMU to host_ip. An empty multicast_ip makes the SDK
+    // bind its data socket to host_ip (not the multicast group) so it receives
+    // those unicasts. Real hardware on Linux keeps the Livox default multicast.
 #if defined(__APPLE__) && defined(__MACH__)
     const char* multicast_ip = "";
 #else
@@ -118,6 +137,8 @@ inline std::pair<int, std::string> write_sdk_config(const std::string& host_ip,
 #ifdef __linux__
     snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
 #elif defined(__APPLE__) && defined(__MACH__)
+    // Darwin's /dev/fd/<fd> may share the underlying open file description,
+    // so rewind before the SDK reads from the path.
     lseek(fd, 0, SEEK_SET);
     snprintf(path, sizeof(path), "/dev/fd/%d", fd);
 #else
@@ -126,6 +147,8 @@ inline std::pair<int, std::string> write_sdk_config(const std::string& host_ip,
     return {fd, path};
 }
 
+// Initialize Livox SDK from in-memory config.
+// Returns true on success. Handles fd lifecycle internally.
 inline bool init_livox_sdk(const std::string& host_ip,
                            const std::string& lidar_ip,
                            const SdkPorts& ports,

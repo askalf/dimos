@@ -94,6 +94,12 @@
               --replace-fail "add_subdirectory(samples)" ""
             sed -i '1i #include <cstdint>' sdk_core/comm/define.h
             sed -i '1i #include <cstdint>' sdk_core/logger_handler/file_manager.h
+            # Livox-SDK2 bundles an old rapidjson whose RAPIDJSON_DIAG_OFF(foo-bar)
+            # macros stringify with spaces under newer clang, producing invalid
+            # warning-group names.  It also has an unused FastCRC field.  Both
+            # explode under -Werror, and passing -DCMAKE_CXX_FLAGS=-Wno-error is
+            # overridden by add_compile_options(-Werror) deeper in the sdk_core
+            # CMakeLists.  Strip -Werror in-place instead.
             find . -name CMakeLists.txt -exec sed -i 's/-Werror//g' {} +
           '';
         };

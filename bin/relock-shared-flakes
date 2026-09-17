@@ -37,8 +37,7 @@ REPO_ROOT = Path(
 )
 
 
-def tree_at(rev: str, subdir: str) -> str | None:
-    """The git tree hash of `subdir` at `rev`, or None if the revision is absent."""
+def _rev_parse(rev: str, subdir: str) -> str | None:
     proc = subprocess.run(
         ["git", "rev-parse", f"{rev}:{subdir}"],
         cwd=REPO_ROOT,
@@ -47,6 +46,28 @@ def tree_at(rev: str, subdir: str) -> str | None:
         check=False,
     )
     return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def tree_at(rev: str, subdir: str) -> str | None:
+    """The git tree hash of `subdir` at `rev`, fetching the revision if it is absent.
+
+    CI checks out shallow, so a pinned revision is usually not present. Fetching just
+    that one commit costs under a second and keeps the checkout at 6 MB; asking for
+    the full history instead costs 344 MB. It matters that this is not silent: with
+    no fetch, an absent revision reads as "nothing to compare", every lock is skipped,
+    and the run reports all-clear while leaving them stale.
+    """
+    tree = _rev_parse(rev, subdir)
+    if tree is not None:
+        return tree
+    subprocess.run(
+        ["git", "fetch", "--quiet", "--depth", "1", "origin", rev],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return _rev_parse(rev, subdir)
 
 
 def stale_inputs(lock: Path) -> list[str]:

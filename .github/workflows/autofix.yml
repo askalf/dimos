@@ -16,8 +16,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # the shared-flake check diffs against the PR base
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
@@ -38,6 +36,11 @@ jobs:
         run: |
           set -euo pipefail
           base=${{ github.event.pull_request.base.sha }}
+          # The checkout is shallow, so fetch just the base commit rather than the
+          # whole history: 0.9 s and 0.1 MB, against 9 s and 344 MB for the history.
+          # Not optional -- without the base, `git diff` fails and the `if` below
+          # reads that as "changed", installing nix on every PR.
+          git fetch --quiet --depth 1 origin "$base"
           if git diff --quiet "$base"...HEAD -- native; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else

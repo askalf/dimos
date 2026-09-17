@@ -31,6 +31,9 @@
             crateOverrides = _: {
               # cu_vslam_rs's build.rs compiles its shim against this SDK.
               cu_vslam_rs = _: { CUVSLAM_SDK_DIR = sdkPackage; };
+              # buildRustCrate names DEP_ vars after the crate, cargo after the
+              # `links` key, so cu_vslam_rs's lib_dir never reaches our build.rs
+              # and the binary comes out with no rpath for libcuvslam.
               dim-slam-module = _: { DEP_CUVSLAM_LIB_DIR = "${sdkPackage}/lib"; };
             };
           };
