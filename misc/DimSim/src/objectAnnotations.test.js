@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import {
+  collectAnnotations,
   collectObjectAnnotations,
+  collectWallAnnotations,
   ObjectAnnotations,
 } from "./objectAnnotations.js";
+
+/** @param {THREE.Box3} box @param {number[]} min @param {number[]} max */
+function assertBox(box, min, max) {
+  assert.ok(box.min.distanceTo(new THREE.Vector3(...min)) < 1e-6, `min ${box.min.toArray()}`);
+  assert.ok(box.max.distanceTo(new THREE.Vector3(...max)) < 1e-6, `max ${box.max.toArray()}`);
+}
 
 test("bounds include nested world transforms but exclude hidden geometry and blob shadows", () => {
   const world = new THREE.Group();
@@ -165,4 +173,61 @@ test("snapshot reuses the displayed capture and measures once when hidden", (t) 
 
   overlay.clear();
   assert.deepEqual(overlay.snapshot(assets, group).objects[0].max, [12, 4, 6]);
+});
+
+test("walls are collected by name from the structure, never from inside assets", () => {
+  const scene = new THREE.Scene();
+  const assetsGroup = new THREE.Group();
+  scene.add(assetsGroup);
+  const asset = new THREE.Group();
+  asset.name = "asset:clock";
+  const decor = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+  decor.name = "wall-clock"; // part of an asset, not a wall
+  asset.add(decor);
+  assetsGroup.add(asset);
+
+  const structure = new THREE.Group();
+  structure.position.set(10, 0, 0);
+  const north = new THREE.Mesh(new THREE.BoxGeometry(4, 2.5, 0.2));
+  north.name = "wall-north";
+  north.position.set(0, 1.25, -2);
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(50, 0.1, 50));
+  floor.name = "apartment-floor";
+  const yard = new THREE.Group();
+  yard.name = "yard-wall-east";
+  const post = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+  post.name = "wall-post"; // nested under a wall: bounded with its parent, not twice
+  post.position.set(0, 0.5, 3);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+  base.position.set(0, 0.5, 0);
+  yard.add(base, post);
+  const hidden = new THREE.Mesh(new THREE.BoxGeometry(9, 9, 9));
+  hidden.name = "wall-hidden";
+  hidden.visible = false;
+  const wallpaper = new THREE.Mesh(new THREE.BoxGeometry(9, 9, 9));
+  wallpaper.name = "wallpaper-roll";
+  const dupA = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+  const dupB = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+  dupA.name = dupB.name = "Wall_Extra";
+  dupB.position.x = 5;
+  structure.add(north, floor, yard, hidden, wallpaper, dupA, dupB);
+  scene.add(structure);
+
+  const walls = collectWallAnnotations(scene, assetsGroup);
+  assert.deepEqual(
+    walls.map((w) => [w.id, w.label]),
+    [
+      ["wall-north", "wall-north"],
+      ["yard-wall-east", "yard-wall-east"],
+      ["Wall_Extra", "Wall_Extra"],
+      ["Wall_Extra#2", "Wall_Extra"],
+    ],
+  );
+  assertBox(walls[0].box, [8, 0, -2.1], [12, 2.5, -1.9]);
+  assertBox(walls[1].box, [9.5, 0, -0.5], [10.5, 1, 3.5]);
+  assertBox(walls[3].box, [14.5, -0.5, -0.5], [15.5, 0.5, 0.5]);
+
+  const all = collectAnnotations([{ id: "clock", title: "Clock" }], assetsGroup, scene);
+  assert.deepEqual(all.map((a) => a.id), ["clock", "wall-north", "yard-wall-east", "Wall_Extra", "Wall_Extra#2"]);
+  assert.deepEqual(collectAnnotations([{ id: "clock" }], assetsGroup).map((a) => a.id), ["clock"]);
 });

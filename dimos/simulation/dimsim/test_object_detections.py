@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from dimos.simulation.dimsim.object_detections import (
     read_detection3d_array,
     snapshot_to_detection3d_array,
     write_detection3d_array,
+    write_detection3d_json,
 )
 from dimos.simulation.dimsim.scene_client import SceneClient
 
@@ -150,6 +152,35 @@ def test_binary_file_round_trip(tmp_path: Path) -> None:
     sofa = decoded.detections[0]
     assert _xyz(sofa.bbox.center.position) == (-2.0, 2.0, 0.5)
     assert _xyz(sofa.bbox.size) == (2.0, 2.0, 1.0)
+
+
+def test_json_view_lists_label_center_and_size(tmp_path: Path) -> None:
+    arr = snapshot_to_detection3d_array(SNAPSHOT)
+    out = write_detection3d_json(arr, tmp_path / "objects.json")
+
+    view = json.loads(out.read_text())
+    assert view["frame_id"] == DIMSIM_WORLD_FRAME
+    assert view["timestamp"] == pytest.approx(CAPTURED_AT_MS / 1000.0)
+    assert view["count"] == 2
+    assert view["detections"][0] == {
+        "id": "sofa",
+        "label": "Sectional sofa",
+        "score": 1.0,
+        "center_xyz": [-2.0, 2.0, 0.5],
+        "size_xyz": [2.0, 2.0, 1.0],
+        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    }
+    assert view["detections"][1]["id"] == "lamp"
+
+
+def test_scene_client_export_picks_json_by_suffix(mocker: MockerFixture, tmp_path: Path) -> None:
+    client = SceneClient()
+    mocker.patch.object(client, "exec", return_value=SNAPSHOT)
+    path = tmp_path / "objects.JSON"
+
+    client.export_object_detections(path)
+
+    assert json.loads(path.read_text())["count"] == 2
 
 
 def test_scene_client_get_object_detections_uses_sandbox_helper(mocker: MockerFixture) -> None:

@@ -14,8 +14,9 @@
 
 """Typed export of DimSim object annotations as ``Detection3DArray``.
 
-The browser measures world-axis-aligned bounds of identified scene assets in
-Three.js Y-up coordinates (``misc/DimSim/src/objectAnnotations.js``). This module
+The browser measures world-axis-aligned bounds of identified scene assets and of
+walls baked into the scene structure, in Three.js Y-up coordinates
+(``misc/DimSim/src/objectAnnotations.js``). This module
 turns that JSON snapshot into the repository's 3D detection types in the DimOS
 Z-up ``world`` frame, the frame DimSim already publishes odometry in.
 
@@ -27,6 +28,7 @@ channel ``/detections_3d#vision_msgs.Detection3DArray``; the file written by
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Any, TypeGuard, cast
@@ -90,6 +92,43 @@ def write_detection3d_array(detections: Detection3DArray, path: str | Path) -> P
 def read_detection3d_array(path: str | Path) -> Detection3DArray:
     """Read a file written by :func:`write_detection3d_array`."""
     return cast("Detection3DArray", Detection3DArray.lcm_decode(Path(path).read_bytes()))
+
+
+def write_detection3d_json(detections: Detection3DArray, path: str | Path) -> Path:
+    """Write a readable JSON view of ``detections``, one entry per detection.
+
+    For inspection and non-LCM tooling. The LCM payload written by
+    :func:`write_detection3d_array` stays the typed, lossless format.
+    """
+    out = Path(path)
+    out.write_text(json.dumps(detection3d_array_to_dict(detections), indent=2) + "\n")
+    return out
+
+
+def detection3d_array_to_dict(detections: Detection3DArray) -> dict[str, Any]:
+    """Plain-data view of a ``Detection3DArray``: label, center, size per detection."""
+    return {
+        "frame_id": detections.frame_id,
+        "timestamp": detections.ts,
+        "count": detections.detections_length,
+        "detections": [
+            _detection_to_dict(d) for d in detections.detections[: detections.detections_length]
+        ],
+    }
+
+
+def _detection_to_dict(detection: Detection3D) -> dict[str, Any]:
+    hypothesis = detection.results[0].hypothesis if detection.results_length else None
+    center, size = detection.bbox.center.position, detection.bbox.size
+    q = detection.bbox.center.orientation
+    return {
+        "id": detection.id,
+        "label": hypothesis.class_id if hypothesis else "",
+        "score": hypothesis.score if hypothesis else 0.0,
+        "center_xyz": [center.x, center.y, center.z],
+        "size_xyz": [size.x, size.y, size.z],
+        "orientation_xyzw": [q.x, q.y, q.z, q.w],
+    }
 
 
 def _captured_at_seconds(snapshot: dict[str, Any]) -> float:

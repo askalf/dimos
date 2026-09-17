@@ -42,8 +42,10 @@ uv run dimos --simulation dimsim --dimsim-scene apartment --no-dimsim-headless -
 
 V1 displays a static snapshot of world-axis-aligned visual bounds and authored
 asset names. Toggle off/on to refresh after editing or moving objects. Labels
-cover identified scene assets; fixtures baked into the structural mesh are not
-separately labeled. Decorative blob shadows are excluded from bounds. The
+cover identified scene assets plus walls: structure nodes named like `wall-north`
+or `yard-wall-east` (and walls added through `SceneClient.add_wall`) are boxed
+under their node name. Other baked fixtures are not separately labeled.
+Decorative blob shadows are excluded from bounds. The
 annotations render only in the viewer's RGB view (and RGB comparison tile),
 separately from the physics scene and robot RGB/depth/LiDAR captures.
 
@@ -62,13 +64,16 @@ client = SceneClient()  # bridge on localhost:8090
 client.start()
 try:
     detections = client.get_object_detections()
-    client.export_object_detections("dimsim-objects.bin")
+    client.export_object_detections("dimsim-objects.bin")  # typed LCM payload
+    client.export_object_detections("dimsim-objects.json")  # readable view
 finally:
     client.stop()
 ```
 
 The `.bin` file is one LCM-encoded `Detection3DArray` message, not an LCM event
 log; read it back with `dimos.simulation.dimsim.object_detections.read_detection3d_array`.
+The `.json` file is a convenience view with `id`, `label`, `center_xyz`, `size_xyz`
+and `orientation_xyzw` per detection in the same `world` frame.
 
 Consumers run over LCM. Publish the snapshot on the usual 3D detection channel and
 watch it with `dimos lcmspy`:

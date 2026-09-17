@@ -4448,11 +4448,11 @@ simObjectAnnotationsBtn?.addEventListener("click", () => {
   } else {
     simCompareView = false;
     setSimSensorViewMode("rgb");
-    const count = objectAnnotations.show(assets, assetsGroup);
+    const count = objectAnnotations.show(assets, assetsGroup, scene);
     simObjectAnnotationsBtn.textContent = count
       ? `Object labels + boxes: On (${count})`
       : "Object labels + boxes: Off";
-    setStatus(count ? `${count} object snapshots. Toggle off/on to refresh after scene edits.` : "No identified objects loaded yet.");
+    setStatus(count ? `${count} object and wall snapshots. Toggle off/on to refresh after scene edits.` : "No identified objects or walls loaded yet.");
   }
   simObjectAnnotationsBtn.classList.toggle("active", objectAnnotations.enabled);
   simObjectAnnotationsBtn.setAttribute("aria-pressed", String(objectAnnotations.enabled));
@@ -5936,7 +5936,7 @@ if (dimosMode) {
         globals: {
           scene, THREE, RAPIER, rapierWorld, renderer, camera, agent, assets, assetsGroup, gltfLoader,
           // Closure, not a reference: `assets` is reassigned on level import.
-          getObjectAnnotationSnapshot: () => objectAnnotations.snapshot(assets, assetsGroup),
+          getObjectAnnotationSnapshot: () => objectAnnotations.snapshot(assets, assetsGroup, scene),
         },
       });
 

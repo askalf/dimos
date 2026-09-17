@@ -3,52 +3,113 @@ import * as THREE from "three";
 /** @typedef {{ id: string, title?: string }} AnnotatedAsset */
 /** @typedef {{ id: string, label: string, box: THREE.Box3 }} ObjectAnnotation */
 
+/** Structure nodes named "wall" or with "wall" as a dash/underscore/space-separated part. */
+export const WALL_NAME_PATTERN = /(^|[-_ ])wall([-_ ]|$)/i;
+
 /**
- * Snapshot world-axis-aligned bounds from visible mesh vertices, excluding
- * decorative blob shadows. Asset roots already contain the active GLB state
- * and the engine's pivot/placement transforms.
+ * World-axis-aligned bounds of the visible mesh vertices under `root`,
+ * excluding decorative blob shadows. Empty when nothing visible is found.
+ * @param {THREE.Object3D} root
+ * @returns {THREE.Box3}
+ */
+function visibleBounds(root) {
+  const box = new THREE.Box3();
+  const point = new THREE.Vector3();
+  /** @param {THREE.Object3D} object */
+  function visit(object) {
+    if (!object.visible || object.userData.isBlobShadow) return;
+    if (object.isMesh && object.geometry?.attributes.position) {
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      if (
+        materials.some((material) =>
+          material.visible &&
+          !(material.transparent && material.opacity === 0)
+        )
+      ) {
+        for (let i = 0; i < object.geometry.attributes.position.count; i++) {
+          object.getVertexPosition(i, point).applyMatrix4(object.matrixWorld);
+          if (
+            Number.isFinite(point.x) && Number.isFinite(point.y) &&
+            Number.isFinite(point.z)
+          ) {
+            box.expandByPoint(point);
+          }
+        }
+      }
+    }
+    object.children.forEach(visit);
+  }
+  visit(root);
+  return box;
+}
+
+/**
+ * Snapshot identified assets. Asset roots already contain the active GLB
+ * state and the engine's pivot/placement transforms.
  * @param {AnnotatedAsset[]} assets
  * @param {THREE.Object3D} assetsGroup
  * @returns {ObjectAnnotation[]}
  */
 export function collectObjectAnnotations(assets, assetsGroup) {
   assetsGroup.updateWorldMatrix(true, true);
-  const point = new THREE.Vector3();
   return assets.flatMap((asset) => {
     const root = assetsGroup.getObjectByName(`asset:${asset.id}`);
     if (!root) return [];
-    const box = new THREE.Box3();
-    /** @param {THREE.Object3D} object */
-    function visit(object) {
-      if (!object.visible || object.userData.isBlobShadow) return;
-      if (object.isMesh && object.geometry?.attributes.position) {
-        const materials = Array.isArray(object.material)
-          ? object.material
-          : [object.material];
-        if (
-          materials.some((material) =>
-            material.visible &&
-            !(material.transparent && material.opacity === 0)
-          )
-        ) {
-          for (let i = 0; i < object.geometry.attributes.position.count; i++) {
-            object.getVertexPosition(i, point).applyMatrix4(object.matrixWorld);
-            if (
-              Number.isFinite(point.x) && Number.isFinite(point.y) &&
-              Number.isFinite(point.z)
-            ) {
-              box.expandByPoint(point);
-            }
-          }
-        }
-      }
-      object.children.forEach(visit);
-    }
-    visit(root);
+    const box = visibleBounds(root);
     return box.isEmpty()
       ? []
       : [{ id: asset.id, label: asset.title?.trim() || asset.id, box }];
   });
+}
+
+/**
+ * Snapshot walls baked into the scene structure: every node outside
+ * `assetsGroup` whose name matches WALL_NAME_PATTERN, bounded as a whole
+ * (its children are not annotated separately). Names are authored in the
+ * structure GLB or by SceneClient.add_wall, so they double as IDs;
+ * duplicates get a "#n" suffix.
+ * @param {THREE.Object3D} scene
+ * @param {THREE.Object3D} assetsGroup
+ * @returns {ObjectAnnotation[]}
+ */
+export function collectWallAnnotations(scene, assetsGroup) {
+  scene.updateWorldMatrix(true, true);
+  const annotations = [];
+  const seen = new Map();
+  /** @param {THREE.Object3D} object */
+  function visit(object) {
+    if (object === assetsGroup || !object.visible) return;
+    if (WALL_NAME_PATTERN.test(object.name)) {
+      const box = visibleBounds(object);
+      if (!box.isEmpty()) {
+        const count = (seen.get(object.name) ?? 0) + 1;
+        seen.set(object.name, count);
+        const id = count === 1 ? object.name : `${object.name}#${count}`;
+        annotations.push({ id, label: object.name, box });
+      }
+      return;
+    }
+    object.children.forEach(visit);
+  }
+  visit(scene);
+  return annotations;
+}
+
+/**
+ * Everything one snapshot covers: assets first, then walls. `scene` may be
+ * omitted for an asset-only snapshot.
+ * @param {AnnotatedAsset[]} assets
+ * @param {THREE.Object3D} assetsGroup
+ * @param {THREE.Object3D} [scene]
+ * @returns {ObjectAnnotation[]}
+ */
+export function collectAnnotations(assets, assetsGroup, scene) {
+  return [
+    ...collectObjectAnnotations(assets, assetsGroup),
+    ...(scene ? collectWallAnnotations(scene, assetsGroup) : []),
+  ];
 }
 
 /**
@@ -140,10 +201,14 @@ export class ObjectAnnotations {
     this.capturedAt = null;
   }
 
-  /** @param {AnnotatedAsset[]} assets @param {THREE.Object3D} assetsGroup @returns {number} */
-  show(assets, assetsGroup) {
+  /**
+   * @param {AnnotatedAsset[]} assets @param {THREE.Object3D} assetsGroup
+   * @param {THREE.Object3D} [scene] Scene whose baked walls are annotated too.
+   * @returns {number}
+   */
+  show(assets, assetsGroup, scene) {
     this.clear();
-    const annotations = collectObjectAnnotations(assets, assetsGroup);
+    const annotations = collectAnnotations(assets, assetsGroup, scene);
     const capturedAt = Date.now();
     annotations.forEach(({ id, label, box }, i) => {
       const color = new THREE.Color().setHSL((i * 0.618034) % 1, 0.8, 0.65);
@@ -172,13 +237,14 @@ export class ObjectAnnotations {
    * later does not claim a newer observation; otherwise it measures the
    * current geometry once without enabling the overlay.
    * @param {AnnotatedAsset[]} assets @param {THREE.Object3D} assetsGroup
+   * @param {THREE.Object3D} [scene]
    */
-  snapshot(assets, assetsGroup) {
+  snapshot(assets, assetsGroup, scene) {
     if (this.enabled) {
       return serializeObjectAnnotations(this.annotations, this.capturedAt, true);
     }
     return serializeObjectAnnotations(
-      collectObjectAnnotations(assets, assetsGroup),
+      collectAnnotations(assets, assetsGroup, scene),
       Date.now(),
       false,
     );

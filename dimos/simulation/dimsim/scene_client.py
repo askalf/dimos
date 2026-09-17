@@ -35,6 +35,7 @@ from dimos.msgs.vision_msgs.Detection3DArray import Detection3DArray
 from dimos.simulation.dimsim.object_detections import (
     snapshot_to_detection3d_array,
     write_detection3d_array,
+    write_detection3d_json,
 )
 from dimos.utils.logging_config import setup_logger
 
@@ -935,14 +936,15 @@ return { x: p.x, y: p.y, z: p.z };
         return cast("dict[str, Any]", self.exec(code))
 
     def get_object_detections(self) -> Detection3DArray:
-        """Snapshot identified scene objects as ground-truth 3D detections.
+        """Snapshot scene objects and walls as ground-truth 3D detections.
 
         Mirrors the viewer's "Object labels + boxes" overlay: while it is shown,
         the displayed snapshot and its capture time are exported; otherwise the
         current geometry is measured once. Boxes are world-axis-aligned in the
-        DimOS Z-up ``world`` frame with identity orientation. Each detection's
-        ``id`` is the stable asset ID and ``results[0].hypothesis.class_id`` is
-        the authored label.
+        DimOS Z-up ``world`` frame with identity orientation. For identified
+        assets, ``id`` is the stable asset ID and ``results[0].hypothesis.class_id``
+        the authored title. Walls baked into the structure (nodes named like
+        ``wall-north``) or added with :meth:`add_wall` use their node name for both.
 
         The result is a regular DimOS LCM message: publish it with
         ``LCMTransport("/detections_3d", Detection3DArray)`` for LCM consumers,
@@ -952,11 +954,16 @@ return { x: p.x, y: p.y, z: p.z };
         return snapshot_to_detection3d_array(cast("dict[str, Any]", snapshot))
 
     def export_object_detections(self, path: str | Path) -> Detection3DArray:
-        """Write :meth:`get_object_detections` to ``path`` as one LCM-encoded message.
+        """Write :meth:`get_object_detections` to ``path``.
 
-        The file is a single ``Detection3DArray``, not an LCM event log; read it
-        back with ``object_detections.read_detection3d_array``.
+        A ``.json`` path gets a readable view (label, center, size per
+        detection). Any other path gets the single LCM-encoded
+        ``Detection3DArray`` message (not an LCM event log); read that back
+        with ``object_detections.read_detection3d_array``.
         """
         detections = self.get_object_detections()
-        write_detection3d_array(detections, path)
+        if Path(path).suffix.lower() == ".json":
+            write_detection3d_json(detections, path)
+        else:
+            write_detection3d_array(detections, path)
         return detections
