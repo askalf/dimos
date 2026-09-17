@@ -309,7 +309,6 @@ def _default_branch_has_shared_flakes() -> bool:
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
-
 def _locked_in_repo_inputs() -> dict[str, list[tuple[str, str]]]:
     """flake.lock path -> the (rev, dir) of each in-repo input it pins."""
     locked: dict[str, list[tuple[str, str]]] = {}
@@ -351,7 +350,6 @@ def _tree_at(rev: str, path: str) -> str | None:
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
-
 def _resolve(nodes: dict, node: str, name: str) -> str | None:
     """The node `name` refers to from `node`, resolving a `follows` path from root."""
     edge = nodes.get(node, {}).get("inputs", {}).get(name)
@@ -397,8 +395,6 @@ def _build_nixpkgs_revs(lock: Path) -> set[str]:
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to find the locks")
-
-
 def test_manifest_is_deterministic() -> None:
     modules = _SCRIPT.discover()
     manifest = _SCRIPT.build_manifest(modules)
@@ -491,6 +487,7 @@ def test_flake_refs_resolve_and_are_covered() -> None:
                     "input set — teach bin/build-native-modules._FLAKE_REF the new form"
                 )
 
+
 def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
     """A module's lock must name a revision whose shared tree is the one in this commit.
 
@@ -524,4 +521,3 @@ def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
 
 
 _BUILD_EDGES = ("nixpkgs", "dimos-native-rust", "dimos-native-cpp")
-
