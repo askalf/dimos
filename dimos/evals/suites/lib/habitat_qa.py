@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Launch and scoring helpers for reference-backed Habitat draft suites."""
+"""Launch and scoring helpers for user-reviewed Habitat suites."""
 
 from collections.abc import Callable
 from functools import partial
@@ -64,7 +64,7 @@ def case(
     *,
     scene_env: str | None = None,
 ) -> EvalCase:
-    """Create an independent seeded episode; reference validation stays explicit."""
+    """Create an independent seeded episode with question-specific tags."""
     return EvalCase(
         id=f"{prefix}_{suffix}",
         inputs=INSTRUCTION + "\n\n" + question,
@@ -76,5 +76,5 @@ def case(
         ),
         grade=grade,
         timeout_s=1200,
-        tags=frozenset(tags | {"draft-reference"}),
+        tags=frozenset(tags),
     )

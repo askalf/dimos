@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed QA for original furnished HSSD 103997970_171031287.
-
-HSSD_DATASET_CONFIG selects the downloaded original dataset config.
-The living/kitchen/dining annotations describe one open-plan physical room.
-References and user review: ../../../suite_draft/habitat/hssd/hssd_103997970_171031287.md.
-Runtime navmesh preparation remains a prerequisite for original HSSD scenes.
-"""
+"""User-reviewed hssd_103997970_171031287 QA; scene context is in ../SCENES.md."""
 
 from collections.abc import Callable
 import os
@@ -26,7 +20,7 @@ from typing import TypeVar
 
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.evals.environments.habitat import HabitatEnvironment
-from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no
+from dimos.evals.scorers import exact, first_number, numeric, yes_no
 from dimos.evals.types import EvalCase, Outcome, Suite
 
 T = TypeVar("T")
@@ -103,15 +97,6 @@ SUITE: Suite = [
         tags=frozenset({"rooms", "area", "single-choice"}),
     ),
     EvalCase(
-        id="hssd_103997970_171031287_living_area",
-        inputs=INSTRUCTION
-        + "\n\nWhat is the approximate floor area of the open-plan living/kitchen/dining room, in square meters? Return only the number.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: numeric(46.06, v, tolerance=3, band=10)),
-        timeout_s=1200,
-        tags=frozenset({"area", "numeric"}),
-    ),
-    EvalCase(
         id="hssd_103997970_171031287_kitchen_area",
         inputs=INSTRUCTION
         + "\n\nWhat is the approximate floor area of the kitchen area, in square meters? Return only the number.",
@@ -136,33 +121,6 @@ SUITE: Suite = [
         grade=_parsed(yes_no, lambda v: exact("yes", v)),
         timeout_s=1200,
         tags=frozenset({"existence", "boolean"}),
-    ),
-    EvalCase(
-        id="hssd_103997970_171031287_fridge_location",
-        inputs=INSTRUCTION
-        + "\n\nWhich area contains the refrigerator? A) Bedroom; B) Kitchen area; C) Bathroom; D) Dining area. Return only A, B, C, or D.",
-        environment=_environment(),
-        grade=lambda o: exact("B", o.trajectory.final_answer.strip().upper()),
-        timeout_s=1200,
-        tags=frozenset({"object-location", "single-choice"}),
-    ),
-    EvalCase(
-        id="hssd_103997970_171031287_fridge_height",
-        inputs=INSTRUCTION
-        + "\n\nApproximately how tall is the refrigerator, in meters? Return only the number.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: numeric(2.36, v, tolerance=0.12, band=0.45)),
-        timeout_s=1200,
-        tags=frozenset({"dimensions", "numeric"}),
-    ),
-    EvalCase(
-        id="hssd_103997970_171031287_area_order",
-        inputs=INSTRUCTION
-        + "\n\nOrder these areas from smallest to largest floor area. A) Dining area; B) Bathroom; C) Kitchen area. Return all three letters once in order, optionally separated by commas.",
-        environment=_environment(),
-        grade=_parsed(ranking, lambda v: rank_order("CAB", v)),
-        timeout_s=1200,
-        tags=frozenset({"area", "ranking"}),
     ),
     EvalCase(
         id="hssd_103997970_171031287_room_count",

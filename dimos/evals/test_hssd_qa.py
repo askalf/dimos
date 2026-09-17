@@ -38,8 +38,8 @@ def test_reviewed_scene_contract(monkeypatch, tmp_path):
     assert env.config.scene_id == "102344193"
     assert env.config.start_position_ros_override == (3.0, 5.5, 0.124386)
     assert isinstance(env, HabitatEnvironment)
-    assert len(SUITE) == len({case.id for case in SUITE}) == 13
-    assert len({id(case.environment) for case in SUITE}) == 13
+    assert len(SUITE) == len({case.id for case in SUITE}) == 11
+    assert len({id(case.environment) for case in SUITE}) == 11
     for case in SUITE:
         assert case.inputs.startswith(INSTRUCTION + "\n\n")
         assert "balcony" not in case.inputs.lower()
@@ -59,9 +59,7 @@ def test_reviewed_scene_contract(monkeypatch, tmp_path):
         ("laptop_location", "C"),
         ("laundry_exists", "yes"),
         ("fridge_height", "1.68"),
-        ("laundry_units", "2"),
         ("room_area_order", "ACB"),
-        ("dryer_location", "A"),
         ("fridge_state", "B"),
         ("laptop_tv_distance", "11.46"),
     ],
@@ -72,8 +70,8 @@ def test_reviewed_answers_score_full_credit(suffix, answer):
 
 
 def test_large_home_reviewed_contract():
-    assert len(LARGE_HOME_SUITE) == len({case.id for case in LARGE_HOME_SUITE}) == 18
-    assert len({id(case.environment) for case in LARGE_HOME_SUITE}) == 18
+    assert len(LARGE_HOME_SUITE) == len({case.id for case in LARGE_HOME_SUITE}) == 14
+    assert len({id(case.environment) for case in LARGE_HOME_SUITE}) == 14
     for case in LARGE_HOME_SUITE:
         assert case.environment.config.scene_id == "102344403"
         assert case.environment.config.start_position_ros_override == (3.713, 6.3, 0.159347)
@@ -102,8 +100,8 @@ def test_large_home_human_corrections(suffix, answer, expected):
 
 
 def test_compact_home_contract():
-    assert len(COMPACT_HOME_SUITE) == len({c.id for c in COMPACT_HOME_SUITE}) == 16
-    assert len({id(c.environment) for c in COMPACT_HOME_SUITE}) == 16
+    assert len(COMPACT_HOME_SUITE) == len({c.id for c in COMPACT_HOME_SUITE}) == 12
+    assert len({id(c.environment) for c in COMPACT_HOME_SUITE}) == 12
     for case in COMPACT_HOME_SUITE:
         assert case.environment.config.scene_id == "103997970_171031287"
         assert "balcony" not in case.inputs.lower()
@@ -117,7 +115,6 @@ def test_compact_home_contract():
         ("dining_exists", "no"),
         ("largest_room", "C"),
         ("smallest_room", "B"),
-        ("living_area", "46.06"),
         ("laptop_exists", "no"),
         ("dining_table_diameter", "1.60"),
         ("tv_location", "C"),
@@ -130,8 +127,8 @@ def test_compact_home_human_corrections(suffix, answer):
 
 
 def test_office_home_contract():
-    assert len(OFFICE_HOME_SUITE) == len({c.id for c in OFFICE_HOME_SUITE}) == 15
-    assert len({id(c.environment) for c in OFFICE_HOME_SUITE}) == 15
+    assert len(OFFICE_HOME_SUITE) == len({c.id for c in OFFICE_HOME_SUITE}) == 13
+    assert len({id(c.environment) for c in OFFICE_HOME_SUITE}) == 13
     for case in OFFICE_HOME_SUITE:
         assert case.environment.config.scene_id == "103997424_171030444"
         assert "book" not in case.id
@@ -156,7 +153,7 @@ def test_office_home_reviewed_answers(suffix, answer, score):
 
 
 def test_furnished_home_contract():
-    assert len(FURNISHED_HOME_SUITE) == len({c.id for c in FURNISHED_HOME_SUITE}) == 14
+    assert len(FURNISHED_HOME_SUITE) == len({c.id for c in FURNISHED_HOME_SUITE}) == 10
     for case in FURNISHED_HOME_SUITE:
         assert case.environment.config.scene_id == "104348463_171513588"
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
@@ -172,7 +169,7 @@ def test_furnished_home_contract():
 
 @pytest.mark.parametrize(
     "suffix,answer",
-    [("fridge_exists", "yes"), ("room_count", "3"), ("wardrobe_state", "A"), ("largest_room", "C")],
+    [("island_chairs", "3"), ("room_count", "3")],
 )
 def test_furnished_home_corrections(suffix, answer):
     case = next(c for c in FURNISHED_HOME_SUITE if c.id == f"hssd_104348463_171513588_{suffix}")
@@ -182,11 +179,11 @@ def test_furnished_home_corrections(suffix, answer):
 @pytest.mark.parametrize(
     "scene_id,suite,count",
     [
-        ("106366410_174226806", GYM_HOME_SUITE, 15),
-        ("106878858_174886965", GARAGE_HOME_SUITE, 17),
-        ("107734110_175999914", PIANO_HOME_SUITE, 15),
-        ("108736851_177263586", TWO_KITCHEN_SUITE, 16),
-        ("108736884_177263634", THREE_BEDROOM_SUITE, 12),
+        ("106366410_174226806", GYM_HOME_SUITE, 12),
+        ("106878858_174886965", GARAGE_HOME_SUITE, 11),
+        ("107734110_175999914", PIANO_HOME_SUITE, 10),
+        ("108736851_177263586", TWO_KITCHEN_SUITE, 11),
+        ("108736884_177263634", THREE_BEDROOM_SUITE, 9),
     ],
 )
 def test_remaining_scene_contracts(scene_id, suite, count):
@@ -215,11 +212,14 @@ def test_shared_factory_dataset_override_and_fresh_environment(monkeypatch, tmp_
 @pytest.mark.parametrize(
     "suite,suffix,answer,score",
     [
-        (PIANO_HOME_SUITE, "fridge_exists", "yes", 1),
         (PIANO_HOME_SUITE, "office_doorway_radius", "0.49", 1),
         (PIANO_HOME_SUITE, "office_doorway_radius", "0.7", 0),
         (PIANO_HOME_SUITE, "piano_computer_distance", "11.64", 1),
         (GYM_HOME_SUITE, "laundry_appliances", "3", 1),
+        (GYM_HOME_SUITE, "red_trash_bin_location", "B", 1),
+        (GYM_HOME_SUITE, "red_trash_bin_location", "A", 0),
+        (GYM_HOME_SUITE, "bed_relative_to_sofa", "A", 1),
+        (GYM_HOME_SUITE, "bed_relative_to_sofa", "B", 0),
         (GYM_HOME_SUITE, "toilet_room_bathtub", "yes", 1),
         (GYM_HOME_SUITE, "bedroom_path_order", "B,C,A", 1),
         (GYM_HOME_SUITE, "bedroom_path_order", "CBA", 2 / 3),
@@ -229,12 +229,19 @@ def test_shared_factory_dataset_override_and_fresh_environment(monkeypatch, tmp_
         (GARAGE_HOME_SUITE, "entryway_path_order", "A B C", 1),
         (GARAGE_HOME_SUITE, "garage_car_color", " b ", 1),
         (GARAGE_HOME_SUITE, "exterior_opening", "yes", 1),
+        (GARAGE_HOME_SUITE, "bathroom_floor_pattern_match", "yes", 1),
         (TWO_KITCHEN_SUITE, "beds", "4", 1),
-        (TWO_KITCHEN_SUITE, "every_kitchen_fridge", "no", 1),
+        (TWO_KITCHEN_SUITE, "dining_chairs", "8", 1),
+        (TWO_KITCHEN_SUITE, "curved_sofa_table_shape", "A", 1),
+        (TWO_KITCHEN_SUITE, "side_table_sides", "C", 1),
+        (TWO_KITCHEN_SUITE, "side_table_sides", "6", 0),
         (TWO_KITCHEN_SUITE, "office_path_order", "CBA", 1),
         (TWO_KITCHEN_SUITE, "office_path_order", "CB", 0),
         (THREE_BEDROOM_SUITE, "toilets", "3", 1),
-        (THREE_BEDROOM_SUITE, "bathtubs", "2", 1),
+        (THREE_BEDROOM_SUITE, "red_potted_plant_location", "D", 1),
+        (THREE_BEDROOM_SUITE, "kitchen_counter_windows", "3", 1),
+        (THREE_BEDROOM_SUITE, "bathtub_shape_match", "no", 1),
+        (THREE_BEDROOM_SUITE, "bathroom_plant_exists", "yes", 1),
         (THREE_BEDROOM_SUITE, "area_order", "CAB", 1),
     ],
 )

@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed original HSSD home; evidence in suite_draft/habitat/hssd/hssd_107734110_175999914.md.
-
-HSSD_DATASET_CONFIG selects the downloaded original dataset; runtime needs a
-compatible navmesh. Door radius is width-only in 2D, not a furnished-route claim.
-"""
+"""User-reviewed hssd_107734110_175999914 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 
-from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no
+from dimos.evals.scorers import exact, first_number, numeric, yes_no
 from dimos.evals.suites.lib.hssd_qa import case, parsed
 from dimos.evals.types import Suite
 
@@ -37,12 +33,6 @@ SUITE: Suite = [
         "How many separate closet spaces are in the home? Return only the count.",
         parsed(first_number, lambda v: exact(2, v)),
         {"rooms", "count"},
-    ),
-    _case(
-        "piano_exists",
-        "Is there a piano in the home? Return only yes or no.",
-        parsed(yes_no, lambda v: exact("yes", v)),
-        {"existence", "boolean"},
     ),
     _case(
         "piano_location",
@@ -75,44 +65,23 @@ SUITE: Suite = [
         {"area", "numeric"},
     ),
     _case(
-        "office_area",
-        "What is the approximate office area, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(16.88, v, tolerance=1, band=4)),
-        {"area", "numeric"},
-    ),
-    _case(
-        "kitchen_perimeter",
-        "What is the approximate kitchen perimeter, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(14.36, v, tolerance=0.75, band=3)),
-        {"perimeter", "numeric"},
-    ),
-    _case(
         "piano_width",
         "What is the approximate width of the digital piano, in meters? Return only the number.",
         parsed(first_number, lambda v: numeric(1.33, v, tolerance=0.08, band=0.3)),
         {"dimensions", "numeric"},
     ),
     _case(
-        "area_order",
-        "Order these rooms from smallest to largest floor area. A) Living room; B) Bathroom; C) Kitchen. Return all letters once in order, optionally separated by commas.",
-        parsed(ranking, lambda v: rank_order("BCA", v)),
-        {"area", "ranking"},
-    ),
-    _case(
-        "fridge_exists",
-        "Is there a refrigerator in the home? Return only yes or no.",
-        parsed(yes_no, lambda v: exact("yes", v)),
-        {"existence", "boolean"},
-    ),
-    _case(
         "office_doorway_radius",
         "What is the largest circular robot radius that fits through the office doorway in 2D, based on the structural opening width, in meters? Return only the number.",
+        # Stage slice Y=1 m at X=-4.79/-4.85/-4.90: Z gap [-3.997643,-3.017643].
+        # Width .98 m / 2 is structural clearance only, not a furnished-route guarantee.
         parsed(first_number, lambda v: numeric(0.49, v, tolerance=0.025, band=0.10)),
-        {"clearance", "numeric", "draft-reference"},
+        {"clearance", "numeric"},
     ),
     _case(
         "piano_computer_distance",
         "How far is the piano from the office computer in a horizontal straight line, in meters? Return only the number.",
+        # Horizontal visual-AABB centers including node transforms/instance scale: 11.635427 m.
         parsed(first_number, lambda v: numeric(11.64, v, tolerance=0.5, band=2)),
         {"distance", "numeric"},
     ),

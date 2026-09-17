@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Annotation-derived HM3D references; semantic data stays grader-side."""
+"""User-reviewed hm3d_GLAQ4DNUx5U QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 

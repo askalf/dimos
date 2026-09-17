@@ -25,8 +25,8 @@ from dimos.evals.suites.lib.habitat_qa import case
 SCENES = [
     ("hm3d_CFVBbU9Rsyb", "00337-CFVBbU9Rsyb", 13),
     ("hm3d_GLAQ4DNUx5U", "00861-GLAQ4DNUx5U", 14),
-    ("hm3d_NBg5UqG3di3", "00770-NBg5UqG3di3", 10),
-    ("habitat_test_apartment_1", None, 13),
+    ("hm3d_NBg5UqG3di3", "00770-NBg5UqG3di3", 9),
+    ("habitat_test_apartment_1", None, 7),
     ("replicacad_apt_1", "apt_1", 13),
     ("replicacad_apt_5", "apt_5", 13),
     ("replicacad_v3_sc1_staging_00", "v3_sc1_staging_00", 14),
@@ -52,7 +52,7 @@ def test_scene_contract(name, scene_id, size):
             assert habitat.scene_id == scene_id
         assert habitat.seed == 0
         assert c.timeout_s == 1200
-        assert "draft-reference" in c.tags
+        assert "draft-reference" not in c.tags
         assert not c.tags.intersection({"dimsim", "apartment", "qa"})
         assert "Return" in c.inputs
         assert "do not leave the home" in c.inputs

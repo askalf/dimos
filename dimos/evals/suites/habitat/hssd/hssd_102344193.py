@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Interior QA for original furnished HSSD scene 102344193.
-
-Set HSSD_DATASET_CONFIG to the downloaded hssd-hab.scene_dataset_config.json.
-Reference evidence and review decisions: ../../../suite_draft/habitat/hssd/hssd_102344193.md.
-Room areas/perimeters use annotated floor polygons; distance uses horizontal
-transformed visual bounding-box centers. Outdoor areas are outside task scope.
-"""
+"""User-reviewed hssd_102344193 QA; scene context is in ../SCENES.md."""
 
 from collections.abc import Callable
 import os
@@ -143,15 +137,6 @@ SUITE: Suite = [
         tags=frozenset({"dimensions", "numeric"}),
     ),
     EvalCase(
-        id="hssd_102344193_laundry_units",
-        inputs=INSTRUCTION
-        + "\n\nHow many washing or drying appliances are in the laundry area? Return only the count.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda value: exact(2, value)),
-        timeout_s=1200,
-        tags=frozenset({"object-count", "count"}),
-    ),
-    EvalCase(
         id="hssd_102344193_room_area_order",
         inputs=INSTRUCTION
         + "\n\nWhat is the order of these rooms from smallest to largest floor area? A) Bathroom; B) Bedroom; C) Kitchen. Return all three letters once in order, optionally separated by commas.",
@@ -159,15 +144,6 @@ SUITE: Suite = [
         grade=_parsed(ranking, lambda value: rank_order("ACB", value)),
         timeout_s=1200,
         tags=frozenset({"area", "ranking"}),
-    ),
-    EvalCase(
-        id="hssd_102344193_dryer_location",
-        inputs=INSTRUCTION
-        + "\n\nWhich area contains the standalone dryer? A) Laundry area; B) Living room; C) Bedroom; D) Kitchen. Return only A, B, C, or D.",
-        environment=_environment(),
-        grade=lambda o: exact("A", o.trajectory.final_answer.strip().upper()),
-        timeout_s=1200,
-        tags=frozenset({"object-location", "single-choice"}),
     ),
     EvalCase(
         id="hssd_102344193_fridge_state",
@@ -183,6 +159,7 @@ SUITE: Suite = [
         inputs=INSTRUCTION
         + "\n\nHow far is the laptop from the television in a straight line, in meters? Return only the number.",
         environment=_environment(),
+        # Horizontal transformed visual-AABB centers; measured 11.459718 m.
         grade=_parsed(first_number, lambda value: numeric(11.46, value, tolerance=0.5, band=2)),
         timeout_s=1200,
         tags=frozenset({"distance", "numeric"}),

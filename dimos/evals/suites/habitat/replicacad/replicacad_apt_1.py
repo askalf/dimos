@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ReplicaCAD apt_1 authored-placement references; see matching suite_draft."""
+"""User-reviewed replicacad_apt_1 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 

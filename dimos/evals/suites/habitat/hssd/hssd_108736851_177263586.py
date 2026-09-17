@@ -12,20 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed HSSD two-kitchen home; evidence in matching suite_draft.
-
-Bed count and refrigerator coverage follow user review. Region-entry path
-ranking is approximate and tagged draft-reference; doorway count stays pending.
-"""
+"""User-reviewed hssd_108736851_177263586 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 
-from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no
+from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking
 from dimos.evals.suites.lib.hssd_qa import case, parsed
 from dimos.evals.types import Suite
 
 _case = partial(case, "108736851_177263586")
 SUITE: Suite = [
+    _case(
+        "dining_chairs",
+        "How many chairs are around the dining table? Return only the count.",
+        parsed(first_number, lambda v: exact(8, v)),
+        {"object-count", "count"},
+    ),
+    _case(
+        "curved_sofa_table_shape",
+        "What shape is the tabletop between the two quarter-circle sofas? A) Circular; B) Square; C) Rectangular; D) Triangular. Return only A, B, C, or D.",
+        lambda o: exact("A", o.trajectory.final_answer.strip().upper()),
+        {"visual-attribute", "single-choice"},
+    ),
+    _case(
+        "side_table_sides",
+        "How many sides do the tabletops beside the blue sofa in the living room have? A) 4; B) 5; C) 6; D) 8. Return only A, B, C, or D.",
+        lambda o: exact("C", o.trajectory.final_answer.strip().upper()),
+        {"visual-attribute", "single-choice"},
+    ),
     _case(
         "bedrooms",
         "How many bedrooms are in the home? Return only the count.",
@@ -39,33 +53,15 @@ SUITE: Suite = [
         {"rooms", "count"},
     ),
     _case(
-        "bathrooms",
-        "How many bathrooms are in the home? Return only the count.",
-        parsed(first_number, lambda v: exact(3, v)),
-        {"rooms", "count"},
-    ),
-    _case(
         "tv_location",
         "Which room contains the television? A) Living room; B) Office; C) Bedroom; D) Kitchen. Return only A, B, C, or D.",
         lambda o: exact("B", o.trajectory.final_answer.strip().upper()),
         {"object-location", "single-choice"},
     ),
     _case(
-        "office_sofa",
-        "Is there a sectional sofa in the office? Return only yes or no.",
-        parsed(yes_no, lambda v: exact("yes", v)),
-        {"existence", "boolean"},
-    ),
-    _case(
         "living_area",
         "What is the approximate living-room floor area, in square meters? Return only the number.",
         parsed(first_number, lambda v: numeric(123.96, v, tolerance=6, band=25)),
-        {"area", "numeric"},
-    ),
-    _case(
-        "office_area",
-        "What is the approximate office floor area, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(48.01, v, tolerance=3, band=10)),
         {"area", "numeric"},
     ),
     _case(
@@ -75,34 +71,10 @@ SUITE: Suite = [
         {"area", "numeric"},
     ),
     _case(
-        "larger_kitchen",
-        "What is the approximate area of the larger kitchen, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(23.50, v, tolerance=1.5, band=6)),
-        {"area", "numeric"},
-    ),
-    _case(
-        "office_perimeter",
-        "What is the approximate office perimeter, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(30.10, v, tolerance=1.5, band=5)),
-        {"perimeter", "numeric"},
-    ),
-    _case(
         "area_order",
         "Order these rooms from smallest to largest area. A) Office; B) Living room; C) Dining room. Return all letters once in order, optionally separated by commas.",
         parsed(ranking, lambda v: rank_order("CAB", v)),
         {"area", "ranking"},
-    ),
-    _case(
-        "washer_height",
-        "Approximately how tall is the washing machine, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(1.25, v, tolerance=0.1, band=0.35)),
-        {"dimensions", "numeric"},
-    ),
-    _case(
-        "fridge_height",
-        "Approximately how tall is the refrigerator, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(2.22, v, tolerance=0.12, band=0.45)),
-        {"dimensions", "numeric"},
     ),
     _case(
         "beds",
@@ -111,15 +83,13 @@ SUITE: Suite = [
         {"object-count", "count"},
     ),
     _case(
-        "every_kitchen_fridge",
-        "Does every kitchen have a refrigerator? Return only yes or no.",
-        parsed(yes_no, lambda v: exact("no", v)),
-        {"spatial-relation", "boolean"},
-    ),
-    _case(
         "office_path_order",
         "Rank these rooms by shortest walking distance to enter them from the office doorway facing the hallway, nearest first, for a robot of radius 0.25 m. A) Larger kitchen; B) Dining room; C) Laundry room. Return all letters once in order, optionally separated by commas.",
+        # Source Habitat (10.973,.177897,-.232), static navmesh .25/.60 m.
+        # Nearest sampled points inside region polygons: laundry 6.233,
+        # dining 21.470, larger kitchen 21.595 m. The last two nearly tie;
+        # this is a room-entry convention, not a center-distance ranking.
         parsed(ranking, lambda v: rank_order("CBA", v)),
-        {"distance", "ranking", "draft-reference"},
+        {"distance", "ranking"},
     ),
 ]

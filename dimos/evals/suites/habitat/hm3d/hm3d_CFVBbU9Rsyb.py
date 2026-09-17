@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Visual-reference HM3D questions; evidence and pending candidates in suite_draft."""
+"""User-reviewed hm3d_CFVBbU9Rsyb QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ReplicaCAD staging sc1; inventory-based book absence is a best-effort reference."""
+"""User-reviewed replicacad_v3_sc1_staging_00 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 

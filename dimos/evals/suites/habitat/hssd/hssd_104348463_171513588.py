@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed indoor QA for original furnished HSSD 104348463_171513588.
-
-HSSD_DATASET_CONFIG points to the original downloaded dataset config.
-Three physical rooms are user-confirmed. Kitchen and living measurements refer
-to annotated zones, not separately enclosed rooms. Runtime requires a navmesh.
-References: ../../../suite_draft/habitat/hssd/hssd_104348463_171513588.md.
-"""
+"""User-reviewed hssd_104348463_171513588 QA; scene context is in ../SCENES.md."""
 
 from collections.abc import Callable
 import os
@@ -26,7 +20,7 @@ from typing import TypeVar
 
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.evals.environments.habitat import HabitatEnvironment
-from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no
+from dimos.evals.scorers import exact, first_number, numeric, yes_no
 from dimos.evals.types import EvalCase, Outcome, Suite
 
 T = TypeVar("T")
@@ -84,29 +78,11 @@ SUITE: Suite = [
         tags=frozenset({"rooms", "count"}),
     ),
     EvalCase(
-        id="hssd_104348463_171513588_largest_room",
-        inputs=INSTRUCTION
-        + "\n\nWhich room has the largest floor area? A) Bedroom; B) Bathroom; C) Combined living/dining room. Return only A, B, or C.",
-        environment=_environment(),
-        grade=lambda o: exact("C", o.trajectory.final_answer.strip().upper()),
-        timeout_s=1200,
-        tags=frozenset({"rooms", "area", "single-choice"}),
-    ),
-    EvalCase(
         id="hssd_104348463_171513588_bedroom_area",
         inputs=INSTRUCTION
         + "\n\nWhat is the approximate bedroom floor area, in square meters? Return only the number.",
         environment=_environment(),
         grade=_parsed(first_number, lambda v: numeric(29.78, v, tolerance=2, band=7)),
-        timeout_s=1200,
-        tags=frozenset({"area", "numeric"}),
-    ),
-    EvalCase(
-        id="hssd_104348463_171513588_kitchen_area",
-        inputs=INSTRUCTION
-        + "\n\nWhat is the approximate floor area of the kitchen zone, in square meters? Return only the number.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: numeric(26.30, v, tolerance=1.5, band=6)),
         timeout_s=1200,
         tags=frozenset({"area", "numeric"}),
     ),
@@ -155,21 +131,13 @@ SUITE: Suite = [
         tags=frozenset({"dimensions", "numeric"}),
     ),
     EvalCase(
-        id="hssd_104348463_171513588_area_order",
+        id="hssd_104348463_171513588_island_chairs",
         inputs=INSTRUCTION
-        + "\n\nOrder these areas from smallest to largest floor area. A) Kitchen zone; B) Bedroom; C) Bathroom. Return all three letters once in order, optionally separated by commas.",
+        + "\n\nHow many chairs are at the kitchen island? Return only the count.",
         environment=_environment(),
-        grade=_parsed(ranking, lambda v: rank_order("CAB", v)),
+        grade=_parsed(first_number, lambda v: exact(3, v)),
         timeout_s=1200,
-        tags=frozenset({"area", "ranking"}),
-    ),
-    EvalCase(
-        id="hssd_104348463_171513588_fridge_exists",
-        inputs=INSTRUCTION + "\n\nIs there a refrigerator in the home? Return only yes or no.",
-        environment=_environment(),
-        grade=_parsed(yes_no, lambda v: exact("yes", v)),
-        timeout_s=1200,
-        tags=frozenset({"existence", "boolean"}),
+        tags=frozenset({"object-count", "count"}),
     ),
     EvalCase(
         id="hssd_104348463_171513588_room_count",
@@ -178,14 +146,5 @@ SUITE: Suite = [
         grade=_parsed(first_number, lambda v: exact(3, v)),
         timeout_s=1200,
         tags=frozenset({"rooms", "count"}),
-    ),
-    EvalCase(
-        id="hssd_104348463_171513588_wardrobe_state",
-        inputs=INSTRUCTION
-        + "\n\nIs the wardrobe open or closed? A) Open; B) Closed. Return only A or B.",
-        environment=_environment(),
-        grade=lambda o: exact("A", o.trajectory.final_answer.strip().upper()),
-        timeout_s=1200,
-        tags=frozenset({"object-state", "single-choice"}),
     ),
 ]

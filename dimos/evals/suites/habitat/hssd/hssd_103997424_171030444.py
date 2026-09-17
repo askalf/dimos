@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed indoor QA for original furnished HSSD 103997424_171030444.
-
-Set HSSD_DATASET_CONFIG to the downloaded original dataset config.
-Reference evidence and user corrections: ../../../suite_draft/habitat/hssd/hssd_103997424_171030444.md.
-Runtime navmesh preparation remains a prerequisite for original HSSD scenes.
-"""
+"""User-reviewed hssd_103997424_171030444 QA; scene context is in ../SCENES.md."""
 
 from collections.abc import Callable
 import os
@@ -126,15 +121,6 @@ SUITE: Suite = [
         tags=frozenset({"area", "numeric"}),
     ),
     EvalCase(
-        id="hssd_103997424_171030444_office_area",
-        inputs=INSTRUCTION
-        + "\n\nWhat is the approximate office floor area, in square meters? Return only the number.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: numeric(6.90, v, tolerance=0.5, band=2)),
-        timeout_s=1200,
-        tags=frozenset({"area", "numeric"}),
-    ),
-    EvalCase(
         id="hssd_103997424_171030444_dining_perimeter",
         inputs=INSTRUCTION
         + "\n\nWhat is the approximate perimeter of the dining room, in meters? Return only the number.",
@@ -162,19 +148,11 @@ SUITE: Suite = [
         tags=frozenset({"area", "ranking"}),
     ),
     EvalCase(
-        id="hssd_103997424_171030444_desk_width",
-        inputs=INSTRUCTION
-        + "\n\nWhat is the approximate width of the office desk, in meters? Return only the number.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: numeric(1.60, v, tolerance=0.1, band=0.35)),
-        timeout_s=1200,
-        tags=frozenset({"dimensions", "numeric"}),
-    ),
-    EvalCase(
         id="hssd_103997424_171030444_dining_table_diagonal",
         inputs=INSTRUCTION
         + "\n\nWhat is the approximate diagonal length of the rectangular dining tabletop, in meters? Return only the number.",
         environment=_environment(),
+        # Visual tabletop extents 2.131282 × 1.168271 m; horizontal diagonal 2.430477 m.
         grade=_parsed(first_number, lambda v: numeric(2.43, v, tolerance=0.12, band=0.45)),
         timeout_s=1200,
         tags=frozenset({"dimensions", "numeric"}),

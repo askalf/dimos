@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ReplicaCAD staging sc2; beanbag/book absence uses best-effort inventory evidence."""
+"""User-reviewed replicacad_v3_sc2_staging_00 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 

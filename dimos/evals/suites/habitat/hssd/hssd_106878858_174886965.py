@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed original HSSD home; physical bed count follows human review.
-
-See the matching suite_draft for path origin conventions and metadata evidence.
-Exterior-opening question is observed from indoors, not an outdoor task.
-"""
+"""User-reviewed hssd_106878858_174886965 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 
@@ -26,6 +22,12 @@ from dimos.evals.types import Suite
 
 _case = partial(case, "106878858_174886965")
 SUITE: Suite = [
+    _case(
+        "bathroom_floor_pattern_match",
+        "Do all the bathrooms have the same floor pattern? Return only yes or no.",
+        parsed(yes_no, lambda v: exact("yes", v)),
+        {"visual-attribute", "boolean"},
+    ),
     _case(
         "bedrooms",
         "How many bedrooms are in the home? Return only the count.",
@@ -45,18 +47,6 @@ SUITE: Suite = [
         {"area", "numeric"},
     ),
     _case(
-        "smallest_bedroom_area",
-        "What is the approximate area of the smallest bedroom, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(9.64, v, tolerance=0.75, band=3)),
-        {"area", "numeric"},
-    ),
-    _case(
-        "garage_area",
-        "What is the approximate garage floor area, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(38.37, v, tolerance=2.5, band=8)),
-        {"area", "numeric"},
-    ),
-    _case(
         "dining_perimeter",
         "What is the approximate dining-room perimeter, in meters? Return only the number.",
         parsed(first_number, lambda v: numeric(22.54, v, tolerance=1, band=4)),
@@ -67,36 +57,6 @@ SUITE: Suite = [
         "Which room contains the laptop? A) Bedroom; B) Office; C) Living room; D) Kitchen. Return only A, B, C, or D.",
         lambda o: exact("B", o.trajectory.final_answer.strip().upper()),
         {"object-location", "single-choice"},
-    ),
-    _case(
-        "mower_location",
-        "Which area contains the lawn mower? A) Kitchen; B) Laundry area; C) Office; D) Garage. Return only A, B, C, or D.",
-        lambda o: exact("D", o.trajectory.final_answer.strip().upper()),
-        {"object-location", "single-choice"},
-    ),
-    _case(
-        "washing_machines",
-        "How many washing machines are in the laundry room? Return only the count.",
-        parsed(first_number, lambda v: exact(2, v)),
-        {"object-count", "count"},
-    ),
-    _case(
-        "office_sofa",
-        "Is there a sofa in the office? Return only yes or no.",
-        parsed(yes_no, lambda v: exact("yes", v)),
-        {"existence", "boolean"},
-    ),
-    _case(
-        "fridge_height",
-        "Approximately how tall is the refrigerator, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(2.40, v, tolerance=0.12, band=0.5)),
-        {"dimensions", "numeric"},
-    ),
-    _case(
-        "area_order",
-        "Order these spaces from smallest to largest floor area. A) Garage; B) Office; C) Living room. Return all letters once in order, optionally separated by commas.",
-        parsed(ranking, lambda v: rank_order("BCA", v)),
-        {"area", "ranking"},
     ),
     _case(
         "beds",
@@ -113,8 +73,11 @@ SUITE: Suite = [
     _case(
         "entryway_path_order",
         "Order these objects from nearest to farthest by collision-free travel distance from the entrance hall opening into the living room, for a robot of radius 0.25 m. A) Office laptop; B) Kitchen refrigerator; C) Garage mower. Return all letters once in order, optionally separated by commas.",
+        # Source Habitat (-9.217360,.158400,-4.237486), static navmesh .25/.60 m.
+        # .15 m goal grid within 1.5 m of anchors: laptop 3.254, fridge 8.632,
+        # mower 11.717 m; the other tested entryway openings preserve this order.
         parsed(ranking, lambda v: rank_order("ABC", v)),
-        {"distance", "ranking", "draft-reference"},
+        {"distance", "ranking"},
     ),
     _case(
         "garage_car_color",

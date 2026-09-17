@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ReplicaCAD apt_5 references; counts and distances differ from apt_1."""
+"""User-reviewed replicacad_apt_5 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 

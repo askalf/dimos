@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed HSSD QA. Three extra references remain unresolved in the draft:
-laundry physical-machine count, refrigerator state and bedroom doorway width.
-These are omitted instead of being given placeholder scorers.
-"""
+"""User-reviewed hssd_108736884_177263634 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 
@@ -25,6 +22,12 @@ from dimos.evals.types import Suite
 
 _case = partial(case, "108736884_177263634")
 SUITE: Suite = [
+    _case(
+        "bathroom_plant_exists",
+        "Is there a plant in any bathroom? Return only yes or no.",
+        parsed(yes_no, lambda v: exact("yes", v)),
+        {"existence", "boolean"},
+    ),
     _case(
         "bedrooms",
         "How many bedrooms are in the home? Return only the count.",
@@ -38,9 +41,9 @@ SUITE: Suite = [
         {"object-count", "count"},
     ),
     _case(
-        "laptop_location",
-        "Which room contains the laptop? A) Office; B) Bedroom; C) Kitchen; D) Living room. Return only A, B, C, or D.",
-        lambda o: exact("A", o.trajectory.final_answer.strip().upper()),
+        "red_potted_plant_location",
+        "Which room contains the red potted plant? A) Office; B) Bedroom; C) Kitchen; D) Living room. Return only A, B, C, or D.",
+        lambda o: exact("D", o.trajectory.final_answer.strip().upper()),
         {"object-location", "single-choice"},
     ),
     _case(
@@ -50,28 +53,16 @@ SUITE: Suite = [
         {"area", "numeric"},
     ),
     _case(
-        "dining_area",
-        "What is the approximate dining-room floor area, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(32.15, v, tolerance=2, band=7)),
-        {"area", "numeric"},
-    ),
-    _case(
-        "largest_bedroom",
-        "What is the approximate area of the largest bedroom, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(44.38, v, tolerance=3, band=10)),
-        {"area", "numeric"},
-    ),
-    _case(
-        "kitchen_perimeter",
-        "What is the approximate kitchen perimeter, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(29.17, v, tolerance=1.5, band=5)),
-        {"perimeter", "numeric"},
-    ),
-    _case(
-        "bathtubs",
-        "How many bathtubs are in the home? Return only the count.",
-        parsed(first_number, lambda v: exact(2, v)),
+        "kitchen_counter_windows",
+        "How many windows are along the kitchen counter? Return only the count.",
+        parsed(first_number, lambda v: exact(3, v)),
         {"object-count", "count"},
+    ),
+    _case(
+        "bathtub_shape_match",
+        "Are the bathtubs in the home the same shape? Return only yes or no.",
+        parsed(yes_no, lambda v: exact("no", v)),
+        {"visual-attribute", "boolean"},
     ),
     _case(
         "fridge_height",
@@ -80,21 +71,9 @@ SUITE: Suite = [
         {"dimensions", "numeric"},
     ),
     _case(
-        "kitchen_fridge",
-        "Does the kitchen contain a refrigerator? Return only yes or no.",
-        parsed(yes_no, lambda v: exact("yes", v)),
-        {"existence", "boolean"},
-    ),
-    _case(
         "area_order",
         "Order these rooms from smallest to largest floor area. A) Dining room; B) Kitchen; C) Office. Return all letters once in order, optionally separated by commas.",
         parsed(ranking, lambda v: rank_order("CAB", v)),
         {"area", "ranking"},
-    ),
-    _case(
-        "dining_table_length",
-        "What is the approximate length of the dining table, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(2.13, v, tolerance=0.1, band=0.4)),
-        {"dimensions", "numeric"},
     ),
 ]

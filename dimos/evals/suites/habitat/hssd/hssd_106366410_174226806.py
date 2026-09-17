@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed HSSD gym/piano home. Scene-specific evidence is in the matching draft.
-
-User corrections override toilet metadata. Laundry total and path ordering
-retain draft-reference tags. HSSD runtime requires a compatible navmesh.
-"""
+"""User-reviewed hssd_106366410_174226806 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 
@@ -28,13 +24,13 @@ _case = partial(case, "106366410_174226806")
 SUITE: Suite = [
     _case(
         "gym_exists",
-        "Is there a dedicated exercise room? Return only yes or no.",
+        "Is there an exercise area in the home? Return only yes or no.",
         parsed(yes_no, lambda v: exact("yes", v)),
         {"existence", "boolean"},
     ),
     _case(
-        "treadmill_location",
-        "Which room contains the treadmill? A) Office; B) Gym; C) Bedroom; D) Living room. Return only A, B, C, or D.",
+        "red_trash_bin_location",
+        "Which room contains the red trash bin? A) Kitchen; B) Combined gym/office; C) Bedroom; D) Living room. Return only A, B, C, or D.",
         lambda o: exact("B", o.trajectory.final_answer.strip().upper()),
         {"object-location", "single-choice"},
     ),
@@ -45,34 +41,16 @@ SUITE: Suite = [
         {"object-location", "single-choice"},
     ),
     _case(
-        "computer_location",
-        "Which room contains the desktop computer? A) Office; B) Bedroom; C) Living room; D) Gym. Return only A, B, C, or D.",
-        lambda o: exact("D", o.trajectory.final_answer.strip().upper()),
-        {"object-location", "single-choice"},
-    ),
-    _case(
         "refrigerators",
         "How many refrigerator-freezer units are in the kitchen? Return only the count.",
         parsed(first_number, lambda v: exact(2, v)),
         {"object-count", "count"},
     ),
     _case(
-        "living_area",
-        "What is the approximate area of the living room, in square meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(54.12, v, tolerance=3, band=12)),
-        {"area", "numeric"},
-    ),
-    _case(
         "gym_area",
-        "What is the approximate area of the gym, in square meters? Return only the number.",
+        "What is the approximate floor area of the gym zone, in square meters? Return only the number.",
         parsed(first_number, lambda v: numeric(23.08, v, tolerance=1.5, band=6)),
         {"area", "numeric"},
-    ),
-    _case(
-        "office_perimeter",
-        "What is the approximate perimeter of the office, in meters? Return only the number.",
-        parsed(first_number, lambda v: numeric(19.20, v, tolerance=1, band=4)),
-        {"perimeter", "numeric"},
     ),
     _case(
         "bedrooms",
@@ -81,10 +59,10 @@ SUITE: Suite = [
         {"rooms", "count"},
     ),
     _case(
-        "bedroom_sofa",
-        "Is there a sofa in the bedroom? Return only yes or no.",
-        parsed(yes_no, lambda v: exact("yes", v)),
-        {"existence", "boolean"},
+        "bed_relative_to_sofa",
+        "For someone seated on the bedroom sofa facing forward, is the bed to their left or right? A) Left; B) Right. Return only A or B.",
+        lambda o: exact("A", o.trajectory.final_answer.strip().upper()),
+        {"spatial-relation", "single-choice"},
     ),
     _case(
         "refrigerator_height",
@@ -94,7 +72,7 @@ SUITE: Suite = [
     ),
     _case(
         "area_order",
-        "Order these rooms from smallest to largest area. A) Office; B) Bedroom; C) Kitchen. Return all letters once in order, optionally separated by commas.",
+        "Order these areas from smallest to largest floor area. A) Office zone; B) Bedroom; C) Kitchen. Return all letters once in order, optionally separated by commas.",
         parsed(ranking, lambda v: rank_order("CAB", v)),
         {"area", "ranking"},
     ),
@@ -102,7 +80,7 @@ SUITE: Suite = [
         "laundry_appliances",
         "How many washing and drying machines are in the laundry room? Return only the count.",
         parsed(first_number, lambda v: exact(3, v)),
-        {"object-count", "count", "draft-reference"},
+        {"object-count", "count"},
     ),
     _case(
         "toilet_room_bathtub",
@@ -113,7 +91,10 @@ SUITE: Suite = [
     _case(
         "bedroom_path_order",
         "Order these objects from nearest to farthest by collision-free travel distance from the bedroom doorway facing the hallway, for a robot of radius 0.25 m. A) Grand piano; B) Dining table; C) Treadmill. Return all letters once in order, optionally separated by commas.",
+        # Source Habitat (2.494610,.150866,-1.863723), static navmesh .25/.60 m.
+        # .15 m goal grid within 1.5 m of anchors: table 6.812, treadmill 7.173,
+        # piano 16.730 m. Table/treadmill separation is approach-sensitive.
         parsed(ranking, lambda v: rank_order("BCA", v)),
-        {"distance", "ranking", "draft-reference"},
+        {"distance", "ranking"},
     ),
 ]

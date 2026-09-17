@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Habitat test scan, distinct from both DimSim and ReplicaCAD apartments."""
+"""User-reviewed habitat_test_apartment_1 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 
@@ -53,24 +53,6 @@ SUITE: Suite = [
         {"object-location", "single-choice"},
     ),
     _case(
-        "round_mirror_location",
-        "Which room contains the round wall mirror? A) Dining room; B) Bathroom; C) Bedroom; D) Living room. Return only the letter.",
-        choice("A"),
-        {"object-location", "single-choice"},
-    ),
-    _case(
-        "tv_exists",
-        "Is there a television in the living room? Return only yes or no.",
-        boolean("yes"),
-        {"existence", "boolean"},
-    ),
-    _case(
-        "potted_tree_exists",
-        "Is there a potted tree in the living room? Return only yes or no.",
-        boolean("yes"),
-        {"existence", "boolean"},
-    ),
-    _case(
         "chess_decoration_count",
         "How many oversized chess-piece decorations are on the console beneath the television? Return only the count.",
         count(2),
@@ -83,27 +65,9 @@ SUITE: Suite = [
         {"object-count", "count"},
     ),
     _case(
-        "below_round_mirror",
-        "What is directly below the round wall mirror? A) Bed; B) Sofa; C) Bathtub; D) Sideboard. Return only the letter.",
-        choice("D"),
-        {"spatial-relation", "single-choice"},
-    ),
-    _case(
-        "tv_above_console",
-        "Is the television mounted on the wall above the console? Return only yes or no.",
-        boolean("yes"),
-        {"spatial-relation", "boolean"},
-    ),
-    _case(
         "coffee_table_between",
         "Is there a coffee table between the sectional sofa and the television? Return only yes or no.",
         boolean("yes"),
         {"spatial-relation", "boolean"},
-    ),
-    _case(
-        "sideboard_mirror_count",
-        "How many round wall mirrors are visible above the dining-room sideboard? Return only the count.",
-        count(1),
-        {"object-count", "count"},
     ),
 ]

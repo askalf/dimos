@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reviewed indoor QA for original furnished HSSD 102344403.
-
-Set HSSD_DATASET_CONFIG to the original hssd-hab.scene_dataset_config.json.
-References, user corrections, and path conventions: ../../../suite_draft/habitat/hssd/hssd_102344403.md.
-The runtime dataset needs a compatible navmesh; the viewer's transient navmesh
-is not automatically available to the native Habitat eval process.
-"""
+"""User-reviewed hssd_102344403 QA; scene context is in ../SCENES.md."""
 
 from collections.abc import Callable
 import os
@@ -113,24 +107,6 @@ SUITE: Suite = [
         tags=frozenset({"object-count", "count"}),
     ),
     EvalCase(
-        id="hssd_102344403_laundry_machines",
-        inputs=INSTRUCTION
-        + "\n\nHow many washer-dryer machines are in the laundry room? Return only the count.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: exact(2, v)),
-        timeout_s=1200,
-        tags=frozenset({"object-count", "count"}),
-    ),
-    EvalCase(
-        id="hssd_102344403_largest_interior",
-        inputs=INSTRUCTION
-        + "\n\nWhich of these interior spaces has the largest floor area? A) Garage; B) Recreation room; C) Lounge; D) Living room. Return only A, B, C, or D.",
-        environment=_environment(),
-        grade=lambda o: exact("D", o.trajectory.final_answer.strip().upper()),
-        timeout_s=1200,
-        tags=frozenset({"rooms", "area", "single-choice"}),
-    ),
-    EvalCase(
         id="hssd_102344403_living_area",
         inputs=INSTRUCTION
         + "\n\nWhat is the approximate living-room floor area, in square meters? Return only the number.",
@@ -138,24 +114,6 @@ SUITE: Suite = [
         grade=_parsed(first_number, lambda v: numeric(80.97, v, tolerance=4, band=16)),
         timeout_s=1200,
         tags=frozenset({"area", "numeric"}),
-    ),
-    EvalCase(
-        id="hssd_102344403_recreation_area",
-        inputs=INSTRUCTION
-        + "\n\nWhat is the approximate recreation-room floor area, in square meters? Return only the number.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: numeric(56.89, v, tolerance=3, band=12)),
-        timeout_s=1200,
-        tags=frozenset({"area", "numeric"}),
-    ),
-    EvalCase(
-        id="hssd_102344403_garage_perimeter",
-        inputs=INSTRUCTION
-        + "\n\nWhat is the approximate garage perimeter, in meters? Return only the number.",
-        environment=_environment(),
-        grade=_parsed(first_number, lambda v: numeric(32.83, v, tolerance=1.5, band=6)),
-        timeout_s=1200,
-        tags=frozenset({"perimeter", "numeric"}),
     ),
     EvalCase(
         id="hssd_102344403_area_order",
@@ -205,9 +163,12 @@ SUITE: Suite = [
         inputs=INSTRUCTION
         + "\n\nWhat is the order of these objects from nearest to farthest by collision-free travel distance from the lounge entrance facing the living room, for a robot of radius 0.25 m? A) Grand piano; B) Treadmill; C) Nearest kitchen refrigerator. Return all three letters once in order, optionally separated by commas.",
         environment=_environment(),
+        # Static-object navmesh, radius .25/height .60 m; .10 m goal grid
+        # within 1 m of each anchor. From the configured lounge start:
+        # piano 4.575 m, nearest fridge 5.608 m, treadmill 22.549 m.
         grade=_parsed(ranking, lambda v: rank_order("ACB", v)),
         timeout_s=1200,
-        tags=frozenset({"distance", "ranking", "draft-reference"}),
+        tags=frozenset({"distance", "ranking"}),
     ),
     EvalCase(
         id="hssd_102344403_dumbbells",

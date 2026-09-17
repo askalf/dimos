@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Visual-reference questions for the ornate HM3D scan."""
+"""User-reviewed hm3d_NBg5UqG3di3 QA; scene context is in ../SCENES.md."""
 
 from functools import partial
 
@@ -60,12 +60,6 @@ SUITE: Suite = [
     _case(
         "hallway_extinguisher",
         "Is there a fire extinguisher in the white corridor? Return only yes or no.",
-        boolean("yes"),
-        {"existence", "boolean"},
-    ),
-    _case(
-        "mirrored_doors",
-        "Are there mirrored door panels at an entrance to a white-paneled room? Return only yes or no.",
         boolean("yes"),
         {"existence", "boolean"},
     ),
