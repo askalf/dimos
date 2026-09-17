@@ -74,6 +74,8 @@ The `.bin` file is one LCM-encoded `Detection3DArray` message, not an LCM event
 log; read it back with `dimos.simulation.dimsim.object_detections.read_detection3d_array`.
 The `.json` file is a convenience view with `id`, `label`, `center_xyz`, `size_xyz`
 and `orientation_xyzw` per detection in the same `world` frame.
+A reference export of the apartment (87 assets + 20 walls) is checked in at
+`scenes/apartment/object_detections.json`.
 
 Consumers run over LCM. Publish the snapshot on the usual 3D detection channel and
 watch it with `dimos lcmspy`:
