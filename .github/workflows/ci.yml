@@ -159,7 +159,7 @@ jobs:
         run: python3 bin/build-native-modules
       - name: Clippy native modules
         env:
-          BUILD_WORKERS: "1"
+          BUILD_WORKERS: "2"
         run: python3 bin/build-native-modules --clippy
       - name: Verify Cachix holds the built paths
         env:

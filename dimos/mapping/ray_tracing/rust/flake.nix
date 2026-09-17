@@ -31,6 +31,11 @@
               {
                 useClippy = true;
                 capLints = "forbid";
+                # Lint unoptimised. These first-party crates are the only ones
+                # rebuilt for the check, and at the package's opt-level 3 + LTO
+                # that recompile is most of its cost. Dependencies are untouched,
+                # so nothing stops being shared.
+                release = false;
                 extraRustcOpts = (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" ];
               });
         };
