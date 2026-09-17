@@ -32,6 +32,7 @@ import pytest
 
 from dimos.core.transport_factory import make_transport
 from dimos.msgs.geometry_msgs.Pose import Pose
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.std_msgs.Header import Header
 from dimos.msgs.vision_msgs.Detection3DArray import Detection3DArray
@@ -84,6 +85,10 @@ def test_go_to_the_chair(
 ) -> None:
     start_blueprint("run", "unitree-go2-typesafe", simulator="dimsim")
     wait_for_system_ready(timeout=1200.0)
+    # Server physics (odom/lidar) starts only after the browser ships its snapshot.
+    lcm_spy.wait_for_message_result(
+        "/odom#geometry_msgs.PoseStamped", PoseStamped, lambda _m: True, "no odom", timeout=600
+    )
 
     dim_sim.set_agent_position(1.0, 2.0)
     time.sleep(3.0)

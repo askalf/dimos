@@ -73,7 +73,7 @@ class TypeSafeAgentConfig(ModuleConfig):
     min_confidence: float = 0.5
     stop_threshold: float = 0.7
     blend: bool = False
-    stops_to_clear_goal: int = 3
+    stops_to_clear_goal: int = 10
     max_objects: int = 20
     image_width: int = 1280
     image_height: int = 720
@@ -112,6 +112,7 @@ class TypeSafeAgent(Module):
         self._stop_streak = 0
         self._idle_published: bool | None = None
         self._seq = 0
+        self._hold_reason: str | None = None
         self._stop_event = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -228,11 +229,21 @@ class TypeSafeAgent(Module):
         if not goal or self._client is None:
             return
         pose = self._fresh("odom")
+        detections_3d, detections_2d = self._fresh("detections_3d"), self._fresh("detections_2d")
+        hold = None
+        if pose is None:
+            hold = "no odom"
+        elif detections_3d is None and detections_2d is None:
+            hold = "no detections"
+        if hold is not None:
+            self._hold(hold)
+            return
+        self._hold(None)
         state = build_world_state(
             goal=goal,
             pose=pose,
-            detections_3d=self._fresh("detections_3d"),
-            detections_2d=self._fresh("detections_2d"),
+            detections_3d=detections_3d,
+            detections_2d=detections_2d,
             lidar=self._fresh("lidar"),
             robot=self._robot,
             max_objects=self.config.max_objects,
@@ -255,6 +266,18 @@ class TypeSafeAgent(Module):
                 stop_threshold=self.config.stop_threshold,
             )
         )
+
+    def _hold(self, reason: str | None) -> None:
+        """Zero the target without a model call; the model cannot steer blind."""
+        with self._lock:
+            changed = reason != self._hold_reason
+            self._hold_reason = reason
+            if reason is not None:
+                self._target = (0.0, 0.0, 0.0)
+                self._robot["motion"] = "holding"
+        if changed and reason is not None:
+            logger.warning("TypeSafeAgent holding", reason=reason)
+            self.agent.publish(AIMessage(content=f"holding: {reason}"))
 
     def _apply(self, drive: Drive) -> None:
         lin, ang = self.config.linear_speed, self.config.angular_speed

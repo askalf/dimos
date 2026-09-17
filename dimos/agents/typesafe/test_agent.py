@@ -16,13 +16,23 @@ import threading
 import time
 from typing import Any
 
+from dimos_lcm.vision_msgs import (
+    BoundingBox3D,
+    Detection3D,
+    ObjectHypothesis,
+    ObjectHypothesisWithPose,
+)
 import pytest
 
 from dimos.agents.typesafe.agent import TypeSafeAgent
 from dimos.agents.typesafe.client import API_KEY_ENV
 from dimos.core.transport import LCMTransport, pLCMTransport
+from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
+from dimos.msgs.geometry_msgs.Vector3 import Vector3
+from dimos.msgs.std_msgs.Header import Header
+from dimos.msgs.vision_msgs.Detection3DArray import Detection3DArray
 
 
 def _choice(label: str, options: tuple[str, ...]) -> dict[str, Any]:
@@ -91,6 +101,19 @@ def agent(
     a.stop()
 
 
+def _scene(a: TypeSafeAgent) -> None:
+    a.odom.transport.publish(PoseStamped(position=(0, 0, 0.4), frame_id="world"))
+    d = Detection3D()
+    d.header = Header(1.0, "world")
+    d.results = [ObjectHypothesisWithPose(hypothesis=ObjectHypothesis(class_id="chair", score=0.9))]
+    d.results_length = 1
+    d.bbox = BoundingBox3D(center=Pose(position=(3.0, 0.0, 0.3)), size=Vector3(0.5, 0.5, 0.6))
+    a.detections_3d.transport.publish(
+        Detection3DArray(detections_length=1, header=Header(1.0, "world"), detections=[d])
+    )
+    time.sleep(0.1)
+
+
 def _wait(pred: Any, timeout: float = 5.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -112,7 +135,7 @@ def test_goal_drives_then_stops_and_clears(
 ) -> None:
     a, fake, twists = agent
     fake.answers = _answers(x="forward", y="left")
-    a.odom.transport.publish(PoseStamped(position=(0, 0, 0.4), frame_id="world"))
+    _scene(a)
     a.set_goal("go to the chair")
 
     assert _wait(lambda: any(t.linear.x > 0.4 and t.linear.y > 0.4 for t in twists))
@@ -131,6 +154,7 @@ def test_stop_word_clears_goal_immediately(
 ) -> None:
     a, fake, twists = agent
     fake.answers = _answers(x="forward")
+    _scene(a)
     a.set_goal("go forward")
     assert _wait(lambda: any(t.linear.x > 0.4 for t in twists))
     a.set_goal("stop")
@@ -143,6 +167,7 @@ def test_inference_failure_zeroes_target(
 ) -> None:
     a, fake, twists = agent
     fake.answers = _answers(x="forward")
+    _scene(a)
     a.set_goal("go forward")
     assert _wait(lambda: any(t.linear.x > 0.4 for t in twists))
     fake.fail = True
@@ -156,9 +181,24 @@ def test_deadman_zeroes_when_inference_stalls(
     a, fake, twists = agent
     a.config.deadman_s = 0.3
     fake.answers = _answers(x="forward")
+    _scene(a)
     a.set_goal("go forward")
     assert _wait(lambda: any(t.linear.x > 0.4 for t in twists))
     block = threading.Event()
     fake.system_one = lambda state, questions: block.wait(5) or _answers(x="forward")  # type: ignore[method-assign]
     assert _wait(lambda: twists[-1].is_zero(), timeout=3.0)
     block.set()
+
+
+def test_holds_without_odom_or_detections(
+    agent: tuple[TypeSafeAgent, FakeClient, list[Twist]],
+) -> None:
+    a, fake, twists = agent
+    fake.answers = _answers(x="forward")
+    a.set_goal("go to the chair")
+    time.sleep(0.4)
+    assert fake.states == []
+    assert a.robot_state()["motion"] == "holding"
+    a.odom.transport.publish(PoseStamped(position=(0, 0, 0.4), frame_id="world"))
+    time.sleep(0.4)
+    assert fake.states == []  # odom alone is not enough: nothing to drive toward
