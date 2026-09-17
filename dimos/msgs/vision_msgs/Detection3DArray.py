@@ -32,6 +32,26 @@ class Detection3DArray(LCMDetection3DArray):  # type: ignore[misc]
     def frame_id(self) -> str:
         return str(self.header.frame_id)
 
+    def to_json(self) -> list[dict[str, Any]]:
+        """One entry per detection: label, score, world position and size."""
+        out: list[dict[str, Any]] = []
+        for detection in self.detections[: self.detections_length]:
+            center = detection.bbox.center.position
+            size = detection.bbox.size
+            out.append(
+                {
+                    "label": _label_for_detection(detection),
+                    "score": round(_score_for_detection(detection), 2),
+                    "position": {
+                        "x": round(center.x, 2),
+                        "y": round(center.y, 2),
+                        "z": round(center.z, 2),
+                    },
+                    "size": {"x": round(size.x, 2), "y": round(size.y, 2), "z": round(size.z, 2)},
+                }
+            )
+        return out
+
     def to_rerun(self) -> Any:
         """Convert detections to a Rerun Boxes3D archetype."""
         import rerun as rr
@@ -78,3 +98,8 @@ def _label_for_detection(detection: Any) -> str:
     if marker_id:
         return f"id={marker_id}"
     return ""
+
+
+def _score_for_detection(detection: Any) -> float:
+    scores = [float(r.hypothesis.score) for r in detection.results[: detection.results_length]]
+    return max(scores) if scores else 0.0

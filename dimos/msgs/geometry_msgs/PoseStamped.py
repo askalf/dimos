@@ -42,6 +42,23 @@ def sec_nsec(ts):  # type: ignore[no-untyped-def]
     return [s, int((ts - s) * 1_000_000_000)]
 
 
+_HEADINGS = (
+    "east",
+    "north_east",
+    "north",
+    "north_west",
+    "west",
+    "south_west",
+    "south",
+    "south_east",
+)
+
+
+def heading_word(yaw_deg: float) -> str:
+    """8-way compass word for a world-frame yaw (+x east, +y north)."""
+    return _HEADINGS[round(yaw_deg / 45.0) % 8]
+
+
 class PoseStamped(Pose, Timestamped):
     msg_name = "geometry_msgs.PoseStamped"
     ts: float
@@ -96,6 +113,16 @@ class PoseStamped(Pose, Timestamped):
             f"PoseStamped(pos=[{self.x:.3f}, {self.y:.3f}, {self.z:.3f}], "
             f"euler=[{math.degrees(self.roll):.1f}, {math.degrees(self.pitch):.1f}, {math.degrees(self.yaw):.1f}])"
         )
+
+    def to_json(self) -> dict[str, Any]:
+        yaw_deg = math.degrees(self.yaw)
+        return {
+            "ts": self.ts,
+            "frame_id": self.frame_id,
+            "position": {"x": round(self.x, 2), "y": round(self.y, 2), "z": round(self.z, 2)},
+            "yaw_deg": round(yaw_deg, 1),
+            "heading": heading_word(yaw_deg),
+        }
 
     def to_rerun(self) -> Archetype:
         """Convert to rerun Transform3D format.

@@ -30,6 +30,17 @@ from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.types.timestamped import Timestamped
 
+SECTOR_NAMES = (
+    "ahead",
+    "ahead_left",
+    "left",
+    "behind_left",
+    "behind",
+    "behind_right",
+    "right",
+    "ahead_right",
+)
+
 if TYPE_CHECKING:
     import open3d as o3d  # type: ignore[import-untyped]
     from rerun._baseclasses import Archetype
@@ -997,6 +1008,51 @@ class PointCloud2(Timestamped):
             frame_id=self.frame_id,
             timestamp=self.ts,
         )
+
+    def to_json(
+        self,
+        origin: Any | None = None,
+        *,
+        z_min: float = -0.2,
+        z_max: float = 0.8,
+        max_range: float = 5.0,
+        blocked_m: float = 0.5,
+        tight_m: float = 1.0,
+        max_points: int = 0,
+        voxel_size: float = 0.25,
+    ) -> dict[str, Any]:
+        """Room geometry around ``origin`` (a Pose; None = cloud already in robot frame).
+
+        ``sectors`` gives the nearest obstacle per 45° sector in the robot frame with a
+        word (``blocked`` / ``tight`` / ``clear``); ``points`` is a decimated sample,
+        only when ``max_points`` > 0. Height band is relative to the origin.
+        """
+        pts = self.points_f32().astype(np.float64)
+        if origin is not None:
+            pts = pts - np.array([origin.x, origin.y, origin.z])
+            c, s_ = np.cos(-origin.yaw), np.sin(-origin.yaw)
+            x, y = pts[:, 0], pts[:, 1]
+            pts = np.column_stack((c * x - s_ * y, s_ * x + c * y, pts[:, 2]))
+        r = np.hypot(pts[:, 0], pts[:, 1])
+        keep = (pts[:, 2] > z_min) & (pts[:, 2] < z_max) & (r > 0.05) & (r < max_range)
+        pts, r = pts[keep], r[keep]
+        idx = np.round(np.arctan2(pts[:, 1], pts[:, 0]) / (np.pi / 4)).astype(int) % 8
+        sectors: dict[str, Any] = {}
+        for i, name in enumerate(SECTOR_NAMES):
+            rs = r[idx == i]
+            clear_m = float(rs.min()) if rs.size else max_range
+            state = "blocked" if clear_m < blocked_m else "tight" if clear_m < tight_m else "clear"
+            sectors[name] = {"clear_m": round(clear_m, 2), "state": state}
+        out: dict[str, Any] = {"sectors": sectors}
+        if max_points > 0 and len(pts):
+            sample = pts
+            if voxel_size > 0 and len(pts) > max_points:
+                keys = np.unique(np.floor(pts / voxel_size), axis=0)
+                sample = keys * voxel_size
+            if len(sample) > max_points:
+                sample = sample[np.linspace(0, len(sample) - 1, max_points).astype(int)]
+            out["points"] = np.round(sample, 2).tolist()
+        return out
 
     def __repr__(self) -> str:
         """String representation."""

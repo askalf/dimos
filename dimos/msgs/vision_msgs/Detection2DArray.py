@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Any
+
 from dimos_lcm.vision_msgs.Detection2DArray import (
     Detection2DArray as LCMDetection2DArray,
 )
@@ -27,3 +29,25 @@ class Detection2DArray(LCMDetection2DArray):  # type: ignore[misc]
     @property
     def ts(self) -> float:
         return to_timestamp(self.header.stamp)
+
+    def to_json(self) -> list[dict[str, Any]]:
+        """One entry per detection: label, score and pixel bbox (center + size)."""
+        out: list[dict[str, Any]] = []
+        for detection in self.detections[: self.detections_length]:
+            results = detection.results[: detection.results_length]
+            label = next((str(r.hypothesis.class_id) for r in results if r.hypothesis.class_id), "")
+            score = max((float(r.hypothesis.score) for r in results), default=0.0)
+            center = detection.bbox.center.position
+            out.append(
+                {
+                    "label": label,
+                    "score": round(score, 2),
+                    "bbox": {
+                        "cx": round(center.x, 1),
+                        "cy": round(center.y, 1),
+                        "w": round(detection.bbox.size_x, 1),
+                        "h": round(detection.bbox.size_y, 1),
+                    },
+                }
+            )
+        return out
