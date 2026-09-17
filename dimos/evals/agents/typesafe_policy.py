@@ -16,8 +16,8 @@
 
 The model calls no skill. Each tick: code assembles the world state, Jev picks
 one world-frame unit step, code turns the robot to face it and drives forward,
-republishing within the tick. The scene (obstacles, room bounds, goal) is a
-static JSON file; the robot pose comes live off ``/odom``.
+republishing within the tick. The scene (obstacles, walls, goal) is a static
+DimSim ground-truth snapshot; the robot pose comes live off ``/odom``.
 
 Two contracts are meant to be edited: :class:`WorldState` (what Jev sees) and
 :data:`STEP_CRITERIA` / :func:`build_questions` (what Jev answers). Everything
@@ -45,9 +45,10 @@ if TYPE_CHECKING:
 
 
 # --- input contract: what Jev sees each tick ---------------------------------
-# One global world frame (ROS: +x east, +y north, meters). Obstacles carry a
-# label and an axis-aligned 2D box; there is no object/obstacle distinction,
-# every box is something to avoid.
+# One global world frame: DimSim's scene origin, ROS Z-up, meters, the frame
+# odometry is published in. Obstacles are DimSim ground-truth boxes with real
+# extents, walls included; there is no object/obstacle distinction, every box
+# is something to avoid.
 #
 # Note: Jev is documented as unreliable at numeric comparison
 # (docs.typesafe.ai/model-jaggedness/jev-1.13). Raw coordinates are a
@@ -68,6 +69,9 @@ class WorldState:
     robot_yaw_deg: float = 0.0
     goal_label: str = ""
     goal_xy: tuple[float, float] = (0.0, 0.0)
+    # minx, miny, maxx, maxy. The centre is inside the object; arrival means
+    # touching this box.
+    goal_box: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     room_bounds: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     obstacles: list[Obstacle] = field(default_factory=list)
     ticks_elapsed: int = 0
@@ -90,12 +94,14 @@ STEPS: dict[str, tuple[float, float]] = {
     "-1,0": (-1.0, 0.0),
 }
 
+# Pure coordinates, no compass words: the scene's wall labels use a different
+# compass ("wall-east" sits at +y), and two conventions in one prompt is a trap.
 STEP_CRITERIA: dict[str, str] = {
     "0,0": "Hold position.",
-    "0,1": "Step north, toward +y.",
-    "1,0": "Step east, toward +x.",
-    "0,-1": "Step south, toward -y.",
-    "-1,0": "Step west, toward -x.",
+    "0,1": "Step toward +y.",
+    "1,0": "Step toward +x.",
+    "0,-1": "Step toward -y.",
+    "-1,0": "Step toward -x.",
 }
 
 
@@ -110,50 +116,101 @@ def build_questions() -> dict[str, Any]:
             ),
             criteria=STEP_CRITERIA,
         ),
-        "reached": Noul(instructions="The robot has reached the goal and should stop"),
+        "reached": Noul(instructions="The robot has reached the goal box and should stop"),
     }
 
 
 # --- scene file --------------------------------------------------------------
+# DimSim ground truth: the snapshot ``SceneClient.get_object_detections()``
+# writes through ``detection3d_array_to_dict`` (PR #4208), already in the ROS
+# ``world`` frame odometry uses. Static for now; the live call returns the
+# same schema, so switching is a one-line change in ``run()``.
+
+Box2D = tuple[float, float, float, float]  # minx, miny, maxx, maxy
+
+# DimSim's agent is a capsule (halfHeight 0.25 + radius 0.12) resting on the
+# floor. Anything whose box bottom is above its top passes overhead: door
+# headers, wall cabinets, the TV.
+ROBOT_TOP_M = 0.74
+# A footprint inside another kept footprint (books on a shelf, a plate on a
+# cart) adds nothing for navigation, and Jev's accuracy falls with irrelevant
+# state. The tolerance absorbs a throw blanket overhanging its bed, and a chair
+# tucked under its table (the table's footprint already blocks that spot).
+CONTAINMENT_TOL_M = 0.1
+WALL_PREFIXES = ("wall", "yard")
 
 
 @dataclass(frozen=True, kw_only=True)
 class Scene:
-    """The static half of the world state, supplied as JSON::
-
-    {
-      "frame_id": "world",
-      "goal": {"label": "bed", "xy": [-3.567, -1.332]},
-      "room_bounds": [-6.0, -4.0, 6.0, 4.0],
-      "obstacles": [
-        {"label": "sofa", "min_xy": [1.0, 0.5], "max_xy": [2.5, 1.8]}
-      ]
-    }
-    """
-
     frame_id: str
     goal_label: str
     goal_xy: tuple[float, float]
-    room_bounds: tuple[float, float, float, float]
+    goal_box: Box2D
+    room_bounds: Box2D
     obstacles: list[Obstacle]
 
 
-def load_scene(path: Path) -> Scene:
+def load_scene(path: Path, goal_label: str) -> Scene:
+    """Detections JSON -> the 2D scene Jev sees. ``goal_label`` is a substring."""
     raw = json.loads(Path(path).expanduser().read_text())
-    goal = raw["goal"]
+    goal = next(
+        (d for d in raw["detections"] if goal_label.lower() in str(d["label"]).lower()), None
+    )
+    if goal is None:
+        raise LookupError(f"no detection labelled like {goal_label!r} in {path}")
+    grounded = [d for d in raw["detections"] if _box_bottom(d) < ROBOT_TOP_M]
+    boxes = {str(d["id"]): _footprint(d) for d in grounded}
+    kept = [d for d in grounded if not _contained(str(d["id"]), boxes)]
+    walls = [boxes[str(d["id"])] for d in kept if str(d["label"]).startswith(WALL_PREFIXES)]
+    bounds = walls or list(boxes.values())
     return Scene(
         frame_id=str(raw.get("frame_id", "world")),
         goal_label=str(goal["label"]),
-        goal_xy=tuple(goal["xy"]),  # type: ignore[arg-type]
-        room_bounds=tuple(raw["room_bounds"]),  # type: ignore[arg-type]
+        goal_xy=(float(goal["center_xyz"][0]), float(goal["center_xyz"][1])),
+        goal_box=_footprint(goal),
+        room_bounds=(
+            min(b[0] for b in bounds),
+            min(b[1] for b in bounds),
+            max(b[2] for b in bounds),
+            max(b[3] for b in bounds),
+        ),
         obstacles=[
             Obstacle(
-                label=str(o["label"]),
-                min_xy=tuple(o["min_xy"]),  # type: ignore[arg-type]
-                max_xy=tuple(o["max_xy"]),  # type: ignore[arg-type]
+                label=str(d["label"]),
+                min_xy=(boxes[str(d["id"])][0], boxes[str(d["id"])][1]),
+                max_xy=(boxes[str(d["id"])][2], boxes[str(d["id"])][3]),
             )
-            for o in raw.get("obstacles", [])
+            for d in kept
         ],
+    )
+
+
+def _footprint(d: dict[str, Any]) -> Box2D:
+    (cx, cy, _), (sx, sy, _) = d["center_xyz"], d["size_xyz"]
+    return (
+        round(cx - sx / 2, 3),
+        round(cy - sy / 2, 3),
+        round(cx + sx / 2, 3),
+        round(cy + sy / 2, 3),
+    )
+
+
+def _box_bottom(d: dict[str, Any]) -> float:
+    return float(d["center_xyz"][2] - d["size_xyz"][2] / 2)
+
+
+def _inside(a: Box2D, b: Box2D, tol: float) -> bool:
+    return a[0] >= b[0] - tol and a[1] >= b[1] - tol and a[2] <= b[2] + tol and a[3] <= b[3] + tol
+
+
+def _contained(own_id: str, boxes: dict[str, Box2D]) -> bool:
+    """Whether the box lies inside another footprint that does not lie inside it."""
+    box = boxes[own_id]
+    return any(
+        other_id != own_id
+        and _inside(box, other, CONTAINMENT_TOL_M)
+        and not _inside(other, box, CONTAINMENT_TOL_M)
+        for other_id, other in boxes.items()
     )
 
 
@@ -162,7 +219,8 @@ def load_scene(path: Path) -> Scene:
 
 class TypeSafePolicyConfig(AgentConfig):
     model: str = "jev-latest"  # typesafe_sdk.constants.DEFAULT_MODEL
-    scene_json: Path = Path()  # required; see Scene for the schema
+    scene_json: Path = Path()  # required; a DimSim detections snapshot, see load_scene
+    goal_label: str = "sectional"  # substring of the goal detection's label
     max_ticks: int = 60
     tick_s: float = 1.0
     # The SDK default is 10s; a tick that blocks longer than this is dead time.
@@ -199,7 +257,7 @@ class TypeSafePolicy(Agent):
             raise ValueError("TypeSafePolicy calls no tools; leave modules empty")
         if not self.config.scene_json.is_file():
             raise FileNotFoundError(f"scene_json not found: {self.config.scene_json}")
-        load_scene(self.config.scene_json)  # fail before anything starts
+        load_scene(self.config.scene_json, self.config.goal_label)  # fail before anything starts
 
     def run(
         self, inputs: str, env: RunningEnvironment, run_dir: Path, *, timeout_s: float
@@ -212,7 +270,7 @@ class TypeSafePolicy(Agent):
         raw.mkdir(parents=True, exist_ok=True)
         trajectory = TrajectoryBuilder(inputs, name=type(self).__name__, model=self.config.model)
 
-        scene = load_scene(self.config.scene_json)
+        scene = load_scene(self.config.scene_json, self.config.goal_label)
         # api_key comes from TYPESAFE_API_KEY (typesafe_sdk.constants.API_KEY_ENV).
         client = TypeSafeClient(model=self.config.model, timeout=self.config.request_timeout_s)
         questions = build_questions()
@@ -272,6 +330,7 @@ class TypeSafePolicy(Agent):
             robot_yaw_deg=math.degrees(_yaw(pose)),
             goal_label=scene.goal_label,
             goal_xy=scene.goal_xy,
+            goal_box=scene.goal_box,
             room_bounds=scene.room_bounds,
             obstacles=scene.obstacles,
             ticks_elapsed=tick,

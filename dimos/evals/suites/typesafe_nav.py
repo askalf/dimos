@@ -19,7 +19,13 @@ way the agent affects the world is the Twist it publishes.
 
     dimos evals run dimos.evals.suites.typesafe_nav \
         --agent dimos.evals.agents.typesafe_policy \
-        --set scene_json=dimos/evals/suites/scenes/apartment_couch.json
+        --set scene_json=dimos/evals/suites/scenes/apartment_detections.json
+
+``apartment_detections.json`` is DimSim's ground-truth snapshot of the
+apartment: objects and walls with real extents, in the ROS world frame odometry
+uses. Copied verbatim from PR #4208 (``misc/DimSim/scenes/apartment/
+object_detections.json`` at 7fd0e2f17); regenerate with
+``SceneClient.export_object_detections`` once that lands.
 """
 
 from __future__ import annotations
@@ -27,14 +33,22 @@ from __future__ import annotations
 from dimos.evals.environments.dimsim import DimSimEnvironment
 from dimos.evals.scorers import ramp
 from dimos.evals.types import EvalCase, Outcome, Suite, recording
-from dimos.msgs.geometry_msgs.Vector3 import Vector3
 
-# Couch centre from misc/DimSim/scenes/apartment/objects/manifest.json, in the
-# ROS world frame. Regenerate with dimos.evals.suites.lib.dimsim_scene.
-GOAL = Vector3(1.056, 4.382, 0.0)
+GOAL_LABEL = "sectional"
+# The couch's real footprint (minx, miny, maxx, maxy); test_typesafe_nav pins
+# it to the scene file. The centre is inside the couch and unreachable, so
+# arrival is measured to the box edge.
+GOAL_BOX = (0.156, 3.028, 1.956, 5.735)
 # Matches the DimSim-native go-to-couch rubric (objectDistance thresholdM: 2.0).
 ARRIVAL_BAND_M = 2.0
 MIN_TRAVEL_M = 0.1
+
+
+def distance_to_box(x: float, y: float, box: tuple[float, float, float, float]) -> float:
+    """Euclidean distance from a point to an axis-aligned box; 0 inside."""
+    dx = max(box[0] - x, 0.0, x - box[2])
+    dy = max(box[1] - y, 0.0, y - box[3])
+    return (dx * dx + dy * dy) ** 0.5
 
 
 def reached_goal(outcome: Outcome) -> float:
@@ -43,9 +57,10 @@ def reached_goal(outcome: Outcome) -> float:
         poses = [entry.data.position for entry in store.streams.odom]
     if not poses:
         raise LookupError("no odometry recorded")
-    arrival = ramp((GOAL - poses[-1]).length(), band=ARRIVAL_BAND_M)
+    start, end = poses[0], poses[-1]
+    arrival = ramp(distance_to_box(end.x, end.y, GOAL_BOX), band=ARRIVAL_BAND_M)
     travelled = sum((poses[i + 1] - poses[i]).length() for i in range(len(poses) - 1))
-    ideal = (GOAL - poses[0]).length()
+    ideal = distance_to_box(start.x, start.y, GOAL_BOX)
     # A robot that never moved has no path to be direct about; odom jitter must
     # not turn 1e-9 m of travel into full directness credit.
     directness = min(1.0, ideal / travelled) if travelled >= MIN_TRAVEL_M else 0.0
