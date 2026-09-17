@@ -160,10 +160,12 @@ def load_scene(path: Path) -> Scene:
 
 
 class TypeSafePolicyConfig(AgentConfig):
-    model: str = "jev-1.13"
+    model: str = "jev-latest"  # typesafe_sdk.constants.DEFAULT_MODEL
     scene_json: Path = Path()  # required; see Scene for the schema
     max_ticks: int = 60
     tick_s: float = 1.0
+    # The SDK default is 10s; a tick that blocks longer than this is dead time.
+    request_timeout_s: float = 10.0
     speed: float = 0.4
     min_confidence: float = 0.35  # below this, hold still
     reached_noul: float = 0.8
@@ -201,7 +203,8 @@ class TypeSafePolicy(Agent):
         trajectory = TrajectoryBuilder(inputs, name=type(self).__name__, model=self.config.model)
 
         scene = load_scene(self.config.scene_json)
-        client = TypeSafeClient()
+        # api_key comes from TYPESAFE_API_KEY (typesafe_sdk.constants.API_KEY_ENV).
+        client = TypeSafeClient(model=self.config.model, timeout=self.config.request_timeout_s)
         questions = build_questions()
 
         odom = make_transport(self.config.odom_topic, PoseStamped)
@@ -293,16 +296,19 @@ class TypeSafePolicy(Agent):
             json.dumps({"body": {"state": state.encode()}, "started_at": started}, indent=2)
         )
         answers = {name: _answer_json(a) for name, a in response.answers.items()}
-        response_path.write_text(json.dumps({"answers": answers}, indent=2, default=str))
-        usage = getattr(response, "usage", None)
+        response_path.write_text(
+            json.dumps({"model": response.model, "answers": answers}, indent=2, default=str)
+        )
+        usage = response.usage
         trajectory.step(
             message=json.dumps(answers),
             request=request_path,
             response=response_path,
-            model_name=self.config.model,
+            # What actually ran, as reported by the provider.
+            model_name=str(response.model),
             metrics=Metrics(
-                prompt_tokens=getattr(usage, "prompt_tokens", 0),
-                completion_tokens=getattr(usage, "completion_tokens", 0),
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
             ),
             at=started,
             latency_s=time.time() - started,
