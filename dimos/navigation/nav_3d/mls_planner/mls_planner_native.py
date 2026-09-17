@@ -29,7 +29,7 @@ from dimos.msgs.tf2_msgs.TFMessage import TFMessage
 class MLSPlannerNativeConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     executable: str = "result/bin/mls_planner"
-    build_command: str | None = "nix build -L path:.#dimos-mls-planner"
+    build_command: str | None = "nix build -L path:."
     stdin_config: bool = True
 
     world_frame: str = "odom"

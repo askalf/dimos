@@ -160,7 +160,7 @@ def _literal_default(classdef: ast.ClassDef, field: str, source: str) -> str | N
 # runner could only ever build its own variant anyway). They sit deliberately
 # outside this repo's build/publish gate; each machine builds the variant it needs.
 # Every other non-literal build_command still fails loudly.
-EXTERNALLY_PROVISIONED = frozenset({"dimos.mapping.dim_slam.dim_slam.DimSlamConfig"})
+EXTERNALLY_PROVISIONED: frozenset[str] = frozenset()
 
 
 def is_nix_build(command: str | None) -> bool:

@@ -145,7 +145,7 @@ class PointLioConfig(NativeModuleConfig, PointLioTuning):
     base_fields: frozenset[str] = frozenset({"frame_id"})
     cwd: str | None = "cpp"
     executable: str = "result/bin/pointlio_native"
-    build_command: str | None = "nix build -L path:.#pointlio_native"
+    build_command: str | None = "nix build -L path:."
     # lidar_ip required; host_ip optional (auto-derived from lidar_ip's subnet).
     # Both fall back to DIMOS_POINTLIO_LIDAR_IP / DIMOS_POINTLIO_HOST_IP.
     host_ip: str | None = Field(default_factory=lambda: os.environ.get("DIMOS_POINTLIO_HOST_IP"))
@@ -221,7 +221,7 @@ class PointLioRustConfig(NativeModuleConfig, PointLioTuning):
     cwd: str | None = "rust"
     # The crate is a workspace member, so cargo builds into the repo-root target dir.
     executable: str = "result/bin/pointlio_native"
-    build_command: str | None = "nix build -L path:.#dimos-pointlio"
+    build_command: str | None = "nix build -L path:."
 
 
 class PointLioRust(NativeModule, perception.Lidar, perception.Odometry):

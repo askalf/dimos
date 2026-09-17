@@ -53,7 +53,8 @@
           if called ? rootCrate then called.rootCrate.build
           else called.workspaceMembers.${name}.build;
       in {
-        packages.${name} = buildOf (callWith false);
+        packages.default = buildOf (callWith false);
+        packages.${name} = self.packages.${system}.default;
         packages.clippy = (buildOf (callWith true)).override {
           runTests = true;
           testCrateFlags = [ "--list" ];

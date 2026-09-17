@@ -245,7 +245,7 @@ def test_no_module_reaches_the_repository_root() -> None:
     for module in _SCRIPT.discover():
         assert module.build_dir != ".", f"{module.qualname}: builds from the repository root"
         ref = _SCRIPT._flake_ref_of(module)
-        assert ref.startswith("path:.#") or ref.startswith("github:"), (
+        assert ref == "path:." or ref.startswith(("path:.#", "github:")), (
             f"{module.qualname}: flake ref {ref!r} is not the `path:.#<package>` convention"
         )
 

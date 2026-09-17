@@ -62,6 +62,9 @@
         lintedVariant = builtins.head (builtins.sort builtins.lessThan variants);
       in {
         packages = nixpkgs.lib.genAttrs variants (v: buildOf (callWith v false)) // {
+          # One package per cuVSLAM SDK variant, so `default` cannot say which; it
+          # points at the same one the module's build_command would have named.
+          default = buildOf (callWith lintedVariant false);
           clippy = (buildOf (callWith lintedVariant true)).override {
             runTests = true;
             testCrateFlags = [ "--list" ];

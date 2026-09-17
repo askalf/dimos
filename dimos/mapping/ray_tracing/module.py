@@ -33,7 +33,7 @@ TF_MATCH_TOLERANCE_S = 0.1
 class RayTracingVoxelMapConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     executable: str = "result/bin/voxel_ray_tracing"
-    build_command: str | None = "nix build -L path:.#dimos-voxel-ray-tracing"
+    build_command: str | None = "nix build -L path:."
     stdin_config: bool = True
 
     voxel_size: float = 0.08

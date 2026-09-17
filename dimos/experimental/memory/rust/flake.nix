@@ -58,7 +58,8 @@
 
         rustTools = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt ];
       in {
-        packages.${name} = buildOf (callWith false);
+        packages.default = buildOf (callWith false);
+        packages.${name} = self.packages.${system}.default;
         packages.clippy = (buildOf (callWith true)).override {
           runTests = true;
           testCrateFlags = [ "--list" ];

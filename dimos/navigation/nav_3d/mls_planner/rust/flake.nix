@@ -41,7 +41,8 @@
 
         rustTools = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt ];
       in {
-        packages.${name} = buildOf (callWith false);
+        packages.default = buildOf (callWith false);
+        packages.${name} = self.packages.${system}.default;
 
         # `runTests` is how crate2nix compiles test targets; `--list` makes the
         # binary enumerate and exit, so they are linted without being run --
