@@ -21,7 +21,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dimos_module::{error_throttled, Output};
 use lcm_msgs::geometry_msgs::{Point, Pose, PoseStamped, Quaternion, Vector3};
 use lcm_msgs::nav_msgs::Path;
-use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
 
 /// A plan waypoint as the laws and the planner see it: `(x, y, yaw)`.
@@ -178,109 +177,13 @@ pub async fn publish<T>(out: &Output<T>, msg: &T) {
     }
 }
 
-#[derive(Debug)]
-pub struct ExtractError(&'static str);
-
-impl std::fmt::Display for ExtractError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-/// The cloud as f32 xyz triples, non-finite points dropped.
-///
-/// f32 and not f64 on purpose: the python reads `cloud.points_f32()`,
-/// references it to the body in f32, and only then widens for `plan()`. Both
-/// the planner's SDF and the room hint therefore see the same rounded numbers,
-/// and a port that widened first would disagree in the last bits.
-pub fn extract_xyz(msg: &PointCloud2) -> Result<Vec<[f32; 3]>, ExtractError> {
-    let mut offsets: [Option<usize>; 3] = [None; 3];
-    for f in &msg.fields {
-        if f.datatype != PointField::FLOAT32 as u8 {
-            continue;
-        }
-        match f.name.as_str() {
-            "x" => offsets[0] = Some(f.offset as usize),
-            "y" => offsets[1] = Some(f.offset as usize),
-            "z" => offsets[2] = Some(f.offset as usize),
-            _ => {}
-        }
-    }
-    let [Some(xo), Some(yo), Some(zo)] = offsets else {
-        return Err(ExtractError("missing a float32 x/y/z field"));
-    };
-
-    let n = (msg.width as usize) * (msg.height as usize);
-    let step = msg.point_step as usize;
-    if step == 0 {
-        return Err(ExtractError("point_step is 0"));
-    }
-    if msg.data.len() < n * step {
-        return Err(ExtractError(
-            "data buffer shorter than width*height*point_step",
-        ));
-    }
-    if xo + 4 > step || yo + 4 > step || zo + 4 > step {
-        return Err(ExtractError(
-            "xyz field offsets do not fit within point_step",
-        ));
-    }
-    if msg.is_bigendian {
-        return Err(ExtractError("big-endian point data not supported"));
-    }
-
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let base = i * step;
-        let x = read_f32_le(&msg.data, base + xo);
-        let y = read_f32_le(&msg.data, base + yo);
-        let z = read_f32_le(&msg.data, base + zo);
-        if x.is_finite() && y.is_finite() && z.is_finite() {
-            out.push([x, y, z]);
-        }
-    }
-    Ok(out)
-}
-
-#[inline]
-fn read_f32_le(buf: &[u8], off: usize) -> f32 {
-    let bytes: [u8; 4] = buf[off..off + 4]
-        .try_into()
-        .expect("bounds checked by caller");
-    f32::from_le_bytes(bytes)
-}
+// Reading a cloud off the wire is dimos-module's; the path stays `msg::extract_xyz`.
+pub use dimos_module::pointcloud::{extract_xyz, ExtractError};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::f64::consts::PI;
-
-    /// An xyz float32 cloud, the shape RayTracingVoxelMap publishes.
-    pub(crate) fn cloud_of(points: &[[f32; 3]]) -> PointCloud2 {
-        let mut data = Vec::with_capacity(points.len() * 12);
-        for p in points {
-            for v in p {
-                data.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        let field = |name: &str, off: i32| PointField {
-            name: name.into(),
-            offset: off,
-            datatype: PointField::FLOAT32 as u8,
-            count: 1,
-        };
-        PointCloud2 {
-            header: Header::default(),
-            height: 1,
-            width: points.len() as i32,
-            fields: vec![field("x", 0), field("y", 4), field("z", 8)],
-            is_bigendian: false,
-            point_step: 12,
-            row_step: 12 * points.len() as i32,
-            data,
-            is_dense: true,
-        }
-    }
 
     #[test]
     fn yaw_round_trips_across_the_wrap() {
@@ -332,27 +235,5 @@ mod tests {
         let states = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let path = build_path(&states, &[], 5.0, "odom", 0.0);
         assert_eq!(path_stamps(&path), vec![5.0, 5.0]);
-    }
-
-    #[test]
-    fn extract_drops_non_finite_points_and_moves_nothing() {
-        let cloud = cloud_of(&[[1.0, 2.0, 0.3], [f32::NAN, 0.0, 0.0], [0.0, 0.0, 0.0]]);
-        let pts = extract_xyz(&cloud).expect("well-formed cloud");
-        assert_eq!(pts, vec![[1.0, 2.0, 0.3], [0.0, 0.0, 0.0]]);
-    }
-
-    #[test]
-    fn extract_refuses_a_cloud_it_cannot_read() {
-        let mut cloud = cloud_of(&[[0.0, 0.0, 0.0]]);
-        cloud.fields.remove(2); // no z
-        assert!(extract_xyz(&cloud).is_err());
-
-        let mut cloud = cloud_of(&[[0.0, 0.0, 0.0]]);
-        cloud.is_bigendian = true;
-        assert!(extract_xyz(&cloud).is_err());
-
-        let mut cloud = cloud_of(&[[0.0, 0.0, 0.0]]);
-        cloud.width = 99; // claims more points than the buffer holds
-        assert!(extract_xyz(&cloud).is_err());
     }
 }
