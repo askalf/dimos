@@ -130,6 +130,10 @@ jobs:
       - name: Install Nix (with Cachix substituter)
         env:
           INPUT_EXTRA_NIX_CONFIG: |
+            # 2461 paths copied against 17 built in a recent run: these jobs fetch
+            # far more than they compile, and crate2nix's one-derivation-per-crate
+            # graph makes those paths many and small. nix defaults to 25.
+            http-connections = 50
             extra-substituters = https://dimensionalos.cachix.org
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
@@ -206,6 +210,10 @@ jobs:
       - name: Install Nix (with Cachix substituter)
         env:
           INPUT_EXTRA_NIX_CONFIG: |
+            # 2461 paths copied against 17 built in a recent run: these jobs fetch
+            # far more than they compile, and crate2nix's one-derivation-per-crate
+            # graph makes those paths many and small. nix defaults to 25.
+            http-connections = 50
             extra-substituters = https://dimensionalos.cachix.org
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
@@ -280,6 +288,10 @@ jobs:
       - name: Install Nix
         env:
           INPUT_EXTRA_NIX_CONFIG: |
+            # 2461 paths copied against 17 built in a recent run: these jobs fetch
+            # far more than they compile, and crate2nix's one-derivation-per-crate
+            # graph makes those paths many and small. nix defaults to 25.
+            http-connections = 50
             extra-substituters = https://dimensionalos.cachix.org
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
@@ -393,6 +405,10 @@ jobs:
       - name: Install Nix
         env:
           INPUT_EXTRA_NIX_CONFIG: |
+            # 2461 paths copied against 17 built in a recent run: these jobs fetch
+            # far more than they compile, and crate2nix's one-derivation-per-crate
+            # graph makes those paths many and small. nix defaults to 25.
+            http-connections = 50
             extra-substituters = https://dimensionalos.cachix.org
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
@@ -487,6 +503,10 @@ jobs:
         # and this stays safe on fork PRs.
         env:
           INPUT_EXTRA_NIX_CONFIG: |
+            # 2461 paths copied against 17 built in a recent run: these jobs fetch
+            # far more than they compile, and crate2nix's one-derivation-per-crate
+            # graph makes those paths many and small. nix defaults to 25.
+            http-connections = 50
             extra-substituters = https://dimensionalos.cachix.org
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
@@ -758,6 +778,10 @@ jobs:
         if: steps.native-marker.outputs.cache-hit == 'true'
         env:
           INPUT_EXTRA_NIX_CONFIG: |
+            # 2461 paths copied against 17 built in a recent run: these jobs fetch
+            # far more than they compile, and crate2nix's one-derivation-per-crate
+            # graph makes those paths many and small. nix defaults to 25.
+            http-connections = 50
             extra-substituters = https://dimensionalos.cachix.org
             extra-trusted-public-keys = dimensionalos.cachix.org-1:20ynj6TjpoD3qTxkdNoeHtgs2G2pNvgAq1EQYLTHJXI=
           INPUT_SET_AS_TRUSTED_USER: "true"
