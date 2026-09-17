@@ -17,7 +17,7 @@
 from functools import partial
 
 from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no
-from dimos.evals.suites.lib.hssd_qa import case, parsed
+from dimos.evals.suites.lib.habitat_qa import hssd_case as case, parsed
 from dimos.evals.types import Suite
 
 _case = partial(case, "108736884_177263634")

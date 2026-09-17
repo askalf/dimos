@@ -27,7 +27,10 @@ from dimos.evals.suites.habitat.hssd.hssd_106878858_174886965 import SUITE as GA
 from dimos.evals.suites.habitat.hssd.hssd_107734110_175999914 import SUITE as PIANO_HOME_SUITE
 from dimos.evals.suites.habitat.hssd.hssd_108736851_177263586 import SUITE as TWO_KITCHEN_SUITE
 from dimos.evals.suites.habitat.hssd.hssd_108736884_177263634 import SUITE as THREE_BEDROOM_SUITE
-from dimos.evals.suites.lib.hssd_qa import INSTRUCTION as SHARED_INSTRUCTION, case as make_case
+from dimos.evals.suites.lib.habitat_qa import (
+    INSTRUCTION as SHARED_INSTRUCTION,
+    hssd_case as make_case,
+)
 
 
 def test_reviewed_scene_contract(monkeypatch, tmp_path):

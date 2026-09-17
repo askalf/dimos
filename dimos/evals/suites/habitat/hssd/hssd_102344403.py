@@ -14,16 +14,14 @@
 
 """User-reviewed hssd_102344403 QA; scene context is in ../SCENES.md."""
 
-from collections.abc import Callable
 import os
-from typing import TypeVar
 
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.evals.environments.habitat import HabitatEnvironment
 from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no
-from dimos.evals.types import EvalCase, Outcome, Suite
+from dimos.evals.suites.lib.habitat_qa import parsed as _parsed
+from dimos.evals.types import EvalCase, Suite
 
-T = TypeVar("T")
 INSTRUCTION = (
     "You are answering questions about a live simulated home. You control the robot, "
     "and its sensor recording grows as it observes the environment. Initial observations "
@@ -49,17 +47,6 @@ def _environment() -> HabitatEnvironment:
         start_position_ros_override=(3.713, 6.3, 0.159347),
         blueprint=["habitat-nav", "mcp-server", "observe-skill"],
     )
-
-
-def _parsed(parser: Callable[[str], T], score: Callable[[T], float]) -> Callable[[Outcome], float]:
-    def grade(outcome: Outcome) -> float:
-        try:
-            value = parser(outcome.trajectory.final_answer)
-        except ValueError:
-            return 0.0
-        return score(value)
-
-    return grade
 
 
 SUITE: Suite = [
