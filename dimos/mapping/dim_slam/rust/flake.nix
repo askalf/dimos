@@ -12,10 +12,11 @@
     cu-vslam-rs.inputs.flake-utils.follows = "flake-utils";
   };
 
-  # Not eachDefaultSystem: nixpkgs 26.11 dropped x86_64-darwin, and merely naming it
-  # is an eval error.
+  # Linux only, because cu_vslam_rs is: it publishes aarch64-linux and x86_64-linux
+  # and nothing else, so naming darwin here makes `cu-vslam-rs.packages.${system}`
+  # throw and takes every output down with it, devShell included.
   outputs = { self, nix-filter, nixpkgs, flake-utils, crate2nix, cu-vslam-rs }:
-    flake-utils.lib.eachSystem [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ] (system:
+    flake-utils.lib.eachSystem [ "aarch64-linux" "x86_64-linux" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         name = "dim-slam-module";

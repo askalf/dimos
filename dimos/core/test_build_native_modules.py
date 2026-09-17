@@ -521,3 +521,46 @@ def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
 
 
 _BUILD_EDGES = ("nixpkgs", "dimos-native-rust", "dimos-native-cpp")
+
+
+def _root_nixpkgs(lock: Path) -> str | None:
+    """The nixpkgs revision a lock's root actually builds against, following follows."""
+    data = json.loads(lock.read_text())
+    nodes, root = data["nodes"], data.get("root", "root")
+    name = nodes[root].get("inputs", {}).get("nixpkgs")
+    seen: set[str] = set()
+    while isinstance(name, str) and name not in seen:
+        seen.add(name)
+        node = nodes.get(name, {})
+        if "locked" in node:
+            return node["locked"].get("rev")
+        name = node.get("inputs", {}).get("nixpkgs")
+    return None
+
+
+def test_every_module_flake_builds_against_one_nixpkgs() -> None:
+    """Every module flake pins the same nixpkgs.
+
+    Each flake is standalone and names `nixos-unstable` itself, so nothing makes them
+    agree -- they pin whenever they happen to be locked and drift apart silently. The
+    cost is not subtle: a different nixpkgs is a different rustc, so two modules on
+    two revisions share no dependency derivations at all, and CI rebuilds from scratch
+    what it should have substituted.
+
+    The repo-root flake is excluded on purpose: it builds no module, it is the
+    devcontainer, and bumping it is an everyone-lives-here change.
+    """
+    by_rev: dict[str, list[str]] = {}
+    for lock in sorted(DIMOS_PROJECT_ROOT.rglob("flake.lock")):
+        if ".git" in lock.parts or lock.parent == DIMOS_PROJECT_ROOT:
+            continue
+        rev = _root_nixpkgs(lock)
+        if rev:
+            by_rev.setdefault(rev, []).append(lock.parent.relative_to(DIMOS_PROJECT_ROOT).as_posix())
+    if not by_rev:
+        pytest.skip("no flake.lock pins a nixpkgs to compare")
+    assert len(by_rev) == 1, (
+        "module flakes disagree on nixpkgs, so they share no build: "
+        + "; ".join(f"{rev[:10]} -> {mods}" for rev, mods in by_rev.items())
+        + " -- run `nix flake update nixpkgs` in each and commit the locks"
+    )
