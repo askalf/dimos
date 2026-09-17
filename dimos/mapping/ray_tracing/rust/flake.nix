@@ -44,11 +44,11 @@
         packages.default = buildOf (callWith null);
         packages.${name} = self.packages.${system}.default;
 
-        packages.clippy = (buildOf (callWith "lint")).override {
+        packages.lint = (buildOf (callWith "lint")).override {
           runTests = true;
           testCrateFlags = [ "--list" ];
         };
-        checks.clippy = self.packages.${system}.clippy;
+        checks.lint = self.packages.${system}.lint;
 
         packages.tests = (buildOf (callWith "test")).override { runTests = true; };
         checks.tests = self.packages.${system}.tests;

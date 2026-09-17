@@ -158,10 +158,10 @@ jobs:
         env:
           BUILD_WORKERS: "1"
         run: python3 bin/build-native-modules
-      - name: Clippy native modules
+      - name: Lint native modules
         env:
           BUILD_WORKERS: "2"
-        run: python3 bin/build-native-modules --clippy
+        run: python3 bin/build-native-modules --lint
       - name: Verify Cachix holds the built paths
         env:
           CACHIX_CACHE_NAME: dimensionalos
@@ -290,7 +290,7 @@ jobs:
 
       - name: Run pre-commit
         env:
-          SKIP: native-module-clippy
+          SKIP: native-module-lint
         uses: pre-commit/action@v3.0.1
         with:
           extra_args: --all-files --verbose

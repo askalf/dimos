@@ -41,7 +41,7 @@
               if called ? rootCrate then called.rootCrate.build
               else called.workspaceMembers.${name}.build;
           in {
-            clippy = (buildOf (callWith "lint")).override {
+            lint = (buildOf (callWith "lint")).override {
               runTests = true;
               testCrateFlags = [ "--list" ];
             };
@@ -51,9 +51,9 @@
         module = crateOf "dimos-module";
         macros = crateOf "dimos-module-macros";
       in {
-        packages.clippy = pkgs.linkFarmFromDrvs "dimos-module-clippy" [ module.clippy macros.clippy ];
+        packages.lint = pkgs.linkFarmFromDrvs "dimos-module-lint" [ module.lint macros.lint ];
         packages.tests = pkgs.linkFarmFromDrvs "dimos-module-tests" [ module.tests macros.tests ];
-        checks.clippy = self.packages.${system}.clippy;
+        checks.lint = self.packages.${system}.lint;
         checks.tests = self.packages.${system}.tests;
 
         devShells.default = pkgs.mkShell {

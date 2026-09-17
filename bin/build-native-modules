@@ -25,11 +25,13 @@ Modes:
                  while the push daemon drains. cachix-action reports push
                  failures without failing the build, so CI must run this
                  before trusting a build enough to save the publish marker.
-  --clippy       Build every flake's `checks.<system>.clippy` instead of the
-                 module packages: the same crate graph compiled with
-                 clippy-driver, so the dependency derivations are the ones the
-                 package build already published and only first-party crates are
-                 compiled. Flakes declaring no such check (the C++ ones) skip.
+  --lint         Build every flake's `checks.<system>.lint` instead of the
+                 module packages. For a rust crate that is the same crate graph
+                 compiled with clippy-driver, so the dependency derivations are
+                 the ones the package build already published and only
+                 first-party crates are compiled; the attribute is named for
+                 what it does, not for the tool, so a C++ flake can offer one
+                 too. Flakes declaring no such check skip.
   --tests        Build every flake's `checks.<system>.tests`: the same crate
                  graph with the test targets compiled and run inside the
                  derivation. Flakes declaring no such check skip. Both check
@@ -637,9 +639,9 @@ def main() -> None:
         help="check the built out paths are downloadable from the Cachix cache",
     )
     mode.add_argument(
-        "--clippy",
+        "--lint",
         action="store_true",
-        help="build every flake's checks.<system>.clippy instead of the module packages",
+        help="build every flake's checks.<system>.lint instead of the module packages",
     )
     mode.add_argument(
         "--tests",
@@ -681,7 +683,7 @@ def main() -> None:
     failed = 0
     pending: list[str] = []
     workers = int(os.environ.get("BUILD_WORKERS") or os.cpu_count() or 2)
-    check = "clippy" if args.clippy else "tests" if args.tests else None
+    check = "lint" if args.lint else "tests" if args.tests else None
     targets: list[str] = flake_dirs() if check else [m.qualname for m in modules]
     verb = check.capitalize() if check else "Checking" if args.dry_run else "Building"
     _log(f"{verb}: {len(targets)} target(s) with up to {workers} workers")

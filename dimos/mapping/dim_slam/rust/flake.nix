@@ -56,13 +56,13 @@
       in {
         packages = nixpkgs.lib.genAttrs variants (v: buildOf (callWith v null)) // {
           default = buildOf (callWith lintedVariant null);
-          clippy = (buildOf (callWith lintedVariant "lint")).override {
+          lint = (buildOf (callWith lintedVariant "lint")).override {
             runTests = true;
             testCrateFlags = [ "--list" ];
           };
           tests = (buildOf (callWith lintedVariant "test")).override { runTests = true; };
         };
-        checks.clippy = self.packages.${system}.clippy;
+        checks.lint = self.packages.${system}.lint;
         checks.tests = self.packages.${system}.tests;
 
         devShells.default = pkgs.mkShellNoCC {
