@@ -326,22 +326,15 @@ jobs:
       - name: cargo test
         run: |
           set -euo pipefail
-          needs_system_libs=(
-            dimos/hardware/sensors/camera/realsense/rust  # librealsense
-            dimos/mapping/dim_slam/rust                   # metal / cuda
-          )
-          for skipped in "${needs_system_libs[@]}"; do
-            test -f "$skipped/Cargo.toml" \
-              || { echo "::error::$skipped is gone -- drop it from needs_system_libs"; exit 1; }
-          done
           git ls-files "*Cargo.toml" | while read -r m; do
             cargo locate-project --manifest-path "$m" --workspace --message-format plain
           done | sort -u | while read -r root; do
-            dir=${root%/Cargo.toml}
-            dir=${dir#$PWD/}
-            case " ${needs_system_libs[*]} " in
-              *" $dir "*) echo "skipping $dir: needs system libraries this runner lacks"; continue ;;
-            esac
+            needs=$(cargo metadata --manifest-path "$root" --no-deps --format-version 1 \
+              | python3 -c 'import json,sys; print(next((p["metadata"]["dimos"]["needs-system-libs"] for p in json.load(sys.stdin)["packages"] if (p.get("metadata") or {}).get("dimos", {}).get("needs-system-libs")), ""))')
+            if [ -n "$needs" ]; then
+              echo "skipping ${root%/Cargo.toml}: needs $needs, which this runner lacks"
+              continue
+            fi
             echo "::group::cargo test $root"
             cargo test --manifest-path "$root" --workspace --all-features --locked
             echo "::endgroup::"
