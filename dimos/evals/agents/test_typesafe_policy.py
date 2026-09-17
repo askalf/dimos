@@ -87,24 +87,42 @@ def test_observe_merges_static_scene_with_live_pose(scene_json: Path) -> None:
     assert "sofa" in json.dumps(state.encode())
 
 
+def test_aligned_step_drives_forward(scene_json: Path) -> None:
+    """Facing east and told east: drive, no turn. linear.y is never used —
+    DimSim's ground model ignores it."""
+    policy = TypeSafePolicy(scene_json=scene_json)
+    twist = policy.twist(_choice("1,0"), _pose(0.0))
+    assert twist.linear.x == pytest.approx(0.2)
+    assert twist.linear.y == 0.0
+    assert twist.angular.z == pytest.approx(0.0, abs=1e-9)
+
+
 @pytest.mark.parametrize(
-    ("key", "expected"),
-    [("0,1", (0.0, 0.4)), ("1,0", (0.4, 0.0)), ("-1,0", (-0.4, 0.0)), ("0,0", (0.0, 0.0))],
+    ("key", "yaw_deg", "sign"),
+    [("0,1", 0.0, +1), ("0,-1", 0.0, -1), ("-1,0", 90.0, +1), ("1,0", 90.0, -1)],
 )
-def test_twist_at_zero_yaw_is_world_frame(
-    scene_json: Path, key: str, expected: tuple[float, float]
+def test_misaligned_step_turns_in_place(
+    scene_json: Path, key: str, yaw_deg: float, sign: int
 ) -> None:
+    """Off by 90 degrees: rotate toward the target, no forward motion."""
     policy = TypeSafePolicy(scene_json=scene_json)
-    twist = policy.twist(_choice(key), _pose(0.0))
-    assert (twist.linear.x, twist.linear.y) == pytest.approx(expected)
+    twist = policy.twist(_choice(key), _pose(math.radians(yaw_deg)))
+    assert twist.linear.x == 0.0
+    assert twist.angular.z == pytest.approx(sign * 0.5)
 
 
-def test_twist_rotates_world_step_into_body_frame(scene_json: Path) -> None:
-    """Facing north, a world-north step must come out as body-forward."""
+def test_heading_error_wraps_across_pi(scene_json: Path) -> None:
+    """Facing -170 deg and told west (+180): that is a 10 deg error, not 350."""
     policy = TypeSafePolicy(scene_json=scene_json)
-    twist = policy.twist(_choice("0,1"), _pose(math.radians(90.0)))
-    assert twist.linear.x == pytest.approx(0.4)
-    assert twist.linear.y == pytest.approx(0.0, abs=1e-9)
+    twist = policy.twist(_choice("-1,0"), _pose(math.radians(-170.0)))
+    assert twist.linear.x == pytest.approx(0.2)  # aligned enough to drive
+    assert twist.angular.z == pytest.approx(-math.radians(10.0))  # small right correction
+
+
+def test_hold_step_is_zero_regardless_of_heading(scene_json: Path) -> None:
+    policy = TypeSafePolicy(scene_json=scene_json)
+    twist = policy.twist(_choice("0,0"), _pose(math.radians(37.0)))
+    assert (twist.linear.x, twist.linear.y, twist.angular.z) == (0.0, 0.0, 0.0)
 
 
 def test_low_confidence_holds_still(scene_json: Path) -> None:

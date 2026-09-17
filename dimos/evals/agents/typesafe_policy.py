@@ -15,9 +15,9 @@
 """TypeSafe (Jev) as a closed-loop navigation policy.
 
 The model calls no skill. Each tick: code assembles the world state, Jev picks
-one world-frame unit step, code rotates it into the body frame and publishes a
-single Twist. The scene (obstacles, room bounds, goal) is a static JSON file;
-the robot pose comes live off ``/odom``.
+one world-frame unit step, code turns the robot to face it and drives forward,
+republishing within the tick. The scene (obstacles, room bounds, goal) is a
+static JSON file; the robot pose comes live off ``/odom``.
 
 Two contracts are meant to be edited: :class:`WorldState` (what Jev sees) and
 :data:`STEP_CRITERIA` / :func:`build_questions` (what Jev answers). Everything
@@ -79,7 +79,8 @@ class WorldState:
 
 # --- output contract: what Jev answers ---------------------------------------
 # Options are world-frame unit steps keyed by their literal coordinates. Code
-# rotates the pick into the body frame, so the model never reasons about heading.
+# turns toward the pick and drives (DimSim's ground model is a unicycle:
+# linear.x + angular.z only), so the model never reasons about heading.
 
 STEPS: dict[str, tuple[float, float]] = {
     "0,0": (0.0, 0.0),
@@ -166,7 +167,14 @@ class TypeSafePolicyConfig(AgentConfig):
     tick_s: float = 1.0
     # The SDK default is 10s; a tick that blocks longer than this is dead time.
     request_timeout_s: float = 10.0
-    speed: float = 0.4
+    # DimSim scales linear and angular commands by 3x (DEFAULT_SPEED_SCALE /
+    # DEFAULT_TURN_SCALE in misc/DimSim/cli/bridge/physics.ts).
+    speed: float = 0.2  # m/s forward; ~0.6 m/s in-sim
+    turn_rate: float = 0.5  # rad/s when turning in place; ~86 deg/s in-sim
+    align_deg: float = 15.0  # start driving once the heading is within this
+    turn_gain: float = 1.0  # yaw correction per rad of error while driving
+    # Republish interval inside a tick; must beat the sim's 500 ms cmd_vel deadman.
+    control_dt: float = 0.1
     min_confidence: float = 0.35  # below this, hold still
     reached_noul: float = 0.8
     odom_topic: str = "/odom"
@@ -234,9 +242,15 @@ class TypeSafePolicy(Agent):
                     ended = "answer"
                     break
 
-                # Hold the commanded twist for the whole tick (open loop).
-                cmd.publish(self.twist(response.answers["step"], pose))
-                time.sleep(self.config.tick_s)
+                # Hold Jev's decision for the whole tick, but re-issue the
+                # controller output every control_dt: the sim zeroes velocity
+                # 500 ms after the last cmd_vel, and the heading error changes
+                # as the robot turns.
+                step = response.answers["step"]
+                hold_until = min(deadline, time.monotonic() + self.config.tick_s)
+                while time.monotonic() < hold_until:
+                    cmd.publish(self.twist(step, self._pose or pose))
+                    time.sleep(self.config.control_dt)
         finally:
             cmd.publish(Twist.zero())
             for transport in (odom, cmd):
@@ -264,19 +278,26 @@ class TypeSafePolicy(Agent):
         )
 
     def twist(self, step: Any, pose: PoseStamped) -> Twist:
-        """World-frame unit step -> body-frame Twist. cmd_vel is body-frame."""
+        """World-frame unit step -> unicycle Twist: turn to face it, then drive.
+
+        DimSim's ground model integrates only ``linear.x`` (forward along the
+        heading) and ``angular.z``; ``linear.y`` is ignored. So the world
+        direction Jev picked becomes a target heading, and this rotates in
+        place until roughly aligned, then drives forward with a proportional
+        yaw correction. Called every ``control_dt`` against the live pose, so
+        the heading error closes within the tick.
+        """
         if step.confidence < self.config.min_confidence:
             return Twist.zero()
         vx, vy = STEPS[str(step.choice)]
-        speed = self.config.speed
-        yaw = _yaw(pose)
-        return Twist(
-            linear=(
-                speed * (math.cos(yaw) * vx + math.sin(yaw) * vy),
-                speed * (-math.sin(yaw) * vx + math.cos(yaw) * vy),
-                0.0,
-            )
-        )
+        if vx == 0.0 and vy == 0.0:
+            return Twist.zero()
+        error = _wrap(math.atan2(vy, vx) - _yaw(pose))
+        turn = self.config.turn_rate
+        if abs(error) > math.radians(self.config.align_deg):
+            return Twist(angular=(0.0, 0.0, math.copysign(turn, error)))
+        correction = max(-turn, min(turn, self.config.turn_gain * error))
+        return Twist(linear=(self.config.speed, 0.0, 0.0), angular=(0.0, 0.0, correction))
 
     def _trace(
         self,
@@ -324,6 +345,11 @@ def _answer_json(answer: Any) -> dict[str, Any]:
         for name in ("choice", "score", "noul", "confidence", "probabilities")
         if getattr(answer, name, None) is not None
     }
+
+
+def _wrap(angle: float) -> float:
+    """Wrap to (-pi, pi]."""
+    return math.atan2(math.sin(angle), math.cos(angle))
 
 
 def _yaw(pose: PoseStamped) -> float:

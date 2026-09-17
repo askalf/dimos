@@ -34,6 +34,7 @@ from dimos.msgs.geometry_msgs.Vector3 import Vector3
 GOAL = Vector3(1.056, 4.382, 0.0)
 # Matches the DimSim-native go-to-couch rubric (objectDistance thresholdM: 2.0).
 ARRIVAL_BAND_M = 2.0
+MIN_TRAVEL_M = 0.1
 
 
 def reached_goal(outcome: Outcome) -> float:
@@ -45,7 +46,9 @@ def reached_goal(outcome: Outcome) -> float:
     arrival = ramp((GOAL - poses[-1]).length(), band=ARRIVAL_BAND_M)
     travelled = sum((poses[i + 1] - poses[i]).length() for i in range(len(poses) - 1))
     ideal = (GOAL - poses[0]).length()
-    directness = min(1.0, ideal / travelled) if travelled > 0 else 0.0
+    # A robot that never moved has no path to be direct about; odom jitter must
+    # not turn 1e-9 m of travel into full directness credit.
+    directness = min(1.0, ideal / travelled) if travelled >= MIN_TRAVEL_M else 0.0
     return 0.7 * arrival + 0.3 * directness
 
 
