@@ -2,6 +2,7 @@
   description = "dimSLAM native module for DimOS: the dim_slam library behind an LCM wrapper";
 
   inputs = {
+    nix-filter.url = "github:numtide/nix-filter";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crate2nix.url = "github:nix-community/crate2nix";
@@ -13,19 +14,13 @@
 
   # Not eachDefaultSystem: nixpkgs 26.11 dropped x86_64-darwin, and merely naming it
   # is an eval error.
-  outputs = { self, nixpkgs, flake-utils, crate2nix, cu-vslam-rs }:
+  outputs = { self, nix-filter, nixpkgs, flake-utils, crate2nix, cu-vslam-rs }:
     flake-utils.lib.eachSystem [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         name = "dim-slam-module";
 
-        src = pkgs.lib.cleanSourceWith {
-          src = pkgs.lib.cleanSource ./.;
-          filter = path: type:
-            let base = baseNameOf (toString path); in
-            !(type == "directory"
-              && (base == "target" || base == "build" || base == "__pycache__"));
-        };
+        src = nix-filter.lib { root = ./.; exclude = [ "target" "build" "result" "__pycache__" ]; };
 
         generated = crate2nix.tools.${system}.generatedCargoNix { inherit name src; };
 

@@ -2,6 +2,7 @@
   description = "RealSense camera native module for dimos";
 
   inputs = {
+    nix-filter.url = "github:numtide/nix-filter";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crate2nix.url = "github:nix-community/crate2nix";
@@ -10,19 +11,13 @@
 
   # Linux only: librealsense pulls v4l-utils, which nixpkgs will not evaluate on
   # darwin. Declaring darwin anyway is what main did, and `nix develop` there fails.
-  outputs = { self, nixpkgs, flake-utils, crate2nix }:
+  outputs = { self, nix-filter, nixpkgs, flake-utils, crate2nix }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         name = "dimos-realsense";
 
-        src = pkgs.lib.cleanSourceWith {
-          src = pkgs.lib.cleanSource ./.;
-          filter = path: type:
-            let base = baseNameOf (toString path); in
-            !(type == "directory"
-              && (base == "target" || base == "build" || base == "__pycache__"));
-        };
+        src = nix-filter.lib { root = ./.; exclude = [ "target" "build" "result" "__pycache__" ]; };
 
         generated = crate2nix.tools.${system}.generatedCargoNix { inherit name src; };
 

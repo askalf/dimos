@@ -2,6 +2,7 @@
   description = "FAST-LIO2 + Livox Mid-360 native module";
 
   inputs = {
+    nix-filter.url = "github:numtide/nix-filter";
     livox-sdk2.url = "github:jeff-hykin/livox-sdk2";
     zenoh.url = "github:jeff-hykin/zenoh_flake";
     zenoh.inputs.nixpkgs.follows = "nixpkgs";
@@ -31,7 +32,7 @@
     };
   };
 
-  outputs = { self, livox-sdk2, nixpkgs, zenoh, flake-utils, dimos-native-cpp, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
+  outputs = { self, nix-filter, livox-sdk2, nixpkgs, zenoh, flake-utils, dimos-native-cpp, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         # Overlay fixes for darwin-broken nixpkgs recipes in our transitive
@@ -79,7 +80,7 @@
           pname = "fastlio2_native";
           version = "0.2.0";
 
-          src = dimos-native-cpp.lib.${system}.cleanModuleSource ./.;
+          src = nix-filter.lib { root = ./.; exclude = [ "build" "target" "result" "__pycache__" ]; };
 
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
           buildInputs = [

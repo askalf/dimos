@@ -2,28 +2,20 @@
   description = "Livox Mid-360 native module for dimos";
 
   inputs = {
+    nix-filter.url = "github:numtide/nix-filter";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crate2nix.url = "github:nix-community/crate2nix";
     crate2nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils, crate2nix }:
+  outputs = { self, nix-filter, nixpkgs, flake-utils, crate2nix }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         name = "dimos-livox";
 
-        # `nix build path:.#…` copies this directory wholesale, gitignored output
-        # included, so build output has to be filtered out or it lands in the
-        # derivation.
-        src = pkgs.lib.cleanSourceWith {
-          src = pkgs.lib.cleanSource ./.;
-          filter = path: type:
-            let base = baseNameOf (toString path); in
-            !(type == "directory"
-              && (base == "target" || base == "build" || base == "__pycache__"));
-        };
+        src = nix-filter.lib { root = ./.; exclude = [ "target" "build" "result" "__pycache__" ]; };
 
         generated = crate2nix.tools.${system}.generatedCargoNix { inherit name src; };
 

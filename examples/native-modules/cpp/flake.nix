@@ -2,6 +2,7 @@
   description = "dimos C++ native module ping-pong example";
 
   inputs = {
+    nix-filter.url = "github:numtide/nix-filter";
     zenoh.url = "github:jeff-hykin/zenoh_flake";
     zenoh.inputs.nixpkgs.follows = "nixpkgs";
     zenoh.inputs.flake-utils.follows = "flake-utils";
@@ -25,7 +26,7 @@
     dimos-native-cpp.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/cpp";
   };
 
-  outputs = { self, nixpkgs, zenoh, flake-utils, lcm-extended, dimos-lcm, pfr, dimos-native-cpp, ... }:
+  outputs = { self, nix-filter, nixpkgs, zenoh, flake-utils, lcm-extended, dimos-lcm, pfr, dimos-native-cpp, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -36,7 +37,7 @@
         packages.dimos-native-module-examples-cpp = pkgs.stdenv.mkDerivation {
           pname = "dimos-native-ping-pong";
           version = "0.1.0";
-          src = dimos-native-cpp.lib.${system}.cleanModuleSource ./.;
+          src = nix-filter.lib { root = ./.; exclude = [ "build" "target" "result" "__pycache__" ]; };
 
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
           buildInputs = [ lcm pkgs.glib pkgs.nlohmann_json zenohc zenohcpp ];
