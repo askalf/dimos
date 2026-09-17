@@ -31,11 +31,6 @@ jobs:
       - name: uv lock
         run: uv lock
 
-      # The C++ modules still take native/cpp as an in-repo flake input, so their
-      # locks can pin a tree that is not this commit's. That cannot be fixed at
-      # commit time -- a lock records a narHash of the FETCHED tree, so the revision
-      # has to be on the remote first. Here it is. (The rust modules no longer have
-      # this problem: dimos-module is an ordinary git dependency now.)
       - name: Did native/ change?
         id: shared
         run: |

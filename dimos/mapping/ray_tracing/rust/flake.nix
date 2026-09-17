@@ -19,9 +19,6 @@
 
         generated = crate2nix.tools.${system}.generatedCargoNix { inherit name src; };
 
-        # Our own crates compile with clippy-driver; everything else keeps its
-        # ordinary derivation, so no dependency is built twice. capLints must be
-        # "forbid": it is a ceiling, and the default "allow" suppresses every lint.
         ours = [ name "dimos-module" "dimos-module-macros" ];
         callWith = lint: import generated {
           inherit pkgs;
@@ -31,14 +28,7 @@
               {
                 useClippy = true;
                 capLints = "forbid";
-                # Lint unoptimised. These first-party crates are the only ones
-                # rebuilt for the check, and at the package's opt-level 3 + LTO
-                # that recompile is most of its cost. Dependencies are untouched,
-                # so nothing stops being shared.
                 release = false;
-                # -C debuginfo=0 is not an optimisation: an unoptimised build emits a
-                # .dSYM *directory* beside each binary on darwin, and crate2nix's test
-                # runner copies binaries with a plain `cp`, which refuses a directory.
                 extraRustcOpts =
                   (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" "-C" "debuginfo=0" ];
               });
@@ -52,9 +42,6 @@
         packages.default = buildOf (callWith false);
         packages.${name} = self.packages.${system}.default;
 
-        # `runTests` is how crate2nix compiles test targets; `--list` makes the
-        # binary enumerate and exit, so they are linted without being run --
-        # exactly what `cargo clippy --all-targets` did.
         packages.clippy = (buildOf (callWith true)).override {
           runTests = true;
           testCrateFlags = [ "--list" ];

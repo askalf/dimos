@@ -122,9 +122,6 @@ class SourceConfig(BaseModel):
 class DimSlamConfig(NativeModuleConfig):
     cwd: str | None = "rust"
     executable: str = "result/bin/dim_slam"
-    # `path:.` with no attribute, like every other module. The flake's `default`
-    # already resolves to the variant sdk_variant() would have named, so the choice
-    # lives in one place instead of two.
     build_command: str | None = "nix build -L path:."
     stdin_config: bool = True
     extra_env: dict[str, str] = Field(default_factory=driver_env)

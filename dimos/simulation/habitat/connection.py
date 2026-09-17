@@ -36,18 +36,6 @@ class HabitatConnectionConfig(NativeModuleConfig):
     # target/habitat (outside the package tree); the wrapper is the build sentinel.
     cwd: str | None = "nix"
     executable: str = str(DIMOS_PROJECT_ROOT / "target" / "habitat" / "habitat-native")
-    # No auto-build, and this module has never had one: `nix/flake.nix` exposes a
-    # devShell and no `packages` attribute, so there is nothing for `nix build` to
-    # produce and nothing for Cachix to hold. It cannot have one either -- habitat-sim
-    # comes from conda, install.sh downloads a multi-gigabyte HM3D scene, and headless
-    # rendering needs the host's own EGL driver, none of which survives a sandbox.
-    #
-    # Until 2026-09 this field read `nix develop path:. -c ./install.sh`, which dressed
-    # a devShell script up as a build. `None` is what NativeModule already means by
-    # "no auto-build": it refuses to spawn and says to build manually. Run the install
-    # once, by hand:
-    #
-    #     cd dimos/simulation/habitat/nix && nix develop path:. -c ./install.sh
     build_command: str | None = None
     stdin_config: bool = True
     log_format: LogFormat = LogFormat.TEXT

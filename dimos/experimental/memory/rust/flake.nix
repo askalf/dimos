@@ -19,18 +19,12 @@
 
         generated = crate2nix.tools.${system}.generatedCargoNix { inherit name src; };
 
-        # sqlite and the turbojpeg encoder are C libraries; crate2nix builds each
-        # crate on its own, so the -sys crates name what they link rather than the
-        # whole package doing it once.
         sysOverrides = {
           libsqlite3-sys = _: {
             buildInputs = [ pkgs.sqlite ];
             nativeBuildInputs = [ pkgs.pkg-config ];
             LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
           };
-          # turbojpeg-sys vendors libjpeg-turbo and drives cmake from its own build
-          # script. dontUseCmakeConfigure stops nixpkgs' cmake setup hook from *also*
-          # configuring the crate root, which has no CMakeLists.txt.
           turbojpeg-sys = _: {
             nativeBuildInputs = [ pkgs.cmake pkgs.nasm ];
             dontUseCmakeConfigure = true;
@@ -49,14 +43,7 @@
               {
                 useClippy = true;
                 capLints = "forbid";
-                # Lint unoptimised. These first-party crates are the only ones
-                # rebuilt for the check, and at the package's opt-level 3 + LTO
-                # that recompile is most of its cost. Dependencies are untouched,
-                # so nothing stops being shared.
                 release = false;
-                # -C debuginfo=0 is not an optimisation: an unoptimised build emits a
-                # .dSYM *directory* beside each binary on darwin, and crate2nix's test
-                # runner copies binaries with a plain `cp`, which refuses a directory.
                 extraRustcOpts =
                   (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" "-C" "debuginfo=0" ];
               });

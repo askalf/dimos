@@ -29,9 +29,6 @@ while read -r root; do
         shell_dir=$shared_shell
     else
         shell_dir=$dir
-        # A module may declare it does not support this platform: realsense links
-        # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off Linux.
-        # Skip it rather than block the commit; CI lints on Linux, where it does exist.
         if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
             echo "skipping ${root#"$top"/}: $dir declares no devShell for $system" >&2
             continue

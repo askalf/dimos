@@ -12,9 +12,6 @@
     cu-vslam-rs.inputs.flake-utils.follows = "flake-utils";
   };
 
-  # Linux only, because cu_vslam_rs is: it publishes aarch64-linux and x86_64-linux
-  # and nothing else, so naming darwin here makes `cu-vslam-rs.packages.${system}`
-  # throw and takes every output down with it, devShell included.
   outputs = { self, nix-filter, nixpkgs, flake-utils, crate2nix, cu-vslam-rs }:
     flake-utils.lib.eachSystem [ "aarch64-linux" "x86_64-linux" ] (system:
       let
@@ -40,9 +37,6 @@
                     defaultCrateOverrides = cratePkgs.defaultCrateOverrides // {
                       # cu_vslam_rs's build.rs compiles its shim against this SDK.
                       cu_vslam_rs = _: { CUVSLAM_SDK_DIR = sdkPackage; };
-                      # buildRustCrate names DEP_ vars after the crate, cargo after the
-                      # `links` key, so cu_vslam_rs's lib_dir never reaches our build.rs
-                      # and the binary comes out with no rpath for libcuvslam.
                       dim-slam-module = _: { DEP_CUVSLAM_LIB_DIR = "${sdkPackage}/lib"; };
                     };
                   };
@@ -58,13 +52,9 @@
           if called ? rootCrate then called.rootCrate.build
           else called.workspaceMembers.${name}.build;
 
-        # Lint once, against the first SDK variant: they differ only in which cu_vslam
-        # SDK the build script links, and the rust being linted is the same in all.
         lintedVariant = builtins.head (builtins.sort builtins.lessThan variants);
       in {
         packages = nixpkgs.lib.genAttrs variants (v: buildOf (callWith v false)) // {
-          # One package per cuVSLAM SDK variant, so `default` cannot say which; it
-          # points at the same one the module's build_command would have named.
           default = buildOf (callWith lintedVariant false);
           clippy = (buildOf (callWith lintedVariant true)).override {
             runTests = true;

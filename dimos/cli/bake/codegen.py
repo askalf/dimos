@@ -94,9 +94,6 @@ def crate_dir(host: str, root: Path | None = None) -> Path:
 
 
 def _dependencies(modules: Sequence[RegisteredModule], root: Path) -> str:
-    # The same git dependency every module declares. A path here would put a second
-    # `dimos-module` in the graph -- the modules' own copy comes from git -- and the
-    # `Module` trait from one does not satisfy a bound written against the other.
     lines = [DIMOS_MODULE_DEP]
     # Keyed by crate: one crate can register several module ids, and a repeated
     # crate name is a duplicate key cargo refuses to parse.

@@ -43,8 +43,6 @@ def test_cargo_toml_pins_absolute_paths_for_module_crates() -> None:
     toml = render_cargo_toml("go2-nav", [MAPPER, PLANNER], Path("/repo"))
     parsed = tomllib.loads(toml)
     assert '[[bin]]\nname = "go2-nav"' in toml
-    # git, not a path: the modules declare the same dependency that way, and two
-    # copies of dimos-module in one graph give "trait Module is not implemented".
     assert (
         'dimos-module = { git = "https://github.com/dimensionalOS/dimos", branch = "main" }' in toml
     )

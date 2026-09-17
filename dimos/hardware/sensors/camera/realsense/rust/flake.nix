@@ -9,8 +9,6 @@
     crate2nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  # Linux only: librealsense pulls v4l-utils, which nixpkgs will not evaluate on
-  # darwin. Declaring darwin anyway is what main did, and `nix develop` there fails.
   outputs = { self, nix-filter, nixpkgs, flake-utils, crate2nix }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
@@ -21,10 +19,6 @@
 
         generated = crate2nix.tools.${system}.generatedCargoNix { inherit name src; };
 
-        # Both crates run pkg-config against librealsense2: realsense-sys to generate
-        # its bindings, and this module's own build.rs to turn the result into an
-        # rpath. crate2nix builds each crate in its own sandbox, so the inputs have to
-        # be declared for each of them.
         needsLibrealsense = _: {
           buildInputs = [ pkgs.librealsense ];
           nativeBuildInputs = [ pkgs.pkg-config ];
@@ -46,14 +40,7 @@
               {
                 useClippy = true;
                 capLints = "forbid";
-                # Lint unoptimised. These first-party crates are the only ones
-                # rebuilt for the check, and at the package's opt-level 3 + LTO
-                # that recompile is most of its cost. Dependencies are untouched,
-                # so nothing stops being shared.
                 release = false;
-                # -C debuginfo=0 is not an optimisation: an unoptimised build emits a
-                # .dSYM *directory* beside each binary on darwin, and crate2nix's test
-                # runner copies binaries with a plain `cp`, which refuses a directory.
                 extraRustcOpts =
                   (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" "-C" "debuginfo=0" ];
               });

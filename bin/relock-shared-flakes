@@ -122,9 +122,6 @@ def relock(lock: Path) -> tuple[Path, bool, list[str]]:
 
 def main() -> int:
     locks = [l for l in sorted(REPO_ROOT.rglob("flake.lock")) if ".git" not in l.parts]
-    # Each lock is in its own directory and shares no state with the others. Threads
-    # rather than processes: every one of these just waits on a `nix` subprocess.
-    # Measured over fourteen locks: 9.78 s serially, 1.73 s with eight workers.
     workers = int(os.environ.get("RELOCK_WORKERS") or min(8, len(locks) or 1))
     touched, failed = [], []
     with ThreadPoolExecutor(max_workers=workers) as pool:
