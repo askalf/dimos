@@ -19,20 +19,21 @@ way the agent affects the world is the Twist it publishes.
 
     dimos evals run dimos.evals.suites.typesafe_nav \
         --agent dimos.evals.agents.typesafe_policy \
-        --set scene_json=dimos/evals/suites/scenes/apartment_bed.json
+        --set scene_json=dimos/evals/suites/scenes/apartment_couch.json
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from dimos.evals.environments.dimsim import DimSimEnvironment
 from dimos.evals.scorers import ramp
 from dimos.evals.types import EvalCase, Outcome, Suite, recording
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 
-SCENES = Path(__file__).parent / "scenes"
-GOAL = Vector3(-3.567, -1.332, 0.0)
+# Couch centre from misc/DimSim/scenes/apartment/objects/manifest.json, in the
+# ROS world frame. Regenerate with dimos.evals.suites.lib.dimsim_scene.
+GOAL = Vector3(1.056, 4.382, 0.0)
+# Matches the DimSim-native go-to-couch rubric (objectDistance thresholdM: 2.0).
+ARRIVAL_BAND_M = 2.0
 
 
 def reached_goal(outcome: Outcome) -> float:
@@ -41,7 +42,7 @@ def reached_goal(outcome: Outcome) -> float:
         poses = [entry.data.position for entry in store.streams.odom]
     if not poses:
         raise LookupError("no odometry recorded")
-    arrival = ramp((GOAL - poses[-1]).length(), band=0.5)
+    arrival = ramp((GOAL - poses[-1]).length(), band=ARRIVAL_BAND_M)
     travelled = sum((poses[i + 1] - poses[i]).length() for i in range(len(poses) - 1))
     ideal = (GOAL - poses[0]).length()
     directness = min(1.0, ideal / travelled) if travelled > 0 else 0.0
@@ -50,8 +51,8 @@ def reached_goal(outcome: Outcome) -> float:
 
 SUITE: Suite = [
     EvalCase(
-        id="typesafe_nav_bed",
-        inputs="navigate to the bed",
+        id="typesafe_nav_couch",
+        inputs="navigate to the couch",
         environment=DimSimEnvironment(
             # No skill container: MCP comes up with zero tools exposed.
             blueprint=["unitree-go2", "mcp-server"],
