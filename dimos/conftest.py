@@ -219,6 +219,10 @@ def pytest_configure(config):
         "markers", "skipif_no_ffmpeg: skip when the ffmpeg binary is missing, except in CI"
     )
     config.addinivalue_line("markers", "skipif_macos_bug: skip known-buggy tests on macOS")
+    config.addinivalue_line(
+        "markers",
+        "skipif_macos_ci: skip when CI is set and the process is Darwin",
+    )
     config.addinivalue_line("markers", "skipif_macos: skip tests not intended to run on macOS")
     config.addinivalue_line(
         "markers", "skipif_aarch64: skip tests not intended to run on aarch64 (Linux ARM)"
@@ -313,6 +317,10 @@ def pytest_collection_modifyitems(config, items):
             "ffmpeg not installed",
         ),
         "skipif_macos_bug": (_is_macos(), "Some tests are buggy on Mac OS"),
+        "skipif_macos_ci": (
+            bool(os.getenv("CI")) and _is_macos(),
+            "Skipped on Darwin when CI is set",
+        ),
         "skipif_macos": (_is_macos(), "Not intended to run on macOS"),
         "skipif_aarch64": (
             platform.machine() == "aarch64",

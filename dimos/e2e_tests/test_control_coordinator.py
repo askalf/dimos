@@ -129,6 +129,9 @@ class TestControlCoordinatorE2E:
         finally:
             client.stop_rpc_client()
 
+    # Our Mac CI often gets <= 50 joint_state messages in 1s than the tolerance assert needs.
+    # The same test passes on a local Mac and on hosted Linux, so skip only Darwin+CI.
+    @pytest.mark.skipif_macos_ci
     def test_coordinator_joint_state_published(
         self, lcm_spy, start_blueprint, wait_for_system_ready
     ) -> None:
