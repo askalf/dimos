@@ -382,7 +382,10 @@ jobs:
         run: uv run pytest -m bake_e2e dimos/cli/bake/test_bake_e2e.py --no-cov
 
       - name: Save cargo build cache
-        if: github.ref == 'refs/heads/main'
+        # TEMPORARY (measurement): also save from this branch so a second run can show
+        # the warm-cache number. Revert to main-only before merge -- PR-scoped caches
+        # eat the repo's 10 GB quota and can evict main's entry.
+        if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
         uses: actions/cache/save@v4
         with:
           path: |
