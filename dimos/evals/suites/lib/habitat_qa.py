@@ -22,7 +22,7 @@ from typing import TypeVar
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.evals.environments.habitat import HabitatEnvironment
 from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no
-from dimos.evals.types import EvalCase, Outcome
+from dimos.evals.types import Outcome
 
 T = TypeVar("T")
 INSTRUCTION = (
@@ -79,45 +79,17 @@ def order(expected: str) -> Callable[[Outcome], float]:
     return parsed(ranking, partial(rank_order, expected))
 
 
-def case(
-    prefix: str,
+def environment(
     scene_id: str,
     dataset_env: str,
     default_dataset: str,
-    suffix: str,
-    question: str,
-    grade: Callable[[Outcome], float],
-    tags: set[str],
     *,
     scene_env: str | None = None,
-) -> EvalCase:
-    """Create an independent seeded episode with question-specific tags."""
-    return EvalCase(
-        id=f"{prefix}_{suffix}",
-        inputs=INSTRUCTION + "\n\n" + question,
-        environment=HabitatEnvironment(
-            scene_dataset_config=os.environ.get(dataset_env, default_dataset),
-            scene_id=os.environ.get(scene_env, scene_id) if scene_env else scene_id,
-            seed=0,
-            blueprint=["habitat-nav", "mcp-server", "observe-skill"],
-        ),
-        grade=grade,
-        timeout_s=1200,
-        tags=frozenset(tags),
-    )
-
-
-def hssd_case(
-    scene_id: str, suffix: str, question: str, grade: Callable[[Outcome], float], tags: set[str]
-) -> EvalCase:
-    """Apply the shared HSSD dataset selection to the common case factory."""
-    return case(
-        f"hssd_{scene_id}",
-        scene_id,
-        "HSSD_DATASET_CONFIG",
-        HSSD_DATASET,
-        suffix,
-        question,
-        grade,
-        tags,
+) -> HabitatEnvironment:
+    """Create a fresh Habitat episode with the common navigation/observation stack."""
+    return HabitatEnvironment(
+        scene_dataset_config=os.environ.get(dataset_env, default_dataset),
+        scene_id=os.environ.get(scene_env, scene_id) if scene_env else scene_id,
+        seed=0,
+        blueprint=["habitat-nav", "mcp-server", "observe-skill"],
     )

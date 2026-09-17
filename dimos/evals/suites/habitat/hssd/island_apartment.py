@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""User-reviewed hssd_104348463_171513588 QA; scene context is in ../SCENES.md."""
+"""Island apartment QA; scene context and preview are in ../SCENES.md."""
 
 import os
 
@@ -21,6 +21,9 @@ from dimos.evals.environments.habitat import HabitatEnvironment
 from dimos.evals.scorers import exact, first_number, numeric, yes_no
 from dimos.evals.suites.lib.habitat_qa import parsed as _parsed
 from dimos.evals.types import EvalCase, Suite
+
+SCENE_KEY = "hssd_104348463_171513588"
+SCENE_NAME = "Island apartment"
 
 INSTRUCTION = (
     "You are answering questions about a live simulated home. You control the robot, "

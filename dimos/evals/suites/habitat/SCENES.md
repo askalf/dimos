@@ -4,6 +4,13 @@ Context for the 18 furnished environments used by the Habitat suites. Scene
 descriptions combine the original asset inspection and the user's visual review.
 Executable questions and reference answers live in the adjacent Python suites.
 
+Suite filenames and headings use short descriptive names. Original dataset
+handles and stable question IDs are retained internally for loading and review
+history. Each suite has a same-named PNG showing a ceiling-cutaway orthographic
+overview from the upper right (45-degree azimuth, 55-degree elevation), fitted
+to its full projected footprint. Multi-level HM3D scenes include labeled
+elevation slices in the same image; detected elevations are not a floor census.
+
 ### Dataset locations
 
 | Family | Configuration / asset | Location override |
@@ -56,7 +63,13 @@ Suite defaults use `target/habitat/data`; use the overrides for other installati
   from indoors; balconies, driveways and other outdoor areas are not required
   exploration space. No complete live-agent coverage has been validated.
 
-## hssd_102344193
+## Cozy apartment (HSSD)
+
+<!-- scene: hssd_102344193 -->
+
+[Suite](hssd/cozy_apartment.py) · [Full-resolution preview](hssd/cozy_apartment.png)
+
+![Cozy apartment overview](hssd/cozy_apartment.png)
 
 **Layout:** compact furnished home with a large living/dining space, kitchen,
 bedroom, bathroom, hallway, closet and small laundry area. The bedroom has a
@@ -73,7 +86,13 @@ product names and room context are needed. The selected interior starting point
 is Habitat `(-5.5,0.124386,-3.0)`, or ROS `(3.0,5.5,0.124386)`; its navigability
 was checked against an in-memory mesh, not a saved runtime mesh.
 
-## hssd_102344403
+## Recreation house (HSSD)
+
+<!-- scene: hssd_102344403 -->
+
+[Suite](hssd/recreation_house.py) · [Full-resolution preview](hssd/recreation_house.png)
+
+![Recreation house overview](hssd/recreation_house.png)
 
 **Layout:** large home with three bedrooms, a lounge, a recreation room with a
 grand piano, a living room, kitchen, gym, office, laundry and attached garage.
@@ -91,7 +110,13 @@ Habitat `(-6.3,0.159347,-3.713)`, equivalent to the selected ROS start
 `(3.713,6.3,0.159347)`. Furniture approach regions matter for routes through this
 large layout; object centers are generally not walkable goals.
 
-## hssd_103997424_171030444
+## Red kitchen home (HSSD)
+
+<!-- scene: hssd_103997424_171030444 -->
+
+[Suite](hssd/red_kitchen_home.py) · [Full-resolution preview](hssd/red_kitchen_home.png)
+
+![Red kitchen home overview](hssd/red_kitchen_home.png)
 
 **Layout:** one-bedroom home with living, kitchen, dining, office and bathroom
 spaces connected by a hallway. Distinctive features include adjacent red seating
@@ -107,7 +132,13 @@ this authored layout. The office-computer/bed relationship was reviewed visually
 sharing a region alone would not establish a wall relationship. Table dimensions
 were measured from the transformed visual mesh, not nominal product labels.
 
-## hssd_103997970_171031287
+## Open-plan apartment (HSSD)
+
+<!-- scene: hssd_103997970_171031287 -->
+
+[Suite](hssd/open_plan_apartment.py) · [Full-resolution preview](hssd/open_plan_apartment.png)
+
+![Open-plan apartment overview](hssd/open_plan_apartment.png)
 
 **Layout:** three physical rooms: a combined living/kitchen/dining room, a
 bedroom and a bathroom. The open-plan room contains a round dining table and a
@@ -122,7 +153,13 @@ measurements refer to its zone within the shared space. One asset categorized
 as a table is named wall art, illustrating why category totals are not an inventory.
 TV room membership was resolved by human inspection rather than an ambiguous anchor.
 
-## hssd_104348463_171513588
+## Island apartment (HSSD)
+
+<!-- scene: hssd_104348463_171513588 -->
+
+[Suite](hssd/island_apartment.py) · [Full-resolution preview](hssd/island_apartment.png)
+
+![Island apartment overview](hssd/island_apartment.png)
 
 **Layout:** bedroom, bathroom and combined living/dining space, with a kitchen
 zone and island seating. The bedroom includes a desktop computer. A round dining
@@ -137,7 +174,13 @@ living polygons are zones, while the ambiguous `other room` annotation is not
 automatically another enclosed room. Living/dining perimeter measurements exclude
 the kitchen zone. A missing fridge category did not imply a missing appliance.
 
-## hssd_106366410_174226806
+## Piano and gym home (HSSD)
+
+<!-- scene: hssd_106366410_174226806 -->
+
+[Suite](hssd/piano_gym_home.py) · [Full-resolution preview](hssd/piano_gym_home.png)
+
+![Piano and gym home overview](hssd/piano_gym_home.png)
 
 **Layout:** furnished home with a living-room grand piano, a kitchen and dining
 space, laundry, bathroom, and a bedroom containing a sofa. The exercise and office
@@ -155,7 +198,13 @@ The bedroom sofa is the Ivy two-seater, anchor `(6.520,0,1.729)` in Habitat mete
 The bedroom's west doorway toward the hall is `(2.494610,0.150866,-1.863723)`;
 nearby target-approach conventions can affect small walking-distance differences.
 
-## hssd_106878858_174886965
+## Garage family home (HSSD)
+
+<!-- scene: hssd_106878858_174886965 -->
+
+[Suite](hssd/garage_family_home.py) · [Full-resolution preview](hssd/garage_family_home.png)
+
+![Garage family home overview](hssd/garage_family_home.png)
 
 **Layout:** four-bedroom home with bathrooms, an office, living/kitchen/dining
 spaces, utility/laundry areas and an attached garage. Distinctive landmarks include
@@ -172,7 +221,13 @@ living room is represented by Habitat `(-9.217360,0.158400,-4.237486)`. Dining a
 one bedroom annotation are nearly tied in area. Outdoor annotations do not extend
 the indoor exploration scope.
 
-## hssd_107734110_175999914
+## Piano and office home (HSSD)
+
+<!-- scene: hssd_107734110_175999914 -->
+
+[Suite](hssd/piano_office_home.py) · [Full-resolution preview](hssd/piano_office_home.png)
+
+![Piano and office home overview](hssd/piano_office_home.png)
 
 **Layout:** comparatively sparsely populated one-bedroom home with living room,
 kitchen, office, utility room, bathroom, hallway and separate closet spaces.
@@ -188,7 +243,13 @@ Bedroom and office polygon areas are very close. The office's west-wall structur
 opening can be measured separately from door leaves and furniture approach clearance.
 The utility annotation is `utilityroom/toolroom`.
 
-## hssd_108736851_177263586
+## Two-kitchen house (HSSD)
+
+<!-- scene: hssd_108736851_177263586 -->
+
+[Suite](hssd/two_kitchen_house.py) · [Full-resolution preview](hssd/two_kitchen_house.png)
+
+![Two-kitchen house overview](hssd/two_kitchen_house.png)
 
 **Layout:** expansive living room, four bedrooms, multiple bathrooms, office,
 laundry and dining spaces, and two distinct kitchen areas. The office includes
@@ -205,7 +266,13 @@ bed label. Some assets have substantial non-unit scales. The office hallway-faci
 opening is Habitat `(10.973,0.177897,-0.232)`. Dining/larger-kitchen room-entry
 distances are close; region-entry routes do not establish physical doorway counts.
 
-## hssd_108736884_177263634
+## Three-bedroom house (HSSD)
+
+<!-- scene: hssd_108736884_177263634 -->
+
+[Suite](hssd/three_bedroom_house.py) · [Full-resolution preview](hssd/three_bedroom_house.png)
+
+![Three-bedroom house overview](hssd/three_bedroom_house.png)
 
 **Layout:** three-bedroom furnished home with an office, separate dining room,
 large kitchen and living spaces, laundry, closets, bathrooms and a separate toilet
@@ -222,7 +289,13 @@ count is not physical-machine count. The office laptop is decomposed into parts.
 Static refrigerator appearance and architectural doorway clearance require direct
 geometry/visual interpretation, not inference from missing joint values.
 
-## hm3d_CFVBbU9Rsyb
+## Wooden loft home (HM3D)
+
+<!-- scene: hm3d_CFVBbU9Rsyb -->
+
+[Suite](hm3d/wooden_loft_home.py) · [Full-resolution preview](hm3d/wooden_loft_home.png)
+
+![Wooden loft home elevation overviews](hm3d/wooden_loft_home.png)
 
 **Layout:** multi-level furnished residential scan, with repeated kitchen/living
 areas, bedrooms, pitched wooden ceilings, skylights, stairs, loft-like sleeping
@@ -242,7 +315,13 @@ and approximately 186.37 m² navigable area. Authoring used 24 seeded positions
 -2.60, 0 and +3.00 m identified utility, middle living and upper sleeping areas;
 these observations are not a complete story census or proof of stair reachability.
 
-## hm3d_GLAQ4DNUx5U
+## Mural house (HM3D)
+
+<!-- scene: hm3d_GLAQ4DNUx5U -->
+
+[Suite](hm3d/mural_house.py) · [Full-resolution preview](hm3d/mural_house.png)
+
+![Mural house elevation overviews](hm3d/mural_house.png)
 
 **Layout:** multi-level furnished home with bedrooms, bathrooms, utility/storage
 spaces and a kitchen/living level. Landmarks include an exercise bike in a
@@ -263,7 +342,13 @@ furniture dimensions/centers. The inspected navmesh had five islands and about
 (seed 8), four headings each, at 400×300. The mural view was near Habitat
 `(-8.86,1.21,0.81)`, yaw 180 degrees.
 
-## hm3d_NBg5UqG3di3
+## Ornate halls (HM3D)
+
+<!-- scene: hm3d_NBg5UqG3di3 -->
+
+[Suite](hm3d/ornate_halls.py) · [Full-resolution preview](hm3d/ornate_halls.png)
+
+![Ornate halls overview](hm3d/ornate_halls.png)
 
 **Layout:** ornate, largely unfurnished interiors rather than a typical apartment:
 white-paneled rooms and corridors, a red-and-gold vaulted corridor, a room with
@@ -282,7 +367,13 @@ navigable area. Sixteen seeded positions (seed 6), four headings each, were
 rendered at 400×300; sampled floor Y was about 0.10685 m. Similar white rooms
 need careful visual deduplication, and reflective door panels are ambiguous.
 
-## replicacad_apt_1
+## Apartment 1 (ReplicaCAD)
+
+<!-- scene: replicacad_apt_1 -->
+
+[Suite](replicacad/apartment_1.py) · [Full-resolution preview](replicacad/apartment_1.png)
+
+![Apartment 1 overview](replicacad/apartment_1.png)
 
 **Layout:** furnished apartment with sofa/TV furniture, bicycles, beanbag seats,
 chairs, stools, plants and numerous small household objects. Kitchen/storage
@@ -301,7 +392,13 @@ positions are not explicitly specified. Templates use the
 COM offsets and no extra scale. The TV body and screen can represent one physical
 TV; small/occluded objects need close views. Template shapes are not room polygons.
 
-## replicacad_apt_5
+## Apartment 5 (ReplicaCAD)
+
+<!-- scene: replicacad_apt_5 -->
+
+[Suite](replicacad/apartment_5.py) · [Full-resolution preview](replicacad/apartment_5.png)
+
+![Apartment 5 overview](replicacad/apartment_5.png)
 
 **Layout:** another arrangement of the same apartment family, with sofa/TV
 furniture, bicycles, beanbags, seating, plants, bowls, books and an umbrella.
@@ -319,7 +416,13 @@ transforms plus placement quaternion/translation. The two closer-object straight
 line distances are similar enough that they should not be treated as an inferred
 collision-free route order.
 
-## replicacad_v3_sc1_staging_00
+## Staged beanbag apartment (ReplicaCAD)
+
+<!-- scene: replicacad_v3_sc1_staging_00 -->
+
+[Suite](replicacad/staged_beanbags.py) · [Full-resolution preview](replicacad/staged_beanbags.png)
+
+![Staged beanbag apartment overview](replicacad/staged_beanbags.png)
 
 **Layout:** sparse staged apartment with sofa, TV stand, a bicycle, beanbags,
 chairs and indoor plants, together with articulated kitchen/storage furniture.
@@ -335,7 +438,13 @@ fixed-base/dynamic with no scene-specified initial joint positions. Measured
 rigid assets use COM zero and no extra scale. Sparse rigid inventories do not by
 themselves establish the contents of stage meshes or articulated furniture.
 
-## replicacad_v3_sc2_staging_00
+## Staged bicycle apartment (ReplicaCAD)
+
+<!-- scene: replicacad_v3_sc2_staging_00 -->
+
+[Suite](replicacad/staged_bicycles.py) · [Full-resolution preview](replicacad/staged_bicycles.png)
+
+![Staged bicycle apartment overview](replicacad/staged_bicycles.png)
 
 **Layout:** sparse staged apartment with sofa/TV furniture, two bicycles,
 chairs and plants. There are no beanbag rigid placements. Furniture locations
@@ -351,7 +460,13 @@ dynamic with no explicit scene joint poses. Measured rigid templates have zero
 COM offsets and no instance scaling. Scene-template IDs are author-side identifiers,
 not visual labels a viewer or evaluated agent can distinguish automatically.
 
-## habitat_test_apartment_1
+## Lounge apartment scan (Habitat test)
+
+<!-- scene: habitat_test_apartment_1 -->
+
+[Suite](test/lounge_apartment.py) · [Full-resolution preview](test/lounge_apartment.png)
+
+![Lounge apartment scan overview](test/lounge_apartment.png)
 
 **Layout:** textured apartment scan with a furnished lounge, a separate dining
 room and connecting corridor. Landmarks include an L-shaped sofa opposite a

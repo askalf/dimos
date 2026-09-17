@@ -17,19 +17,20 @@ from types import SimpleNamespace
 import pytest
 
 from dimos.evals.environments.habitat import HabitatEnvironment
-from dimos.evals.suites.habitat.hssd.hssd_102344193 import INSTRUCTION, SUITE, _environment
-from dimos.evals.suites.habitat.hssd.hssd_102344403 import SUITE as LARGE_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_103997424_171030444 import SUITE as OFFICE_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_103997970_171031287 import SUITE as COMPACT_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_104348463_171513588 import SUITE as FURNISHED_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_106366410_174226806 import SUITE as GYM_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_106878858_174886965 import SUITE as GARAGE_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_107734110_175999914 import SUITE as PIANO_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_108736851_177263586 import SUITE as TWO_KITCHEN_SUITE
-from dimos.evals.suites.habitat.hssd.hssd_108736884_177263634 import SUITE as THREE_BEDROOM_SUITE
+from dimos.evals.suites.habitat.hssd.cozy_apartment import INSTRUCTION, SUITE, _environment
+from dimos.evals.suites.habitat.hssd.garage_family_home import SUITE as GARAGE_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.island_apartment import SUITE as FURNISHED_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.open_plan_apartment import SUITE as COMPACT_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.piano_gym_home import SUITE as GYM_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.piano_office_home import SUITE as PIANO_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.recreation_house import SUITE as LARGE_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.red_kitchen_home import SUITE as OFFICE_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.three_bedroom_house import SUITE as THREE_BEDROOM_SUITE
+from dimos.evals.suites.habitat.hssd.two_kitchen_house import SUITE as TWO_KITCHEN_SUITE
 from dimos.evals.suites.lib.habitat_qa import (
+    HSSD_DATASET,
     INSTRUCTION as SHARED_INSTRUCTION,
-    hssd_case as make_case,
+    environment as make_environment,
 )
 
 
@@ -203,13 +204,13 @@ def test_remaining_scene_contracts(scene_id, suite, count):
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
 
 
-def test_shared_factory_dataset_override_and_fresh_environment(monkeypatch, tmp_path):
+def test_shared_dataset_override_and_fresh_environment(monkeypatch, tmp_path):
     dataset = str(tmp_path / "hssd-hab.scene_dataset_config.json")
     monkeypatch.setenv("HSSD_DATASET_CONFIG", dataset)
-    first = make_case("test", "first", "Question?", lambda _: 1.0, {"count"})
-    second = make_case("test", "second", "Question?", lambda _: 1.0, {"count"})
-    assert first.environment is not second.environment
-    assert first.environment.config.scene_dataset_config == dataset
+    first = make_environment("test", "HSSD_DATASET_CONFIG", HSSD_DATASET)
+    second = make_environment("test", "HSSD_DATASET_CONFIG", HSSD_DATASET)
+    assert first is not second
+    assert first.config.scene_dataset_config == dataset
 
 
 @pytest.mark.parametrize(

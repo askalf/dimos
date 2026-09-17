@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from dimos.evals.environments.habitat import HabitatEnvironment
-from dimos.evals.suites.lib.habitat_qa import case
+from dimos.evals.suites.lib.habitat_qa import environment
 
 SCENES = [
     ("hm3d_CFVBbU9Rsyb", "00337-CFVBbU9Rsyb", 13),
@@ -36,7 +36,17 @@ SCENES = [
 
 def suite_module(name):
     family = "test" if name.startswith("habitat_test_") else name.split("_", 1)[0]
-    return f"dimos.evals.suites.habitat.{family}.{name}"
+    filename = {
+        "hm3d_CFVBbU9Rsyb": "wooden_loft_home",
+        "hm3d_GLAQ4DNUx5U": "mural_house",
+        "hm3d_NBg5UqG3di3": "ornate_halls",
+        "habitat_test_apartment_1": "lounge_apartment",
+        "replicacad_apt_1": "apartment_1",
+        "replicacad_apt_5": "apartment_5",
+        "replicacad_v3_sc1_staging_00": "staged_beanbags",
+        "replicacad_v3_sc2_staging_00": "staged_bicycles",
+    }[name]
+    return f"dimos.evals.suites.habitat.{family}.{filename}"
 
 
 @pytest.mark.parametrize("name,scene_id,size", SCENES)
@@ -61,24 +71,19 @@ def test_scene_contract(name, scene_id, size):
             assert c.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer=invalid))) == 0
 
 
-def test_factory_resolves_dataset_and_asset_overrides(monkeypatch, tmp_path):
+def test_environment_resolves_dataset_and_asset_overrides(monkeypatch, tmp_path):
     dataset = str(tmp_path / "dataset.json")
     asset = str(tmp_path / "apartment_1.glb")
     monkeypatch.setenv("HABITAT_TEST_DATASET_CONFIG", dataset)
     monkeypatch.setenv("HABITAT_TEST_SCENE", asset)
-    c = case(
-        "test",
+    env = environment(
         "original.glb",
         "HABITAT_TEST_DATASET_CONFIG",
         "default",
-        "question",
-        "Question?",
-        lambda _: 1.0,
-        {"count"},
         scene_env="HABITAT_TEST_SCENE",
     )
-    assert c.environment.config.scene_dataset_config == dataset
-    assert c.environment.config.scene_id == asset
+    assert env.config.scene_dataset_config == dataset
+    assert env.config.scene_id == asset
 
 
 @pytest.mark.parametrize(
