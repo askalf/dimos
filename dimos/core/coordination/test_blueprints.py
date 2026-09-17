@@ -201,6 +201,31 @@ def test_autoconnect_drops_hosted_metadata_from_overridden_module() -> None:
 
 
 @pytest.mark.parametrize(
+    ("module_names", "message"),
+    (
+        ((), "at least one module"),
+        (("modulea", "modulea"), "must be unique"),
+    ),
+)
+def test_hosted_placement_rejects_invalid_module_names(
+    module_names: tuple[str, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        HostedPlacement(module_names=module_names)
+
+
+def test_blueprint_rejects_hosted_placement_for_unknown_module() -> None:
+    atom = ModuleA.blueprint().blueprints[0]
+
+    with pytest.raises(ValueError, match="unknown modules: missing"):
+        Blueprint(
+            blueprints=(atom,),
+            hosted_placements=(HostedPlacement(module_names=("missing",)),),
+        )
+
+
+@pytest.mark.parametrize(
     "kwargs",
     (
         {"host": ""},

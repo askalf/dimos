@@ -94,6 +94,12 @@ class HostedPlacement:
     host: str | None | _HostSelection = _ANY_HOST
     tags: frozenset[str] = frozenset()
 
+    def __post_init__(self) -> None:
+        if not self.module_names:
+            raise ValueError("Hosted placement must contain at least one module")
+        if len(set(self.module_names)) != len(self.module_names):
+            raise ValueError("Hosted placement module names must be unique")
+
 
 @dataclass(frozen=True)
 class BlueprintAtom:
@@ -214,6 +220,19 @@ class Blueprint:
     requirement_checks: tuple[Callable[[], str | None], ...] = field(default_factory=tuple)
     configurator_checks: "tuple[SystemConfigurator, ...]" = field(default_factory=tuple)
     hosted_placements: tuple[HostedPlacement, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        module_names = {atom.name for atom in self.blueprints}
+        unknown = sorted(
+            {
+                name
+                for placement in self.hosted_placements
+                for name in placement.module_names
+                if name not in module_names
+            }
+        )
+        if unknown:
+            raise ValueError(f"Hosted placement references unknown modules: {', '.join(unknown)}")
 
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()

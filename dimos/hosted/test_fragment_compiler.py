@@ -285,6 +285,23 @@ def test_hosted_fragment_is_co_located_on_least_committed_matching_host() -> Non
     }
 
 
+def test_nested_hosted_placements_combine_constraints() -> None:
+    source = SourceModule.blueprint().hosted(tags={"gpu"})
+    blueprint = autoconnect(source, SinkModule.blueprint()).hosted(host="compute")
+
+    assignments = resolve_hosted_assignments(
+        blueprint,
+        (_host("host-compute", name="compute", tags=frozenset({"gpu"})),),
+        local_host_id="controller",
+        application_revision="revision-1",
+    )
+
+    assert assignments == {
+        "sourcemodule": "host-compute",
+        "sinkmodule": "host-compute",
+    }
+
+
 def test_independent_hosted_units_are_spread_deterministically() -> None:
     blueprint = autoconnect(
         SourceModule.blueprint().hosted(),
