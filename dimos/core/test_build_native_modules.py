@@ -556,7 +556,9 @@ def test_every_module_flake_builds_against_one_nixpkgs() -> None:
             continue
         rev = _root_nixpkgs(lock)
         if rev:
-            by_rev.setdefault(rev, []).append(lock.parent.relative_to(DIMOS_PROJECT_ROOT).as_posix())
+            by_rev.setdefault(rev, []).append(
+                lock.parent.relative_to(DIMOS_PROJECT_ROOT).as_posix()
+            )
     if not by_rev:
         pytest.skip("no flake.lock pins a nixpkgs to compare")
     assert len(by_rev) == 1, (
