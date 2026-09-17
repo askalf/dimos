@@ -490,3 +490,38 @@ def test_flake_refs_resolve_and_are_covered() -> None:
                     f"{flake}: reference {token!r} resolves to {target!r}, outside the hashed "
                     "input set — teach bin/build-native-modules._FLAKE_REF the new form"
                 )
+
+def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
+    """A module's lock must name a revision whose shared tree is the one in this commit.
+
+    `nix flake lock` does not notice that the shared flake moved -- it only checks
+    that the lock is complete -- so a change to native/rust can land while every
+    module still builds against the revision before it, and nothing says so. The
+    revision itself is free to be older than HEAD; what must match is the content it
+    pins.
+
+    Shallow clones cannot answer the question at all, so this skips rather than
+    guesses when the pinned revision is not in the checkout.
+    """
+    stale: dict[str, list[str]] = {}
+    checked = 0
+    for lock, pins in _locked_in_repo_inputs().items():
+        for rev, subdir in pins:
+            pinned = _tree_at(rev, subdir)
+            if pinned is None:
+                continue  # shallow clone: the revision is not here to compare
+            checked += 1
+            here = _tree_at("HEAD", subdir)
+            if pinned != here:
+                stale.setdefault(lock, []).append(f"{subdir} @ {rev[:10]}")
+    if not checked:
+        pytest.skip("no pinned revision is present in this checkout to compare against")
+    assert not stale, (
+        "these locks pin a revision whose shared tree is not the one in this commit, "
+        f"so the modules build against the older shared flake: {stale} -- run "
+        "`nix flake update <input>` in each and commit the lock"
+    )
+
+
+_BUILD_EDGES = ("nixpkgs", "dimos-native-rust", "dimos-native-cpp")
+
