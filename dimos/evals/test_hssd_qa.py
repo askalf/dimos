@@ -17,16 +17,16 @@ from types import SimpleNamespace
 import pytest
 
 from dimos.evals.environments.habitat import HabitatEnvironment
-from dimos.evals.suites.habitat.hssd.cozy_apartment import INSTRUCTION, SUITE, _environment
-from dimos.evals.suites.habitat.hssd.garage_family_home import SUITE as GARAGE_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.island_apartment import SUITE as FURNISHED_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.open_plan_apartment import SUITE as COMPACT_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.piano_gym_home import SUITE as GYM_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.piano_office_home import SUITE as PIANO_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.recreation_house import SUITE as LARGE_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.red_kitchen_home import SUITE as OFFICE_HOME_SUITE
-from dimos.evals.suites.habitat.hssd.three_bedroom_house import SUITE as THREE_BEDROOM_SUITE
-from dimos.evals.suites.habitat.hssd.two_kitchen_house import SUITE as TWO_KITCHEN_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_1 import INSTRUCTION, SUITE, _environment
+from dimos.evals.suites.habitat.hssd.hssd_scene_2 import SUITE as LARGE_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_3 import SUITE as OFFICE_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_4 import SUITE as COMPACT_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_5 import SUITE as FURNISHED_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_6 import SUITE as GYM_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_7 import SUITE as GARAGE_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_8 import SUITE as PIANO_HOME_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_9 import SUITE as TWO_KITCHEN_SUITE
+from dimos.evals.suites.habitat.hssd.hssd_scene_10 import SUITE as THREE_BEDROOM_SUITE
 from dimos.evals.suites.lib.habitat_qa import (
     HSSD_DATASET,
     INSTRUCTION as SHARED_INSTRUCTION,

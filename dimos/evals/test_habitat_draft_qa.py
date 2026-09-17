@@ -37,14 +37,14 @@ SCENES = [
 def suite_module(name):
     family = "test" if name.startswith("habitat_test_") else name.split("_", 1)[0]
     filename = {
-        "hm3d_CFVBbU9Rsyb": "wooden_loft_home",
-        "hm3d_GLAQ4DNUx5U": "mural_house",
-        "hm3d_NBg5UqG3di3": "ornate_halls",
-        "habitat_test_apartment_1": "lounge_apartment",
-        "replicacad_apt_1": "apartment_1",
-        "replicacad_apt_5": "apartment_5",
-        "replicacad_v3_sc1_staging_00": "staged_beanbags",
-        "replicacad_v3_sc2_staging_00": "staged_bicycles",
+        "hm3d_CFVBbU9Rsyb": "hm3d_scene_1",
+        "hm3d_GLAQ4DNUx5U": "hm3d_scene_2",
+        "hm3d_NBg5UqG3di3": "hm3d_scene_3",
+        "habitat_test_apartment_1": "habitat_test_scene_1",
+        "replicacad_apt_1": "replicacad_scene_1",
+        "replicacad_apt_5": "replicacad_scene_2",
+        "replicacad_v3_sc1_staging_00": "replicacad_scene_3",
+        "replicacad_v3_sc2_staging_00": "replicacad_scene_4",
     }[name]
     return f"dimos.evals.suites.habitat.{family}.{filename}"
 
