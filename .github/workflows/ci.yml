@@ -162,6 +162,12 @@ jobs:
         env:
           BUILD_WORKERS: "2"
         run: python3 bin/build-native-modules --lint
+      # Published so the `native` job substitutes them instead of compiling the
+      # test targets itself on every run.
+      - name: Test rust native modules
+        env:
+          BUILD_WORKERS: "2"
+        run: python3 bin/build-native-modules --tests
       - name: Verify Cachix holds the built paths
         env:
           CACHIX_CACHE_NAME: dimensionalos
