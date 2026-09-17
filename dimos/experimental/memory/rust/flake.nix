@@ -32,21 +32,23 @@
         };
 
         ours = [ name "dimos-module" "dimos-module-macros" ];
-        callWith = lint: import generated {
+        callWith = mode: import generated {
           inherit pkgs;
           buildRustCrateForPkgs = cratePkgs:
             let build = cratePkgs.buildRustCrate.override {
                   defaultCrateOverrides = cratePkgs.defaultCrateOverrides // sysOverrides;
                 };
             in crate: build (crate // pkgs.lib.optionalAttrs
-              (lint && builtins.elem crate.crateName ours)
-              {
+              (mode != null && builtins.elem crate.crateName ours)
+              ({
+                release = false;
+                extraRustcOpts = (crate.extraRustcOpts or [ ]) ++ [ "-C" "debuginfo=0" ];
+              } // pkgs.lib.optionalAttrs (mode == "lint") {
                 useClippy = true;
                 capLints = "forbid";
-                release = false;
                 extraRustcOpts =
                   (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" "-C" "debuginfo=0" ];
-              });
+              }));
         };
         buildOf = called:
           if called ? rootCrate then called.rootCrate.build
@@ -54,13 +56,16 @@
 
         rustTools = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt ];
       in {
-        packages.default = buildOf (callWith false);
+        packages.default = buildOf (callWith null);
         packages.${name} = self.packages.${system}.default;
-        packages.clippy = (buildOf (callWith true)).override {
+        packages.clippy = (buildOf (callWith "lint")).override {
           runTests = true;
           testCrateFlags = [ "--list" ];
         };
         checks.clippy = self.packages.${system}.clippy;
+
+        packages.tests = (buildOf (callWith "test")).override { runTests = true; };
+        checks.tests = self.packages.${system}.tests;
 
         devShells.default = pkgs.mkShell {
           packages = rustTools

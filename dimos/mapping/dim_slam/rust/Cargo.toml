@@ -8,9 +8,6 @@ license = "Apache-2.0"
 name = "dim_slam"
 path = "src/main.rs"
 
-[package.metadata.dimos]
-needs-system-libs = "cuvslam / metal"
-
 [dependencies]
 # tag, not rev: nix's fetchGit only searches the ref the url names, so a bare rev is
 # unfetchable. Cargo.lock still pins the exact commit.

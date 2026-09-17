@@ -25,12 +25,18 @@ Modes:
                  while the push daemon drains. cachix-action reports push
                  failures without failing the build, so CI must run this
                  before trusting a build enough to save the publish marker.
-  --clippy       Build every module's `checks.<system>.clippy` instead of its
-                 package: the same crate graph compiled with clippy-driver, so
-                 the dependency derivations are the ones the package build
-                 already published and only first-party crates are compiled.
-                 Modules whose flake declares no such check (the C++ ones) are
-                 skipped.
+  --clippy       Build every flake's `checks.<system>.clippy` instead of the
+                 module packages: the same crate graph compiled with
+                 clippy-driver, so the dependency derivations are the ones the
+                 package build already published and only first-party crates are
+                 compiled. Flakes declaring no such check (the C++ ones) skip.
+  --tests        Build every flake's `checks.<system>.tests`: the same crate
+                 graph with the test targets compiled and run inside the
+                 derivation. Flakes declaring no such check skip. Both check
+                 modes discover flakes with `git ls-files`, not module classes,
+                 so the shared crates under native/rust are covered too, and a
+                 flake that does not build on this system simply declares no
+                 check for it.
   --record-links Print `result-symlink store-path` per built module. The
                  publish job stores this in the marker cache entry so consumers
                  can materialise binaries without evaluating anything.
@@ -534,58 +540,64 @@ def _declared_systems(module: DiscoveredModule) -> frozenset[str] | None:
         return None
 
 
-def _clippy_attr(module: DiscoveredModule) -> str | None:
-    """`<flake ref>#checks.<system>.clippy`, or None if the module declares no check.
+def flake_dirs() -> list[str]:
+    """Every tracked directory holding a `flake.nix`, repo-relative, sorted.
 
-    A C++ module's flake has no `checks` at all, and asking is narrower than
-    catching the failure: a module that declares checks but not this one is a
-    typo and must still fail loudly.
+    Checks are discovered from the flakes themselves rather than from the module
+    classes: the shared crates under `native/rust` are no module and would
+    otherwise go unlinted and untested.
     """
-    ref = _flake_ref_of(module).split("#", 1)[0] or "."
+    tracked = subprocess.run(
+        ["git", "ls-files", "*flake.nix"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return sorted(str(PurePosixPath(path).parent) for path in tracked if "/" in path)
+
+
+def _checks_of(build_dir: str) -> frozenset[str]:
+    """The names under `checks.<system>` this flake declares, empty if it has none."""
     proc = subprocess.run(
         [
             "nix",
             "eval",
             "--json",
-            f"{ref}#checks.{current_system()}",
+            f"path:.#checks.{current_system()}",
             "--apply",
             "builtins.attrNames",
         ],
-        cwd=str(REPO_ROOT / module.build_dir),
+        cwd=str(REPO_ROOT / build_dir),
         capture_output=True,
         text=True,
         check=False,
     )
     if proc.returncode != 0:
-        return None
+        return frozenset()
     try:
-        names = json.loads(proc.stdout)
+        return frozenset(json.loads(proc.stdout))
     except json.JSONDecodeError:
-        return None
-    return f"{ref}#checks.{current_system()}.clippy" if "clippy" in names else None
+        return frozenset()
 
 
-def clippy_one(module: DiscoveredModule) -> tuple[str, bool, str]:
-    name = module.qualname.rsplit(".", 1)[-1]
-    build_dir = REPO_ROOT / module.build_dir
-    systems = _declared_systems(module)
-    if systems is not None and current_system() not in systems:
-        return name, False, f"SKIP:  {name} declares no packages for {current_system()}"
-    attr = _clippy_attr(module)
-    if attr is None:
-        return name, False, f"SKIP:  {name} declares no clippy check"
-    _log(f"START: clippy {name} in {build_dir}: {attr}")
+def check_one(build_dir: str, check: str) -> tuple[str, bool, str]:
+    """Build one flake's `checks.<system>.<check>`, skipping flakes that lack it."""
+    if check not in _checks_of(build_dir):
+        return build_dir, False, f"SKIP:  {build_dir} declares no {check} check"
+    attr = f"path:.#checks.{current_system()}.{check}"
+    _log(f"START: {check} {build_dir}: {attr}")
     proc = subprocess.run(
         ["nix", "build", "-L", attr, "--no-link"],
-        cwd=str(build_dir),
+        cwd=str(REPO_ROOT / build_dir),
         capture_output=True,
         text=True,
         check=False,
     )
     body = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
-        raise RuntimeError(f"clippy {name} exited {proc.returncode}\n{body}")
-    return name, False, f"DONE:  clippy {name}"
+        raise RuntimeError(f"{check} {build_dir} exited {proc.returncode}\n{body}")
+    return build_dir, False, f"DONE:  {check} {build_dir}"
 
 
 def build_one(module: DiscoveredModule, dry_run: bool) -> tuple[str, bool, str]:
@@ -627,7 +639,12 @@ def main() -> None:
     mode.add_argument(
         "--clippy",
         action="store_true",
-        help="build every module's checks.<system>.clippy instead of its package",
+        help="build every flake's checks.<system>.clippy instead of the module packages",
+    )
+    mode.add_argument(
+        "--tests",
+        action="store_true",
+        help="build every flake's checks.<system>.tests, which compiles and runs its tests",
     )
     mode.add_argument(
         "--record-links",
@@ -664,17 +681,19 @@ def main() -> None:
     failed = 0
     pending: list[str] = []
     workers = int(os.environ.get("BUILD_WORKERS") or os.cpu_count() or 2)
-    verb = "Linting" if args.clippy else "Checking" if args.dry_run else "Building"
-    _log(f"{verb} {len(modules)} module(s) with up to {workers} workers")
+    check = "clippy" if args.clippy else "tests" if args.tests else None
+    targets: list[str] = flake_dirs() if check else [m.qualname for m in modules]
+    verb = check.capitalize() if check else "Checking" if args.dry_run else "Building"
+    _log(f"{verb}: {len(targets)} target(s) with up to {workers} workers")
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            (
-                executor.submit(clippy_one, module)
-                if args.clippy
-                else executor.submit(build_one, module, args.dry_run)
-            ): module
-            for module in modules
-        }
+        futures = (
+            {executor.submit(check_one, build_dir, check): build_dir for build_dir in targets}
+            if check
+            else {
+                executor.submit(build_one, module, args.dry_run): module.qualname
+                for module in modules
+            }
+        )
         for future in as_completed(futures):
             try:
                 name, needs_build, status = future.result()
@@ -682,7 +701,7 @@ def main() -> None:
                 if needs_build:
                     pending.append(name)
             except Exception as error:
-                _log(f"FAIL:  {futures[future].qualname}: {error}")
+                _log(f"FAIL:  {futures[future]}: {error}")
                 failed += 1
     if failed:
         sys.exit(f"{failed} {'check' if args.dry_run else 'build'}(s) failed")

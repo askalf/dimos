@@ -13,9 +13,6 @@ path = "src/main.rs"
 # CI's `cargo clippy --workspace` don't carry. Built via ./flake.nix instead.
 [workspace]
 
-[package.metadata.dimos]
-needs-system-libs = "librealsense2"
-
 # Bake registry entry, cross-checked at compile time by the module macro.
 [package.metadata.dimos.module.realsense]
 path = "dimos_realsense::RealSense"

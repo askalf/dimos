@@ -323,22 +323,6 @@ jobs:
           key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-test-${{ runner.os }}-${{ runner.arch }}-
-      - name: cargo test
-        run: |
-          set -euo pipefail
-          git ls-files "*Cargo.toml" | while read -r m; do
-            cargo locate-project --manifest-path "$m" --workspace --message-format plain
-          done | sort -u | while read -r root; do
-            needs=$(cargo metadata --manifest-path "$root" --no-deps --format-version 1 \
-              | python3 -c 'import json,sys; print(next((p["metadata"]["dimos"]["needs-system-libs"] for p in json.load(sys.stdin)["packages"] if (p.get("metadata") or {}).get("dimos", {}).get("needs-system-libs")), ""))')
-            if [ -n "$needs" ]; then
-              echo "skipping ${root%/Cargo.toml}: needs $needs, which this runner lacks"
-              continue
-            fi
-            echo "::group::cargo test $root"
-            cargo test --manifest-path "$root" --workspace --all-features --locked
-            echo "::endgroup::"
-          done
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
@@ -349,19 +333,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y portaudio19-dev
       - name: Build and test PyO3 bindings
-        # PyO3 extension modules (cdylib + `extension-module`) are the one case
-        # that still needs a plain build: pytest imports the compiled .so.
+        # The one rust artefact nix does not build: pytest imports the compiled
+        # .so, which has to match uv's interpreter rather than nixpkgs'.
         run: |
           uv sync --group tests --frozen
           source .venv/bin/activate
-          maturin develop -m dimos/mapping/ray_tracing/rust/py/Cargo.toml
-          maturin develop -m dimos/navigation/nav_3d/mls_planner/rust/py/Cargo.toml
-          python -c "import dimos_voxel_ray_tracing, dimos_mls_planner"
-          python -m pytest -c /dev/null --rootdir . --noconftest --import-mode=importlib -p no:cacheprovider -v \
-            dimos/mapping/ray_tracing/test_voxel_map.py \
-            dimos/mapping/ray_tracing/test_transformer.py \
-            dimos/navigation/nav_3d/mls_planner/test_mls_planner.py \
-            dimos/navigation/nav_3d/mls_planner/test_transformer.py
+          python bin/pyo3-extensions --build
+          python bin/pyo3-extensions --test
       - name: Bake e2e tests
         run: uv run pytest -m bake_e2e dimos/cli/bake/test_bake_e2e.py --no-cov
 
@@ -492,6 +470,10 @@ jobs:
       # PCL, GTSAM and the SLAM cores come from each module's flake, not apt.
       - name: Build native modules
         run: python3 bin/build-native-modules
+      - name: Test rust native modules
+        env:
+          BUILD_WORKERS: "2"
+        run: python3 bin/build-native-modules --tests
       - name: Test C++ native modules
         env:
           MODULES: ${{ steps.find-modules.outputs.modules }}

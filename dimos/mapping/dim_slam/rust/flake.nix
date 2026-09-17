@@ -28,7 +28,7 @@
         variants = map (nixpkgs.lib.removePrefix "sdk-") (builtins.attrNames sdkPackages);
 
         ours = [ name "dimos-module" "dimos-module-macros" ];
-        callWith = variant: lint:
+        callWith = variant: mode:
           let sdkPackage = sdkPackages."sdk-${variant}"; in
           import generated {
             inherit pkgs;
@@ -41,12 +41,12 @@
                     };
                   };
               in crate: build (crate // pkgs.lib.optionalAttrs
-                (lint && builtins.elem crate.crateName ours)
-                {
+                (mode != null && builtins.elem crate.crateName ours)
+                (pkgs.lib.optionalAttrs (mode == "lint") {
                   useClippy = true;
                   capLints = "forbid";
                   extraRustcOpts = (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" ];
-                });
+                }));
           };
         buildOf = called:
           if called ? rootCrate then called.rootCrate.build
@@ -54,14 +54,16 @@
 
         lintedVariant = builtins.head (builtins.sort builtins.lessThan variants);
       in {
-        packages = nixpkgs.lib.genAttrs variants (v: buildOf (callWith v false)) // {
-          default = buildOf (callWith lintedVariant false);
-          clippy = (buildOf (callWith lintedVariant true)).override {
+        packages = nixpkgs.lib.genAttrs variants (v: buildOf (callWith v null)) // {
+          default = buildOf (callWith lintedVariant null);
+          clippy = (buildOf (callWith lintedVariant "lint")).override {
             runTests = true;
             testCrateFlags = [ "--list" ];
           };
+          tests = (buildOf (callWith lintedVariant "test")).override { runTests = true; };
         };
         checks.clippy = self.packages.${system}.clippy;
+        checks.tests = self.packages.${system}.tests;
 
         devShells.default = pkgs.mkShellNoCC {
           packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt ];

@@ -566,3 +566,52 @@ def test_every_module_flake_builds_against_one_nixpkgs() -> None:
         + "; ".join(f"{rev[:10]} -> {mods}" for rev, mods in by_rev.items())
         + " -- run `nix flake update nixpkgs` in each and commit the locks"
     )
+
+
+def _rust_flake_dirs() -> list[Path]:
+    """Flake directories with a cargo manifest, plus the shared crates' own flake.
+
+    `native/rust` has no manifest of its own -- the two crates sit one level down --
+    so it is named rather than matched.
+    """
+    directories = {DIMOS_PROJECT_ROOT / "native" / "rust"}
+    for flake in DIMOS_PROJECT_ROOT.rglob("flake.nix"):
+        skipped = {".git", "target", "result", "build"}
+        if not skipped.isdisjoint(flake.parts):
+            continue
+        if (flake.parent / "Cargo.toml").exists():
+            directories.add(flake.parent)
+    return sorted(directories)
+
+
+def test_every_rust_flake_offers_a_tests_check() -> None:
+    """Rust tests are derivations, so a flake without the check is silently untested.
+
+    CI runs `bin/build-native-modules --tests`, which skips a flake declaring no
+    `checks.<system>.tests` rather than failing -- that is what lets the C++ flakes
+    through. A rust crate that loses the attribute would be skipped just as quietly.
+    """
+    missing = [
+        directory.relative_to(DIMOS_PROJECT_ROOT).as_posix()
+        for directory in _rust_flake_dirs()
+        if "checks.tests" not in re.sub(r"\s+", "", (directory / "flake.nix").read_text())
+    ]
+    assert not missing, f"rust flakes with no tests check, so nothing runs their tests: {missing}"
+
+
+def test_ci_never_names_a_module_directory() -> None:
+    """The workflow must discover modules, not list them.
+
+    Every hardcoded module path in ci.yml has been a maintenance bug waiting to
+    happen: the list goes stale when a module is added, renamed or moved, and CI
+    keeps passing while silently testing less. Discovery belongs in `bin/`, where
+    it can be run and tested locally.
+    """
+    workflow = (DIMOS_PROJECT_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    module_dirs = [
+        directory.relative_to(DIMOS_PROJECT_ROOT).as_posix() for directory in _rust_flake_dirs()
+    ]
+    named = sorted(directory for directory in module_dirs if directory in workflow)
+    assert not named, (
+        f"ci.yml names module directories: {named} -- discover them in a bin/ script instead"
+    )
