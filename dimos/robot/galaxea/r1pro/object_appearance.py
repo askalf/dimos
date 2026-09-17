@@ -37,6 +37,9 @@ def add_object_appearance(body: ET.Element, obj: "PackingObject", contact: dict[
             raise ValueError("A cup requires a cylindrical envelope")
         segments = 24
         thickness = 0.0015
+        floor_half_height = 0.002
+        # Seat the walls on the floor, rather than letting all 24 wall bottoms
+        # also contact the support. Keep the open cavity and the same outer height.
         radial = x * math.cos(math.pi / segments) - thickness
         for i in range(segments):
             angle = 2 * math.pi * i / segments
@@ -45,9 +48,9 @@ def add_object_appearance(body: ET.Element, obj: "PackingObject", contact: dict[
                 "geom",
                 name=f"{obj.name}_wall_{i}",
                 type="box",
-                pos=f"{radial * math.cos(angle)} {radial * math.sin(angle)} 0",
+                pos=f"{radial * math.cos(angle)} {radial * math.sin(angle)} {floor_half_height}",
                 euler=f"0 0 {angle}",
-                size=f"{thickness} {x * math.sin(math.pi / segments)} {h}",
+                size=f"{thickness} {x * math.sin(math.pi / segments)} {h - floor_half_height}",
                 mass=str(obj.mass * 0.8 / segments),
                 attrib=contact,
             )
@@ -56,8 +59,8 @@ def add_object_appearance(body: ET.Element, obj: "PackingObject", contact: dict[
             "geom",
             name=f"{obj.name}_floor",
             type="cylinder",
-            pos=f"0 0 {-h + 0.002}",
-            size=f"{x} 0.002",
+            pos=f"0 0 {-h + floor_half_height}",
+            size=f"{x} {floor_half_height}",
             mass=str(obj.mass * 0.2),
             attrib=contact,
         )

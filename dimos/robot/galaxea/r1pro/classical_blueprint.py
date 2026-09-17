@@ -121,7 +121,7 @@ def build_classical_apartment(
     for atom in source.blueprints:
         kwargs = dict(atom.kwargs)
         if atom.module is simulator:
-            kwargs.update(width=320, height=240, fps=10, extra_cameras=[])
+            kwargs.update(width=320, height=240, fps=10, viewer_fps=15, extra_cameras=[])
         if atom.module is R1ProApartmentCoordinator:
             tasks = [
                 replace(task, name="joint_trajectory") if task.name == "tray_manipulation" else task

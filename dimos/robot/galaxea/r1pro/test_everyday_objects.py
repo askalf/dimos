@@ -83,3 +83,44 @@ def test_static_map_excludes_free_objects_without_requiring_legacy_bottles():
     assert np.max(np.abs(cloud[:, :2])) <= 0.201
     assert np.min(cloud[:, 2]) == pytest.approx(-0.02)
     assert np.max(cloud[:, 2]) == pytest.approx(0.02)
+
+
+@pytest.mark.parametrize("seed", [380000, 380001, 380002])
+def test_resting_cup_is_supported_by_its_base_without_redundant_wall_contacts(seed):
+    obj = next(o for o in sample_everyday_layout(seed).objects if o.kind == "cup")
+    root = ET.Element("mujoco")
+    ET.SubElement(root, "compiler", angle="radian")
+    ET.SubElement(root, "option", integrator="implicitfast", noslip_iterations="20")
+    world = ET.SubElement(root, "worldbody")
+    ET.SubElement(world, "geom", name="table", type="box", size=".2 .2 .02", pos="0 0 -.02")
+    body = ET.SubElement(world, "body", name=obj.name, pos=f"0 0 {obj.half_size[2] + 0.001}")
+    ET.SubElement(body, "freejoint")
+    add_object_appearance(body, obj, {"friction": "1 .02 .001", "condim": "4", "solref": "0.005 1"})
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    for _ in range(500):
+        mujoco.mj_step(model, data)
+
+    assert 1 <= data.ncon <= 5
+    assert all(
+        {model.geom(int(gid)).name for gid in contact.geom} == {"table", obj.name + "_floor"}
+        for contact in data.contact
+    )
+    assert data.body(obj.name).xpos[2] == pytest.approx(obj.half_size[2], abs=0.001)
+    assert data.body(obj.name).xmat[8] > 0.999
+    # Use the same settled threshold as ObjectPackingState.geometry.
+    assert np.linalg.norm(data.qvel) < 0.03
+    # The walls remain physical grasp surfaces; only their buried bottoms changed.
+    hit = np.array([-1], dtype=np.int32)
+    distance = mujoco.mj_ray(
+        model,
+        data,
+        np.array([0.2, 0, obj.half_size[2]]),
+        np.array([-1.0, 0.0, 0.0]),
+        None,
+        True,
+        -1,
+        hit,
+    )
+    assert distance > 0
+    assert model.geom(int(hit[0])).name.startswith(obj.name + "_wall_")

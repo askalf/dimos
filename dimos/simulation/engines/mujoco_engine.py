@@ -228,6 +228,7 @@ class MujocoEngine(SimulationEngine):
         viewer_azimuth: float | None = None,
         viewer_elevation: float | None = None,
         background_camera_rendering: bool = False,
+        viewer_fps: float = 60.0,
     ) -> None:
         super().__init__(config_path=config_path, headless=headless)
         self._on_before_step: StepHook | None = on_before_step
@@ -243,6 +244,9 @@ class MujocoEngine(SimulationEngine):
         self._viewer_azimuth = viewer_azimuth
         self._viewer_elevation = viewer_elevation
         self._background_camera_rendering = background_camera_rendering
+        if not math.isfinite(viewer_fps) or viewer_fps <= 0:
+            raise ValueError("viewer_fps must be finite and positive")
+        self._viewer_fps = viewer_fps
 
         model_path = self._resolve_model_path(config_path)
         binary_model = model_path.suffix.lower() == ".mjb"
@@ -866,7 +870,9 @@ class MujocoEngine(SimulationEngine):
                             )
                     with self._lock:
                         m_viewer.sync()
-                    next_viewer_sync = now + 1.0 / 60.0
+                    # Schedule from completion: an expensive display update
+                    # must not make the next frame immediately overdue.
+                    next_viewer_sync = time.monotonic() + 1.0 / self._viewer_fps
                 with self._lock:
                     stamp = time.time()
                     self._render_cameras(stamp, cam_renderers)

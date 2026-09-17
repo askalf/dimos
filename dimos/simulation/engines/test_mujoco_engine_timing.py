@@ -16,6 +16,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -187,3 +188,44 @@ def test_paused_background_camera_does_not_forward_shared_model(camera_engine, m
     camera_engine.set_camera_streaming_enabled(False)
     camera_engine._camera_loop()
     forward.assert_not_called()
+
+
+@pytest.mark.parametrize("fps", [15, 60])
+def test_slow_viewer_keeps_physics_stepping_between_display_updates(camera_engine, mocker, fps):
+    clock = [0.0]
+    frame_times = []
+    camera_engine._headless = False
+    camera_engine._viewer_fps = fps
+    viewer = mocker.MagicMock()
+    viewer.__enter__.return_value = viewer
+    viewer.is_running.side_effect = lambda: clock[0] < 0.2
+
+    def sync():
+        frame_times.append(clock[0])
+        clock[0] += 0.03
+
+    def wait(seconds):
+        clock[0] += max(seconds, 1e-6)
+        return False
+
+    viewer.sync.side_effect = sync
+    mocker.patch(
+        "dimos.simulation.engines.mujoco_engine.viewer.launch_passive", return_value=viewer
+    )
+    mocker.patch(
+        "dimos.simulation.engines.mujoco_engine.time",
+        SimpleNamespace(monotonic=lambda: clock[0], time=lambda: clock[0]),
+    )
+    mocker.patch.object(camera_engine._stop_event, "wait", side_effect=wait)
+
+    camera_engine._sim_loop()
+
+    assert camera_engine.data.time >= 0.18
+    assert len(frame_times) >= 2
+    assert np.all(np.diff(frame_times) >= 0.03 + 1 / fps - 1e-9)
+
+
+@pytest.mark.parametrize("fps", [0, -1, float("inf"), float("nan")])
+def test_invalid_viewer_rate_is_rejected(camera_engine, fps):
+    with pytest.raises(ValueError, match="viewer_fps must be finite and positive"):
+        MujocoEngine(config_path=camera_engine._xml_path, headless=True, viewer_fps=fps)

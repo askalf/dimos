@@ -52,6 +52,14 @@ Seed 5000 completed ten consecutive commands through local MCP: right-hand carto
 
 Evidence is saved locally in `recordings/r1pro-classical-open-space/seed-5000/validation.json`, with per-action states and a scene preview in the same directory. The focused suite passed 68 tests; strict type checking passed on ten changed production sources.
 
+## Simulation speed
+
+The desktop viewer receives state updates at 15 Hz; physics retains its 2 ms timestep (500 steps per simulated second), and camera streaming remains on a separate thread at 10 Hz. The shared simulator exposes `viewer_fps` separately from camera `fps`.
+
+The cup's walls now sit on its own bottom disk. Previously the disk and all 24 wall segments touched the table, producing 101 cup/table contacts at rest. The corrected geometry produces five, while preserving the hollow cavity, physical grasp surfaces, outer dimensions and total mass. On the saved slow-run scene this reduced raw physics cost from 2.93 ms to 0.34 ms per step. This is a physics benchmark, not an end-to-end action latency guarantee: GraspGenX and reachability planning still take time.
+
+Restart the blueprint to generate the corrected scene; `reset_scene` reuses the existing model. No new environment exports are needed.
+
 ## Local regression
 
 The non-agent blueprint is `r1pro-classical-open-space-sim`. A reproducible test through local MCP, without a language-model call:
