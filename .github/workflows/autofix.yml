@@ -6,7 +6,7 @@ permissions: {}
 
 jobs:
   lint:
-    timeout-minutes: 1.5
+    timeout-minutes: 1
     runs-on: ubuntu-latest
     permissions:
       contents: read  # For checkout
@@ -31,27 +31,6 @@ jobs:
       - name: uv lock
         run: uv lock
 
-      - name: Did native/ change?
-        id: shared
-        run: |
-          set -euo pipefail
-          base=${{ github.event.pull_request.base.sha }}
-          # The checkout is shallow, so fetch just the base commit rather than the
-          # whole history: 0.9 s and 0.1 MB, against 9 s and 344 MB for the history.
-          # Not optional -- without the base, `git diff` fails and the `if` below
-          # reads that as "changed", installing nix on every PR.
-          git fetch --quiet --depth 1 origin "$base"
-          if git diff --quiet "$base"...HEAD -- native; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install Nix
-        if: steps.shared.outputs.changed == 'true'
-        run: bash docker/ros/install-nix.sh
-      - name: Relock the modules onto this revision
-        if: steps.shared.outputs.changed == 'true'
-        run: python3 bin/relock-shared-flakes
       # Unguarded: it commits the ruff and uv fixes too, which every PR may need.
       - name: autofix.ci
         uses: autofix-ci/action@v1

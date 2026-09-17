@@ -2,82 +2,80 @@
   description = "dimSLAM native module for DimOS: the dim_slam library behind an LCM wrapper";
 
   inputs = {
-    dimos-native-rust.url = "github:dimensionalOS/dimos?ref=jeff/fix/native_build_cargo_path&dir=native/rust";
-    flake-utils.follows = "dimos-native-rust/flake-utils";
-    nixpkgs.follows = "dimos-native-rust/nixpkgs";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+    crate2nix.url = "github:nix-community/crate2nix";
+    crate2nix.inputs.nixpkgs.follows = "nixpkgs";
     cu-vslam-rs.url = "github:jeff-hykin/cu_vslam_rs";
     cu-vslam-rs.inputs.nixpkgs.follows = "nixpkgs";
     cu-vslam-rs.inputs.flake-utils.follows = "flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils, cu-vslam-rs, dimos-native-rust }:
-    # Not eachDefaultSystem: nixpkgs 26.11 dropped x86_64-darwin, and merely naming
-    # it is an eval error.
+  # Not eachDefaultSystem: nixpkgs 26.11 dropped x86_64-darwin, and merely naming it
+  # is an eval error.
+  outputs = { self, nixpkgs, flake-utils, crate2nix, cu-vslam-rs }:
     flake-utils.lib.eachSystem [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ] (system:
       let
-        shared = dimos-native-rust.lib.${system};
+        pkgs = nixpkgs.legacyPackages.${system};
+        name = "dim-slam-module";
+
+        src = pkgs.lib.cleanSourceWith {
+          src = pkgs.lib.cleanSource ./.;
+          filter = path: type:
+            let base = baseNameOf (toString path); in
+            !(type == "directory"
+              && (base == "target" || base == "build" || base == "__pycache__"));
+        };
+
+        generated = crate2nix.tools.${system}.generatedCargoNix { inherit name src; };
 
         sdkPackages = nixpkgs.lib.filterAttrs
-          (name: _: nixpkgs.lib.hasPrefix "sdk-" name)
+          (n: _: nixpkgs.lib.hasPrefix "sdk-" n)
           cu-vslam-rs.packages.${system};
         variants = map (nixpkgs.lib.removePrefix "sdk-") (builtins.attrNames sdkPackages);
 
-        moduleFor = variant:
+        ours = [ name "dimos-module" "dimos-module-macros" ];
+        callWith = variant: lint:
           let sdkPackage = sdkPackages."sdk-${variant}"; in
-          {
-            name = "dim-slam-module";
-            path = "dimos/mapping/dim_slam/rust";
-            src = ./.;
-            crateOverrides = _: {
-              # cu_vslam_rs's build.rs compiles its shim against this SDK.
-              cu_vslam_rs = _: { CUVSLAM_SDK_DIR = sdkPackage; };
-              # buildRustCrate names DEP_ vars after the crate, cargo after the
-              # `links` key, so cu_vslam_rs's lib_dir never reaches our build.rs
-              # and the binary comes out with no rpath for libcuvslam.
-              dim-slam-module = _: { DEP_CUVSLAM_LIB_DIR = "${sdkPackage}/lib"; };
-            };
+          import generated {
+            inherit pkgs;
+            buildRustCrateForPkgs = cratePkgs:
+              let build = cratePkgs.buildRustCrate.override {
+                    defaultCrateOverrides = cratePkgs.defaultCrateOverrides // {
+                      # cu_vslam_rs's build.rs compiles its shim against this SDK.
+                      cu_vslam_rs = _: { CUVSLAM_SDK_DIR = sdkPackage; };
+                      # buildRustCrate names DEP_ vars after the crate, cargo after the
+                      # `links` key, so cu_vslam_rs's lib_dir never reaches our build.rs
+                      # and the binary comes out with no rpath for libcuvslam.
+                      dim-slam-module = _: { DEP_CUVSLAM_LIB_DIR = "${sdkPackage}/lib"; };
+                    };
+                  };
+              in crate: build (crate // pkgs.lib.optionalAttrs
+                (lint && builtins.elem crate.crateName ours)
+                {
+                  useClippy = true;
+                  capLints = "forbid";
+                  extraRustcOpts = (crate.extraRustcOpts or [ ]) ++ [ "-D" "warnings" ];
+                });
           };
-        packageFor = variant: shared.buildNativeModule (moduleFor variant);
-        clippyFor = variant: shared.clippyNativeModule (moduleFor variant);
+        buildOf = called:
+          if called ? rootCrate then called.rootCrate.build
+          else called.workspaceMembers.${name}.build;
+
+        # Lint once, against the first SDK variant: they differ only in which cu_vslam
+        # SDK the build script links, and the rust being linted is the same in all.
         lintedVariant = builtins.head (builtins.sort builtins.lessThan variants);
       in {
-        packages = nixpkgs.lib.genAttrs variants packageFor // {
-          clippy = clippyFor lintedVariant;
+        packages = nixpkgs.lib.genAttrs variants (v: buildOf (callWith v false)) // {
+          clippy = (buildOf (callWith lintedVariant true)).override {
+            runTests = true;
+            testCrateFlags = [ "--list" ];
+          };
         };
+        checks.clippy = self.packages.${system}.clippy;
 
-        checks.clippy = clippyFor lintedVariant;
-
-        devShells.default = nixpkgs.legacyPackages.${system}.mkShellNoCC {
-          packages = shared.rustTools;
-          shellHook = ''
-            if [ -z "''${CUVSLAM_SDK_DIR:-}" ]; then
-              case "$(uname -s)-$(uname -m)" in
-                Darwin-arm64) cuvslam_variant=metal ;;
-                Linux-aarch64)
-                  case "$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null)" in
-                    *tegra264*) cuvslam_variant=thor ;;
-                    *tegra234*) cuvslam_variant=orin ;;
-                    *) cuvslam_variant=aarch64 ;;
-                  esac ;;
-                *)
-                  cuda_major=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9]*\).*/\1/p')
-                  cuvslam_variant="x86_64''${cuda_major:+-cuda$cuda_major}" ;;
-              esac
-              case "$cuvslam_variant" in
-${nixpkgs.lib.concatMapStringsSep "\n" (variant:
-  "                ${variant}) cuvslam_sdk_drv=${builtins.unsafeDiscardStringContext sdkPackages."sdk-${variant}".drvPath} ;;"
-) variants}
-                *) cuvslam_sdk_drv= ;;
-              esac
-              if [ -n "$cuvslam_sdk_drv" ] \
-                && CUVSLAM_SDK_DIR=$(nix build --no-link --print-out-paths "$cuvslam_sdk_drv^out"); then
-                export CUVSLAM_SDK_DIR
-              else
-                echo "no cuVSLAM SDK for variant '$cuvslam_variant'; building the stub" >&2
-              fi
-              unset cuvslam_variant cuvslam_sdk_drv cuda_major
-            fi
-          '';
+        devShells.default = pkgs.mkShellNoCC {
+          packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt ];
         };
       });
 }

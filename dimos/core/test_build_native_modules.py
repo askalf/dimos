@@ -309,54 +309,6 @@ def _default_branch_has_shared_flakes() -> bool:
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
-def test_in_repo_flake_inputs_name_only_main_or_the_bootstrap_branch() -> None:
-    """No module may take its shared input from a third branch.
-
-    A module's one in-repo input is the shared crate tree. Pointing it at an
-    arbitrary branch freezes that module on somebody's work in progress, and at a ref
-    that can be deleted out from under every checkout -- which is exactly what happens
-    when the branch's pull request is closed.
-
-    Only two refs are legitimate: `main`, which is the answer, and the branch that
-    first adds the shared flakes, which is unavoidable because those files do not
-    exist on `main` until it merges. Anything else fails here.
-    """
-    allowed = {_DEFAULT_BRANCH, None} | _current_branch_names()
-    wrong = {
-        flake: [ref for ref in refs if ref not in allowed]
-        for flake, refs in _in_repo_input_refs().items()
-    }
-    wrong = {flake: refs for flake, refs in wrong.items() if refs}
-    assert not wrong, (
-        "these flakes take the shared dimos input from a branch that is neither "
-        f"{_DEFAULT_BRANCH!r} nor this branch: {wrong} -- point them at "
-        f"`ref={_DEFAULT_BRANCH}`"
-    )
-
-
-@pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
-def test_shared_flake_inputs_are_pinned_to_main_once_they_exist_upstream() -> None:
-    """Once the shared flakes are on `main`, every module input must name `main`.
-
-    The branch-pinned form exists purely to bootstrap the change that first adds those
-    flakes. Left behind, it freezes every module on one commit of a branch that may be
-    deleted -- and a deleted branch takes every module's build with it. This test goes
-    red the moment that bootstrap window closes, so nobody has to remember.
-    """
-    if not _default_branch_has_shared_flakes():
-        pytest.skip(
-            f"shared flakes are not on {_DEFAULT_BRANCH} yet; the branch pin is the bootstrap"
-        )
-    not_main = {
-        flake: refs
-        for flake, refs in _in_repo_input_refs().items()
-        if any(ref != _DEFAULT_BRANCH for ref in refs)
-    }
-    assert not not_main, (
-        f"the shared flakes are on {_DEFAULT_BRANCH} now, so these must name "
-        f"`ref={_DEFAULT_BRANCH}`: {not_main}"
-    )
-
 
 def _locked_in_repo_inputs() -> dict[str, list[tuple[str, str]]]:
     """flake.lock path -> the (rev, dir) of each in-repo input it pins."""
@@ -399,40 +351,6 @@ def _tree_at(rev: str, path: str) -> str | None:
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to read refs")
-def test_module_locks_pin_the_shared_flakes_as_they_are_now() -> None:
-    """A module's lock must name a revision whose shared tree is the one in this commit.
-
-    `nix flake lock` does not notice that the shared flake moved -- it only checks
-    that the lock is complete -- so a change to native/rust can land while every
-    module still builds against the revision before it, and nothing says so. The
-    revision itself is free to be older than HEAD; what must match is the content it
-    pins.
-
-    Shallow clones cannot answer the question at all, so this skips rather than
-    guesses when the pinned revision is not in the checkout.
-    """
-    stale: dict[str, list[str]] = {}
-    checked = 0
-    for lock, pins in _locked_in_repo_inputs().items():
-        for rev, subdir in pins:
-            pinned = _tree_at(rev, subdir)
-            if pinned is None:
-                continue  # shallow clone: the revision is not here to compare
-            checked += 1
-            here = _tree_at("HEAD", subdir)
-            if pinned != here:
-                stale.setdefault(lock, []).append(f"{subdir} @ {rev[:10]}")
-    if not checked:
-        pytest.skip("no pinned revision is present in this checkout to compare against")
-    assert not stale, (
-        "these locks pin a revision whose shared tree is not the one in this commit, "
-        f"so the modules build against the older shared flake: {stale} -- run "
-        "`nix flake update <input>` in each and commit the lock"
-    )
-
-
-_BUILD_EDGES = ("nixpkgs", "dimos-native-rust", "dimos-native-cpp")
-
 
 def _resolve(nodes: dict, node: str, name: str) -> str | None:
     """The node `name` refers to from `node`, resolving a `follows` path from root."""
@@ -479,66 +397,8 @@ def _build_nixpkgs_revs(lock: Path) -> set[str]:
 
 
 @pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs a git checkout to find the locks")
-def test_every_module_flake_builds_against_one_nixpkgs() -> None:
-    """One nixpkgs revision across every module flake.
-
-    A flake that resolves `nixos-unstable` itself picks whatever the channel held on
-    the day somebody last ran `nix flake lock` in that directory, so the flakes drift
-    apart silently -- the C++ modules sat on a February nixpkgs while the shared SDK
-    had moved to September. Two revisions means two stdenvs, and a derivation built
-    under one is not the derivation built under the other: nothing between them is
-    shared, in the store or in cachix, no matter how identical the source.
-
-    The fix each flake carries is to follow the shared flake rather than declare its
-    own, and this is the test that says so.
-
-    The flake at the repository root is deliberately out of scope. It builds no
-    module -- it is the development shell and the container image -- and it shares
-    nothing with a module build but the base stdenv, so moving it is a change to the
-    environment everyone works in rather than a cache fix. Worth doing on its own
-    terms, not as a side effect of this one.
-    """
-    per_flake = {
-        lock.parent.relative_to(DIMOS_PROJECT_ROOT).as_posix(): _build_nixpkgs_revs(lock)
-        for lock in DIMOS_PROJECT_ROOT.rglob("flake.lock")
-        if ".git" not in lock.parts and lock.parent != DIMOS_PROJECT_ROOT
-    }
-    revs = set().union(*per_flake.values()) if per_flake else set()
-    assert len(revs) <= 1, (
-        "these flakes do not agree on a nixpkgs revision, so they share no build "
-        f"cache: { {flake: sorted(r[:10] for r in got) for flake, got in per_flake.items()} } "
-        '-- give the odd ones out `nixpkgs.follows = "dimos-native-cpp/nixpkgs"` '
-        "(or `dimos-native-rust/nixpkgs`) instead of a `nixpkgs.url` of their own"
-    )
 
 
-def test_tooling_nixpkgs_is_not_counted_as_a_divergence(tmp_path: Path) -> None:
-    """The negative control for the walk above, in both directions.
-
-    A nixpkgs reached only through a tooling input is invisible to it, and a nixpkgs
-    reached through a build edge is not -- otherwise the test above would pass by
-    seeing nothing at all.
-    """
-    lock = tmp_path / "flake.lock"
-    tooling = {
-        "nodes": {
-            "root": {"inputs": {"nixpkgs": "pkgs", "crate2nix": "crate2nix"}},
-            "pkgs": {"locked": {"owner": "NixOS", "repo": "nixpkgs", "rev": "a" * 40}},
-            "crate2nix": {"inputs": {"cachix": "cachix"}},
-            "cachix": {"inputs": {"nixpkgs": "old"}},
-            "old": {"locked": {"owner": "NixOS", "repo": "nixpkgs", "rev": "b" * 40}},
-        }
-    }
-    lock.write_text(json.dumps(tooling))
-    assert _build_nixpkgs_revs(lock) == {"a" * 40}
-
-    tooling["nodes"]["root"]["inputs"]["dimos-native-cpp"] = "shared"
-    tooling["nodes"]["shared"] = {"inputs": {"nixpkgs": "old"}}
-    lock.write_text(json.dumps(tooling))
-    assert _build_nixpkgs_revs(lock) == {"a" * 40, "b" * 40}
-
-
-@pytest.mark.skipif(not _IN_GIT_CHECKOUT, reason="needs git HEAD for object hashes")
 def test_manifest_is_deterministic() -> None:
     modules = _SCRIPT.discover()
     manifest = _SCRIPT.build_manifest(modules)
