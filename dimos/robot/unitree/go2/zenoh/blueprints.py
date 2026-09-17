@@ -54,7 +54,6 @@ from dimos.navigation.global_planner.mls_planner.start_relay import StartRelay
 from dimos.navigation.global_planner.mls_planner.viz import planner_visual_override
 from dimos.navigation.local_planner.native import LocalPlannerNative
 from dimos.navigation.local_planner.viz import motion_visual_override
-from dimos.navigation.movement_manager.cmd_vel_mux import CmdVelMux
 from dimos.navigation.movement_manager.movement_manager import MovementManager
 from dimos.navigation.trajectory_follower.basic.module import BasicPathFollower
 from dimos.navigation.trajectory_follower.fancy.native import TrajectoryFollowerNative
@@ -329,19 +328,9 @@ _go2_zenoh_motion_base = autoconnect(
     # z origin -- which on a LIO stack is base height -- has to be guessed
     # (motion/obstacles.py).
     LocalPlannerNative.blueprint(body_dilate_m=MOTION_BODY_DILATE_M),
-    # Kept for the click relay alone (clicked_point -> goal/way_point). Its cmd_vel and
-    # stop_movement are CmdVelMux's job on this rig, and a second publisher of each is not
-    # redundancy -- both would drive GO2Zenoh's cmd_vel, and the two disagree on Bool
-    # (dimos_lcm's vs dimos.msgs'), which is what the stream-conflict check trips on.
-    MovementManager.blueprint().remappings(
-        [
-            (MovementManager, "cmd_vel", "movement_manager_cmd_vel_unused"),
-            (MovementManager, "stop_movement", "movement_manager_stop_unused"),
-        ]
-    ),
-    # Teleop preempts nav on cmd_vel and a watchdog zeros it when the follower dies.
-    # MovementManager keeps the click relay; both see tele_cmd_vel.
-    CmdVelMux.blueprint(),
+    # The click relay (clicked_point -> goal/way_point), and teleop preempting nav on
+    # cmd_vel.
+    MovementManager.blueprint(),
 )
 
 # The follower reads no map: the required precision arrives in the path's own
