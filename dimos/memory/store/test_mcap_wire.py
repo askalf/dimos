@@ -14,7 +14,9 @@
 
 """The self-describing dimos wire channel: naming and decode, no file needed."""
 
-from dimos.memory.store.mcap import _dimos_wire, _DimosCodec, _slug
+import pytest
+
+from dimos.memory.store.mcap import McapStore, _dimos_wire, _DimosCodec, _slug
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.msgs.nav_msgs.Path import Path
@@ -59,3 +61,31 @@ def test_the_codec_decodes_the_wire_bytes():
     assert isinstance(got, Path)
     assert got.frame_id == "odom"
     assert abs(got.poses[0].position.x - 0.5) < 1e-9
+
+
+def _write(path, topics):
+    """Empty channels are enough: names are decided at registration."""
+    mcap_writer = pytest.importorskip("mcap.writer")
+    with path.open("wb") as output:
+        writer = mcap_writer.Writer(output)
+        writer.start(profile="dimos", library="test")
+        for topic in topics:
+            writer.register_channel(topic=topic, message_encoding="lcm", schema_id=0)
+        writer.finish()
+
+
+def test_two_types_on_one_port_stay_two_streams(tmp_path):
+    path = tmp_path / "shared.mcap"
+    _write(path, ["dimos/shared/sensor_msgs.Imu", "dimos/shared/geometry_msgs.Vector3"])
+    with McapStore(path=str(path)) as store:
+        assert store.list_streams() == ["shared", "shared_Vector3"]
+
+
+def test_a_real_collision_is_refused_not_overwritten(tmp_path):
+    path = tmp_path / "slash.mcap"
+    _write(path, ["dimos/slash/name/nav_msgs.Path", "dimos/slash_name/nav_msgs.Path"])
+    with pytest.raises(ValueError, match="slash_name"):
+        McapStore(path=str(path))
+    # and the way out is to name them yourself
+    with McapStore(path=str(path), streams={"a": "dimos/slash/name/nav_msgs.Path"}) as store:
+        assert "a" in store.list_streams()

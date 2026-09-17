@@ -229,6 +229,20 @@ class McapStore(Store):
             for cid, ch in summary.channels.items():
                 count = summary.statistics.channel_message_counts.get(cid, 0)
                 name = name_of.get(ch.topic) or _slug(ch.topic)
+                taken = self._stream_topic.get(name)
+                if taken is not None and taken != ch.topic:
+                    # Two topics, one name. One port carrying two types is
+                    # the type's to tell apart (`shared` -> `shared_Imu`); two
+                    # ports folding to one slug is a naming decision for
+                    # `streams=`, not something to guess at.
+                    wire, had = _dimos_wire(ch.topic), _dimos_wire(taken)
+                    if wire is not None and had is not None and wire[0] == had[0]:
+                        name = f"{name}_{wire[1].__name__}"
+                    if self._stream_topic.get(name, ch.topic) != ch.topic:
+                        raise ValueError(
+                            f"stream {name!r} would name both {taken!r} and {ch.topic!r};"
+                            " pass streams= to name them apart"
+                        )
                 if ch.topic not in self._codecs and ch.message_encoding == "jpeg":
                     self._codecs[ch.topic] = JpegCodec()
                 self._stream_topic[name] = ch.topic
