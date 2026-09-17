@@ -2,6 +2,7 @@
   description = "Point-LIO + Livox Mid-360 native module";
 
   inputs = {
+    livox-sdk2.url = "github:jeff-hykin/livox-sdk2";
     zenoh.url = "github:jeff-hykin/zenoh_flake";
     zenoh.inputs.nixpkgs.follows = "nixpkgs";
     zenoh.inputs.flake-utils.follows = "flake-utils";
@@ -29,7 +30,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, zenoh, flake-utils, dimos-native-cpp, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
+  outputs = { self, livox-sdk2, nixpkgs, zenoh, flake-utils, dimos-native-cpp, dimos-lcm, pfr, fast-lio, lcm-extended, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         # Overlay fixes for darwin-broken nixpkgs recipes in our transitive
@@ -67,41 +68,6 @@
           inherit system;
           overlays = [ darwinDepFixes ];
         };
-        livox-sdk2 = pkgs.stdenv.mkDerivation rec {
-          pname = "livox-sdk2";
-          version = "1.2.5";
-
-          src = pkgs.fetchFromGitHub {
-            owner = "Livox-SDK";
-            repo = "Livox-SDK2";
-            rev = "v${version}";
-            hash = "sha256-NGscO/vLiQ17yQJtdPyFzhhMGE89AJ9kTL5cSun/bpU=";
-          };
-
-          # macOS socket fixes (SO_RCVBUF too large, broadcast bind fails).
-          patches = [ ./livox-sdk2-darwin.patch ];
-
-          nativeBuildInputs = [ pkgs.cmake ];
-
-          cmakeFlags = [
-            "-DBUILD_SHARED_LIBS=ON"
-            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-          ];
-
-          preConfigure = ''
-            substituteInPlace CMakeLists.txt \
-              --replace-fail "add_subdirectory(samples)" ""
-            sed -i '1i #include <cstdint>' sdk_core/comm/define.h
-            sed -i '1i #include <cstdint>' sdk_core/logger_handler/file_manager.h
-            # Livox-SDK2 bundles an old rapidjson whose RAPIDJSON_DIAG_OFF(foo-bar)
-            # macros stringify with spaces under newer clang, producing invalid
-            # warning-group names.  It also has an unused FastCRC field.  Both
-            # explode under -Werror, and passing -DCMAKE_CXX_FLAGS=-Wno-error is
-            # overridden by add_compile_options(-Werror) deeper in the sdk_core
-            # CMakeLists.  Strip -Werror in-place instead.
-            find . -name CMakeLists.txt -exec sed -i 's/-Werror//g' {} +
-          '';
-        };
         lcm = lcm-extended.packages.${system}.lcm;
         zenohc = zenoh.packages.${system}.zenoh-c;
         zenohcpp = zenoh.packages.${system}.zenoh-cpp;
@@ -126,7 +92,7 @@
 
           nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
           buildInputs = [
-            livox-sdk2
+            livox-sdk2.packages.${system}.default
             lcm
             pkgs.glib
             pkgs.eigen
