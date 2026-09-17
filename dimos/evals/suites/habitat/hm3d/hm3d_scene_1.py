@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""HM3D scene 1 QA; scene context and preview are in ../SCENES.md."""
-
 from functools import partial
 
 from dimos.evals.suites.lib.habitat_qa import (

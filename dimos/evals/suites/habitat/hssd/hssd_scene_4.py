@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""HSSD scene 4 QA; scene context and preview are in ../SCENES.md."""
-
 import os
 
 from dimos.constants import DIMOS_PROJECT_ROOT

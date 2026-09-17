@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""HSSD scene 10 QA; scene context and preview are in ../SCENES.md."""
-
 from functools import partial
 
 from dimos.evals.scorers import exact, first_number, numeric, rank_order, ranking, yes_no

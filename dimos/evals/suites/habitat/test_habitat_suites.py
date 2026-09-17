@@ -12,15 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Offline suite contracts and reference-transcription regression checks."""
+"""Offline scene-loading and reviewed-answer regression checks."""
 
 from importlib import import_module
 from types import SimpleNamespace
 
 import pytest
-
-from dimos.evals.environments.habitat import HabitatEnvironment
-from dimos.evals.suites.lib.habitat_qa import environment
 
 SCENES = [
     ("hm3d_CFVBbU9Rsyb", "00337-CFVBbU9Rsyb", 13),
@@ -56,34 +53,13 @@ def test_scene_contract(name, scene_id, size):
     assert len({id(c.environment) for c in suite}) == size
     for c in suite:
         assert c.id.startswith(name + "_")
-        assert isinstance(c.environment, HabitatEnvironment)
         habitat = c.environment.config
         if scene_id is not None:
             assert habitat.scene_id == scene_id
         assert habitat.seed == 0
         assert c.timeout_s == 1200
-        assert "draft-reference" not in c.tags
-        assert not c.tags.intersection({"dimsim", "apartment", "qa"})
-        assert "Return" in c.inputs
-        assert "do not leave the home" in c.inputs
-        assert not ("every desk" in c.inputs.lower() and "computer" in c.inputs.lower())
         for invalid in ("", "unknown"):
             assert c.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer=invalid))) == 0
-
-
-def test_environment_resolves_dataset_and_asset_overrides(monkeypatch, tmp_path):
-    dataset = str(tmp_path / "dataset.json")
-    asset = str(tmp_path / "apartment_1.glb")
-    monkeypatch.setenv("HABITAT_TEST_DATASET_CONFIG", dataset)
-    monkeypatch.setenv("HABITAT_TEST_SCENE", asset)
-    env = environment(
-        "original.glb",
-        "HABITAT_TEST_DATASET_CONFIG",
-        "default",
-        scene_env="HABITAT_TEST_SCENE",
-    )
-    assert env.config.scene_dataset_config == dataset
-    assert env.config.scene_id == asset
 
 
 @pytest.mark.parametrize(

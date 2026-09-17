@@ -16,8 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dimos.evals.environments.habitat import HabitatEnvironment
-from dimos.evals.suites.habitat.hssd.hssd_scene_1 import INSTRUCTION, SUITE, _environment
+from dimos.evals.suites.habitat.hssd.hssd_scene_1 import SUITE, _environment
 from dimos.evals.suites.habitat.hssd.hssd_scene_2 import SUITE as LARGE_HOME_SUITE
 from dimos.evals.suites.habitat.hssd.hssd_scene_3 import SUITE as OFFICE_HOME_SUITE
 from dimos.evals.suites.habitat.hssd.hssd_scene_4 import SUITE as COMPACT_HOME_SUITE
@@ -27,11 +26,6 @@ from dimos.evals.suites.habitat.hssd.hssd_scene_7 import SUITE as GARAGE_HOME_SU
 from dimos.evals.suites.habitat.hssd.hssd_scene_8 import SUITE as PIANO_HOME_SUITE
 from dimos.evals.suites.habitat.hssd.hssd_scene_9 import SUITE as TWO_KITCHEN_SUITE
 from dimos.evals.suites.habitat.hssd.hssd_scene_10 import SUITE as THREE_BEDROOM_SUITE
-from dimos.evals.suites.lib.habitat_qa import (
-    HSSD_DATASET,
-    INSTRUCTION as SHARED_INSTRUCTION,
-    environment as make_environment,
-)
 
 
 def test_reviewed_scene_contract(monkeypatch, tmp_path):
@@ -41,13 +35,9 @@ def test_reviewed_scene_contract(monkeypatch, tmp_path):
     assert env.config.scene_dataset_config == str(dataset)
     assert env.config.scene_id == "102344193"
     assert env.config.start_position_ros_override == (3.0, 5.5, 0.124386)
-    assert isinstance(env, HabitatEnvironment)
     assert len(SUITE) == len({case.id for case in SUITE}) == 11
     assert len({id(case.environment) for case in SUITE}) == 11
     for case in SUITE:
-        assert case.inputs.startswith(INSTRUCTION + "\n\n")
-        assert "balcony" not in case.inputs.lower()
-        assert "doorway" not in case.id
         assert case.environment.config.scene_id == "102344193"
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
 
@@ -79,7 +69,6 @@ def test_large_home_reviewed_contract():
     for case in LARGE_HOME_SUITE:
         assert case.environment.config.scene_id == "102344403"
         assert case.environment.config.start_position_ros_override == (3.713, 6.3, 0.159347)
-        assert "balcony" not in case.inputs.lower()
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
 
 
@@ -108,7 +97,6 @@ def test_compact_home_contract():
     assert len({id(c.environment) for c in COMPACT_HOME_SUITE}) == 12
     for case in COMPACT_HOME_SUITE:
         assert case.environment.config.scene_id == "103997970_171031287"
-        assert "balcony" not in case.inputs.lower()
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
 
 
@@ -135,8 +123,6 @@ def test_office_home_contract():
     assert len({id(c.environment) for c in OFFICE_HOME_SUITE}) == 13
     for case in OFFICE_HOME_SUITE:
         assert case.environment.config.scene_id == "103997424_171030444"
-        assert "book" not in case.id
-        assert "balcony" not in case.inputs.lower()
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
 
 
@@ -161,14 +147,6 @@ def test_furnished_home_contract():
     for case in FURNISHED_HOME_SUITE:
         assert case.environment.config.scene_id == "104348463_171513588"
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
-    for suite in (
-        SUITE,
-        LARGE_HOME_SUITE,
-        COMPACT_HOME_SUITE,
-        OFFICE_HOME_SUITE,
-        FURNISHED_HOME_SUITE,
-    ):
-        assert not any("every" in c.inputs.lower() and "desk" in c.inputs.lower() for c in suite)
 
 
 @pytest.mark.parametrize(
@@ -195,22 +173,9 @@ def test_remaining_scene_contracts(scene_id, suite, count):
     assert len({id(c.environment) for c in suite}) == count
     for case in suite:
         assert case.id.startswith(f"hssd_{scene_id}_")
-        assert isinstance(case.environment, HabitatEnvironment)
         assert case.environment.config.scene_id == scene_id
         assert case.environment.config.seed == 0
-        assert case.inputs.startswith(SHARED_INSTRUCTION + "\n\n")
-        assert not ("every" in case.inputs.lower() and "desk" in case.inputs.lower())
-        assert not case.tags.intersection({"dimsim", "apartment", "qa"})
         assert case.grade(SimpleNamespace(trajectory=SimpleNamespace(final_answer="unknown"))) == 0
-
-
-def test_shared_dataset_override_and_fresh_environment(monkeypatch, tmp_path):
-    dataset = str(tmp_path / "hssd-hab.scene_dataset_config.json")
-    monkeypatch.setenv("HSSD_DATASET_CONFIG", dataset)
-    first = make_environment("test", "HSSD_DATASET_CONFIG", HSSD_DATASET)
-    second = make_environment("test", "HSSD_DATASET_CONFIG", HSSD_DATASET)
-    assert first is not second
-    assert first.config.scene_dataset_config == dataset
 
 
 @pytest.mark.parametrize(

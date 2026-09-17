@@ -6,10 +6,13 @@ Executable questions and reference answers live in the adjacent Python suites.
 
 Suite filenames and headings use sequential names within each dataset. Original dataset
 handles and stable question IDs are retained internally for loading and review
-history. Each suite has a same-named PNG showing a ceiling-cutaway orthographic
+history. Each suite has a same-named JPEG showing a ceiling-cutaway orthographic
 overview from the upper right (45-degree azimuth, 55-degree elevation), fitted
 to its full projected footprint. Multi-level HM3D scenes include labeled
 elevation slices in the same image; detected elevations are not a floor census.
+These previews are capped at 1600 pixels wide and 75 KB each, and stored directly in Git through a scoped
+`.gitattributes` exception so GitHub can display them without fetching from the
+custom LFS server. Full-resolution PNG originals are retained locally.
 
 ### Dataset locations
 
@@ -67,9 +70,9 @@ Suite defaults use `target/habitat/data`; use the overrides for other installati
 
 <!-- scene: hssd_102344193 -->
 
-[Suite](hssd/hssd_scene_1.py) · [Full-resolution preview](hssd/hssd_scene_1.png)
+[Suite](hssd/hssd_scene_1.py) · [Open preview](hssd/hssd_scene_1.jpg)
 
-![HSSD scene 1 overview](hssd/hssd_scene_1.png)
+![HSSD scene 1 overview](hssd/hssd_scene_1.jpg)
 
 **Layout:** compact furnished home with a large living/dining space, kitchen,
 bedroom, bathroom, hallway, closet and small laundry area. The bedroom has a
@@ -90,9 +93,9 @@ was checked against an in-memory mesh, not a saved runtime mesh.
 
 <!-- scene: hssd_102344403 -->
 
-[Suite](hssd/hssd_scene_2.py) · [Full-resolution preview](hssd/hssd_scene_2.png)
+[Suite](hssd/hssd_scene_2.py) · [Open preview](hssd/hssd_scene_2.jpg)
 
-![HSSD scene 2 overview](hssd/hssd_scene_2.png)
+![HSSD scene 2 overview](hssd/hssd_scene_2.jpg)
 
 **Layout:** large home with three bedrooms, a lounge, a recreation room with a
 grand piano, a living room, kitchen, gym, office, laundry and attached garage.
@@ -114,9 +117,9 @@ large layout; object centers are generally not walkable goals.
 
 <!-- scene: hssd_103997424_171030444 -->
 
-[Suite](hssd/hssd_scene_3.py) · [Full-resolution preview](hssd/hssd_scene_3.png)
+[Suite](hssd/hssd_scene_3.py) · [Open preview](hssd/hssd_scene_3.jpg)
 
-![HSSD scene 3 overview](hssd/hssd_scene_3.png)
+![HSSD scene 3 overview](hssd/hssd_scene_3.jpg)
 
 **Layout:** one-bedroom home with living, kitchen, dining, office and bathroom
 spaces connected by a hallway. Distinctive features include adjacent red seating
@@ -136,9 +139,9 @@ were measured from the transformed visual mesh, not nominal product labels.
 
 <!-- scene: hssd_103997970_171031287 -->
 
-[Suite](hssd/hssd_scene_4.py) · [Full-resolution preview](hssd/hssd_scene_4.png)
+[Suite](hssd/hssd_scene_4.py) · [Open preview](hssd/hssd_scene_4.jpg)
 
-![HSSD scene 4 overview](hssd/hssd_scene_4.png)
+![HSSD scene 4 overview](hssd/hssd_scene_4.jpg)
 
 **Layout:** three physical rooms: a combined living/kitchen/dining room, a
 bedroom and a bathroom. The open-plan room contains a round dining table and a
@@ -157,9 +160,9 @@ TV room membership was resolved by human inspection rather than an ambiguous anc
 
 <!-- scene: hssd_104348463_171513588 -->
 
-[Suite](hssd/hssd_scene_5.py) · [Full-resolution preview](hssd/hssd_scene_5.png)
+[Suite](hssd/hssd_scene_5.py) · [Open preview](hssd/hssd_scene_5.jpg)
 
-![HSSD scene 5 overview](hssd/hssd_scene_5.png)
+![HSSD scene 5 overview](hssd/hssd_scene_5.jpg)
 
 **Layout:** bedroom, bathroom and combined living/dining space, with a kitchen
 zone and island seating. The bedroom includes a desktop computer. A round dining
@@ -178,9 +181,9 @@ the kitchen zone. A missing fridge category did not imply a missing appliance.
 
 <!-- scene: hssd_106366410_174226806 -->
 
-[Suite](hssd/hssd_scene_6.py) · [Full-resolution preview](hssd/hssd_scene_6.png)
+[Suite](hssd/hssd_scene_6.py) · [Open preview](hssd/hssd_scene_6.jpg)
 
-![HSSD scene 6 overview](hssd/hssd_scene_6.png)
+![HSSD scene 6 overview](hssd/hssd_scene_6.jpg)
 
 **Layout:** furnished home with a living-room grand piano, a kitchen and dining
 space, laundry, bathroom, and a bedroom containing a sofa. The exercise and office
@@ -202,9 +205,9 @@ nearby target-approach conventions can affect small walking-distance differences
 
 <!-- scene: hssd_106878858_174886965 -->
 
-[Suite](hssd/hssd_scene_7.py) · [Full-resolution preview](hssd/hssd_scene_7.png)
+[Suite](hssd/hssd_scene_7.py) · [Open preview](hssd/hssd_scene_7.jpg)
 
-![HSSD scene 7 overview](hssd/hssd_scene_7.png)
+![HSSD scene 7 overview](hssd/hssd_scene_7.jpg)
 
 **Layout:** four-bedroom home with bathrooms, an office, living/kitchen/dining
 spaces, utility/laundry areas and an attached garage. Distinctive landmarks include
@@ -225,9 +228,9 @@ the indoor exploration scope.
 
 <!-- scene: hssd_107734110_175999914 -->
 
-[Suite](hssd/hssd_scene_8.py) · [Full-resolution preview](hssd/hssd_scene_8.png)
+[Suite](hssd/hssd_scene_8.py) · [Open preview](hssd/hssd_scene_8.jpg)
 
-![HSSD scene 8 overview](hssd/hssd_scene_8.png)
+![HSSD scene 8 overview](hssd/hssd_scene_8.jpg)
 
 **Layout:** comparatively sparsely populated one-bedroom home with living room,
 kitchen, office, utility room, bathroom, hallway and separate closet spaces.
@@ -247,9 +250,9 @@ The utility annotation is `utilityroom/toolroom`.
 
 <!-- scene: hssd_108736851_177263586 -->
 
-[Suite](hssd/hssd_scene_9.py) · [Full-resolution preview](hssd/hssd_scene_9.png)
+[Suite](hssd/hssd_scene_9.py) · [Open preview](hssd/hssd_scene_9.jpg)
 
-![HSSD scene 9 overview](hssd/hssd_scene_9.png)
+![HSSD scene 9 overview](hssd/hssd_scene_9.jpg)
 
 **Layout:** expansive living room, four bedrooms, multiple bathrooms, office,
 laundry and dining spaces, and two distinct kitchen areas. The office includes
@@ -270,9 +273,9 @@ distances are close; region-entry routes do not establish physical doorway count
 
 <!-- scene: hssd_108736884_177263634 -->
 
-[Suite](hssd/hssd_scene_10.py) · [Full-resolution preview](hssd/hssd_scene_10.png)
+[Suite](hssd/hssd_scene_10.py) · [Open preview](hssd/hssd_scene_10.jpg)
 
-![HSSD scene 10 overview](hssd/hssd_scene_10.png)
+![HSSD scene 10 overview](hssd/hssd_scene_10.jpg)
 
 **Layout:** three-bedroom furnished home with an office, separate dining room,
 large kitchen and living spaces, laundry, closets, bathrooms and a separate toilet
@@ -293,9 +296,9 @@ geometry/visual interpretation, not inference from missing joint values.
 
 <!-- scene: hm3d_CFVBbU9Rsyb -->
 
-[Suite](hm3d/hm3d_scene_1.py) · [Full-resolution preview](hm3d/hm3d_scene_1.png)
+[Suite](hm3d/hm3d_scene_1.py) · [Open preview](hm3d/hm3d_scene_1.jpg)
 
-![HM3D scene 1 elevation overviews](hm3d/hm3d_scene_1.png)
+![HM3D scene 1 elevation overviews](hm3d/hm3d_scene_1.jpg)
 
 **Layout:** multi-level furnished residential scan, with repeated kitchen/living
 areas, bedrooms, pitched wooden ceilings, skylights, stairs, loft-like sleeping
@@ -319,9 +322,9 @@ these observations are not a complete story census or proof of stair reachabilit
 
 <!-- scene: hm3d_GLAQ4DNUx5U -->
 
-[Suite](hm3d/hm3d_scene_2.py) · [Full-resolution preview](hm3d/hm3d_scene_2.png)
+[Suite](hm3d/hm3d_scene_2.py) · [Open preview](hm3d/hm3d_scene_2.jpg)
 
-![HM3D scene 2 elevation overviews](hm3d/hm3d_scene_2.png)
+![HM3D scene 2 elevation overviews](hm3d/hm3d_scene_2.jpg)
 
 **Layout:** multi-level furnished home with bedrooms, bathrooms, utility/storage
 spaces and a kitchen/living level. Landmarks include an exercise bike in a
@@ -346,9 +349,9 @@ furniture dimensions/centers. The inspected navmesh had five islands and about
 
 <!-- scene: hm3d_NBg5UqG3di3 -->
 
-[Suite](hm3d/hm3d_scene_3.py) · [Full-resolution preview](hm3d/hm3d_scene_3.png)
+[Suite](hm3d/hm3d_scene_3.py) · [Open preview](hm3d/hm3d_scene_3.jpg)
 
-![HM3D scene 3 overview](hm3d/hm3d_scene_3.png)
+![HM3D scene 3 overview](hm3d/hm3d_scene_3.jpg)
 
 **Layout:** ornate, largely unfurnished interiors rather than a typical apartment:
 white-paneled rooms and corridors, a red-and-gold vaulted corridor, a room with
@@ -371,9 +374,9 @@ need careful visual deduplication, and reflective door panels are ambiguous.
 
 <!-- scene: replicacad_apt_1 -->
 
-[Suite](replicacad/replicacad_scene_1.py) · [Full-resolution preview](replicacad/replicacad_scene_1.png)
+[Suite](replicacad/replicacad_scene_1.py) · [Open preview](replicacad/replicacad_scene_1.jpg)
 
-![ReplicaCAD scene 1 overview](replicacad/replicacad_scene_1.png)
+![ReplicaCAD scene 1 overview](replicacad/replicacad_scene_1.jpg)
 
 **Layout:** furnished apartment with sofa/TV furniture, bicycles, beanbag seats,
 chairs, stools, plants and numerous small household objects. Kitchen/storage
@@ -396,9 +399,9 @@ TV; small/occluded objects need close views. Template shapes are not room polygo
 
 <!-- scene: replicacad_apt_5 -->
 
-[Suite](replicacad/replicacad_scene_2.py) · [Full-resolution preview](replicacad/replicacad_scene_2.png)
+[Suite](replicacad/replicacad_scene_2.py) · [Open preview](replicacad/replicacad_scene_2.jpg)
 
-![ReplicaCAD scene 2 overview](replicacad/replicacad_scene_2.png)
+![ReplicaCAD scene 2 overview](replicacad/replicacad_scene_2.jpg)
 
 **Layout:** another arrangement of the same apartment family, with sofa/TV
 furniture, bicycles, beanbags, seating, plants, bowls, books and an umbrella.
@@ -420,9 +423,9 @@ collision-free route order.
 
 <!-- scene: replicacad_v3_sc1_staging_00 -->
 
-[Suite](replicacad/replicacad_scene_3.py) · [Full-resolution preview](replicacad/replicacad_scene_3.png)
+[Suite](replicacad/replicacad_scene_3.py) · [Open preview](replicacad/replicacad_scene_3.jpg)
 
-![ReplicaCAD scene 3 overview](replicacad/replicacad_scene_3.png)
+![ReplicaCAD scene 3 overview](replicacad/replicacad_scene_3.jpg)
 
 **Layout:** sparse staged apartment with sofa, TV stand, a bicycle, beanbags,
 chairs and indoor plants, together with articulated kitchen/storage furniture.
@@ -442,9 +445,9 @@ themselves establish the contents of stage meshes or articulated furniture.
 
 <!-- scene: replicacad_v3_sc2_staging_00 -->
 
-[Suite](replicacad/replicacad_scene_4.py) · [Full-resolution preview](replicacad/replicacad_scene_4.png)
+[Suite](replicacad/replicacad_scene_4.py) · [Open preview](replicacad/replicacad_scene_4.jpg)
 
-![ReplicaCAD scene 4 overview](replicacad/replicacad_scene_4.png)
+![ReplicaCAD scene 4 overview](replicacad/replicacad_scene_4.jpg)
 
 **Layout:** sparse staged apartment with sofa/TV furniture, two bicycles,
 chairs and plants. There are no beanbag rigid placements. Furniture locations
@@ -464,9 +467,9 @@ not visual labels a viewer or evaluated agent can distinguish automatically.
 
 <!-- scene: habitat_test_apartment_1 -->
 
-[Suite](test/habitat_test_scene_1.py) · [Full-resolution preview](test/habitat_test_scene_1.png)
+[Suite](test/habitat_test_scene_1.py) · [Open preview](test/habitat_test_scene_1.jpg)
 
-![Habitat test scene 1 overview](test/habitat_test_scene_1.png)
+![Habitat test scene 1 overview](test/habitat_test_scene_1.jpg)
 
 **Layout:** textured apartment scan with a furnished lounge, a separate dining
 room and connecting corridor. Landmarks include an L-shaped sofa opposite a
