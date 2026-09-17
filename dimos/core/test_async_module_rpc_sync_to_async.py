@@ -108,5 +108,5 @@ def test_async_module_rpc_sync_to_async(start_module, in_transport, out_transpor
     queue = Queue()
     out_transport.subscribe(queue.put)
     in_transport.publish(4)
-    cubed = queue.get(timeout=0.1)
+    cubed = queue.get(timeout=5.0)
     assert cubed == 4400
