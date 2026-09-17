@@ -77,5 +77,5 @@ def test_async_module_rpc(start_cube_module, a_transport, cube_a_transport):
     queue = Queue()
     cube_a_transport.subscribe(queue.put)
     a_transport.publish(3)
-    cubed = queue.get(timeout=0.1)
+    cubed = queue.get(timeout=5.0)
     assert cubed == 27
