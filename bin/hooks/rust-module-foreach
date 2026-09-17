@@ -4,6 +4,11 @@ set -euo pipefail
 top=$(git rev-parse --show-toplevel)
 system=$(nix eval --raw --impure --expr builtins.currentSystem)
 
+shared_shell=""
+if [ "${1:-}" = "--shell" ]; then
+    shared_shell=$2
+    shift 2
+fi
 subcommand=$1
 shift
 
@@ -20,18 +25,23 @@ while read -r root; do
         exit 1
     fi
 
-    # A module may declare it does not support this platform: realsense links
-    # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off Linux.
-    # Skip it rather than block the commit; CI lints on Linux, where it does exist.
-    if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
-        echo "skipping ${root#"$top"/}: $dir declares no devShell for $system" >&2
-        continue
+    if [ -n "$shared_shell" ]; then
+        shell_dir=$shared_shell
+    else
+        shell_dir=$dir
+        # A module may declare it does not support this platform: realsense links
+        # librealsense, which pulls v4l-utils, which nixpkgs will not evaluate off Linux.
+        # Skip it rather than block the commit; CI lints on Linux, where it does exist.
+        if ! nix eval --quiet "path:$dir#devShells.$system.default.outPath" >/dev/null 2>&1; then
+            echo "skipping ${root#"$top"/}: $dir declares no devShell for $system" >&2
+            continue
+        fi
     fi
 
     started=$(date +%s)
-    nix develop "path:$dir" -c true
+    nix develop "path:$shell_dir" -c true
     entered=$(date +%s)
-    nix develop "path:$dir" -c cargo "$subcommand" --manifest-path "$root" "$@"
+    nix develop "path:$shell_dir" -c cargo "$subcommand" --manifest-path "$root" "$@"
     finished=$(date +%s)
     printf '  cargo %s %s: devShell %ss, cargo %ss\n' \
         "$subcommand" "${dir#"$top"/}" "$((entered - started))" "$((finished - entered))" >&2

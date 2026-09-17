@@ -143,7 +143,7 @@ repos:
 
       - id: cargo-fmt
         name: cargo fmt
-        entry: bin/hooks/rust-module-foreach fmt --all
+        entry: bin/hooks/rust-module-foreach --shell native/rust fmt --all
         language: system
         types: [rust]
         pass_filenames: false
