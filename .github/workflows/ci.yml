@@ -627,6 +627,8 @@ jobs:
       PYTHONFAULTHANDLER: "1"
       # Zenoh's own scouting decisions, for diagnosing workers that never link.
       RUST_LOG: "zenoh::net::runtime::orchestrator=debug"
+      # Needed because runner's Python does not include sqlite extensions.
+      UV_PYTHON_PREFERENCE: only-managed
     permissions:
       contents: read  # For checkout
       id-token: write  # For codecov-action's OIDC upload
