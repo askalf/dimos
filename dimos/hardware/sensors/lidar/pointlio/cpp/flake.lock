@@ -122,11 +122,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1789609592,
-        "narHash": "sha256-8+ytMzYuOTBmQonJTyuJ6ZDkVFKpauqBxDNESzE6i44=",
+        "lastModified": 1789610908,
+        "narHash": "sha256-KhsxhhM8lsGRwGR9KYChcTP7IDkomkXO8NyMnWYkj2U=",
         "owner": "jeff-hykin",
         "repo": "livox-sdk2",
-        "rev": "c2377ff05c564e7040ef5e871be165fe8e08715c",
+        "rev": "efc2c87e78a0819c044b6a31a9d81428d522c1f6",
         "type": "github"
       },
       "original": {

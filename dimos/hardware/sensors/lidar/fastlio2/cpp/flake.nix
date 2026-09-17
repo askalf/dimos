@@ -74,7 +74,7 @@
         zenohc = zenoh.packages.${system}.zenoh-c;
         zenohcpp = zenoh.packages.${system}.zenoh-cpp;
 
-        livox-common = ./livox_common;
+        livox-common = livox-sdk2.packages.${system}.livox-common;
 
         fastlio2_native = pkgs.stdenv.mkDerivation {
           pname = "fastlio2_native";

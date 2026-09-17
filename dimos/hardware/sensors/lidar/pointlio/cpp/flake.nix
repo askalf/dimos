@@ -73,7 +73,7 @@
         zenohc = zenoh.packages.${system}.zenoh-c;
         zenohcpp = zenoh.packages.${system}.zenoh-cpp;
 
-        livox-common = ./livox_common;
+        livox-common = livox-sdk2.packages.${system}.livox-common;
 
         # Patch the Point-LIO fork in place: resize (not reserve) the per-point
         # vectors in run_once, whose reserve+operator[] is out-of-bounds UB that
