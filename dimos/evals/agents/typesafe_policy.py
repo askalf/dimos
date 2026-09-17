@@ -170,6 +170,8 @@ class TypeSafePolicyConfig(AgentConfig):
     min_confidence: float = 0.35  # below this, hold still
     reached_noul: float = 0.8
     odom_topic: str = "/odom"
+    # The environment should already have waited for the sim; this is a backstop.
+    pose_wait_s: float = 60.0
     # MovementManager owns /cmd_vel in the go2 stack; publish upstream of it.
     cmd_topic: str = "/nav_cmd_vel"
 
@@ -216,7 +218,7 @@ class TypeSafePolicy(Agent):
         deadline = time.monotonic() + timeout_s
         ended: EndedBy = "max_steps"
         try:
-            if not self._pose_seen.wait(min(10.0, timeout_s)):
+            if not self._pose_seen.wait(min(self.config.pose_wait_s, timeout_s)):
                 raise TimeoutError(f"no pose on {self.config.odom_topic}")
             for tick in range(self.config.max_ticks):
                 if time.monotonic() >= deadline:
