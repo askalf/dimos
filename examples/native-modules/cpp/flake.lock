@@ -20,15 +20,16 @@
     "dimos-native-cpp": {
       "inputs": {
         "flake-utils": "flake-utils",
+        "nix-filter": "nix-filter",
         "nixpkgs": "nixpkgs"
       },
       "locked": {
         "dir": "native/cpp",
-        "lastModified": 1789600523,
-        "narHash": "sha256-2P8xXfvCEJpdhgBPu/wje1Q9V2Gh3O1yXLJ4mLzogXg=",
+        "lastModified": 1789610834,
+        "narHash": "sha256-6Ijx9KEAeTS2pv+eZEBH8PAgzyDncVN/hi4rYsJiyWw=",
         "owner": "dimensionalOS",
         "repo": "dimos",
-        "rev": "59b56b3b079b1d22842155dca3d94d602b4dd500",
+        "rev": "073f76ff1228abe6591bae3c2084e217a0248456",
         "type": "github"
       },
       "original": {
@@ -95,6 +96,21 @@
         "type": "github"
       }
     },
+    "nix-filter_2": {
+      "locked": {
+        "lastModified": 1757882181,
+        "narHash": "sha256-+cCxYIh2UNalTz364p+QYmWHs0P+6wDhiWR4jDIKQIU=",
+        "owner": "numtide",
+        "repo": "nix-filter",
+        "rev": "59c44d1909c72441144b93cf0f054be7fe764de5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "nix-filter",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1789286504,
@@ -137,7 +153,7 @@
           "flake-utils"
         ],
         "lcm-extended": "lcm-extended",
-        "nix-filter": "nix-filter",
+        "nix-filter": "nix-filter_2",
         "nixpkgs": [
           "dimos-native-cpp",
           "nixpkgs"
