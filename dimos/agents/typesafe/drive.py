@@ -16,52 +16,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, TypedDict
 
-from typing_extensions import NotRequired
-
-Text = str | Mapping[str, object] | list[object]
-
-
-class ChoiceQuestion(TypedDict):
-    type: Literal["choice"]
-    instructions: Text
-    criteria: Mapping[str, Text | None]
-
-
-class NoulQuestion(TypedDict):
-    type: Literal["noul"]
-    instructions: Text
-    criteria: NotRequired[Mapping[str, Text]]
-
-
-Question = ChoiceQuestion | NoulQuestion
-
-
-class ChoiceAnswer(TypedDict):
-    type: Literal["choice"]
-    choice: str
-    confidence: float
-    probabilities: dict[str, float]
-
-
-class NoulAnswer(TypedDict):
-    type: Literal["noul"]
-    noul: float
-
-
-Answers = dict[str, ChoiceAnswer | NoulAnswer]
-
-
-def choice(instructions: Text, criteria: Mapping[str, Text | None]) -> ChoiceQuestion:
-    return {"type": "choice", "instructions": instructions, "criteria": criteria}
-
-
-def noul(instructions: Text, criteria: Mapping[str, Text]) -> NoulQuestion:
-    return {"type": "noul", "instructions": instructions, "criteria": criteria}
-
+from dimos.agents.typesafe.types import Answers, ChoiceAnswer, Question, Text, choice, noul
 
 AXES = (("x", "forward", "backward"), ("y", "left", "right"), ("yaw", "turn_left", "turn_right"))
 _CONTEXT = (
@@ -181,7 +138,8 @@ def _choice(answers: Answers, key: str) -> ChoiceAnswer | None:
     return a if a is not None and a["type"] == "choice" else None
 
 
-def decode(answers: Answers, *, min_confidence: float, stop_threshold: float) -> Drive:
+def decode(answers: Answers, *, min_probability: float, stop_threshold: float) -> Drive:
+    """Options are selected by their probability; `confidence` is kept for logs only."""
     s = answers.get("stop")
     stop = s is not None and s["type"] == "noul" and s["noul"] >= stop_threshold
     vals: list[float] = []
@@ -189,15 +147,21 @@ def decode(answers: Answers, *, min_confidence: float, stop_threshold: float) ->
     confs: list[float] = []
     for axis, pos, _neg in AXES:
         a = _choice(answers, f"drive.{axis}")
-        label, conf = (a["choice"], a["confidence"]) if a else ("none", 0.0)
-        if conf < min_confidence:
-            label = "none"
+        label = (
+            a["choice"]
+            if a and a["probabilities"].get(a["choice"], 0.0) >= min_probability
+            else "none"
+        )
         vals.append(0.0 if stop or label == "none" else 1.0 if label == pos else -1.0)
         labels.append(label)
-        confs.append(conf)
+        confs.append(a["confidence"] if a else 0.0)
     t = _choice(answers, "target")
     target = (
-        t["choice"] if t and t["choice"] != "none" and t["confidence"] >= min_confidence else None
+        t["choice"]
+        if t
+        and t["choice"] != "none"
+        and t["probabilities"].get(t["choice"], 0.0) >= min_probability
+        else None
     )
     return Drive(
         vals[0], vals[1], vals[2], stop, min(confs), (labels[0], labels[1], labels[2]), target

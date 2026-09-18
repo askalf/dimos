@@ -13,10 +13,11 @@
 # limitations under the License.
 """Go2 driven by TypeSafe: `go to the <object>` on /human_input; objects on `detections_3d`."""
 
-from dimos.agents.typesafe.agent import TypeSafeAgent, typesafe_api_key
+from dimos.agents.typesafe.agent import typesafe_api_key
+from dimos.agents.typesafe.navigation import TypeSafeNavigationAgent
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.robot.unitree.go2.blueprints.basic.unitree_go2_basic import unitree_go2_basic
 
-unitree_go2_typesafe = autoconnect(unitree_go2_basic, TypeSafeAgent.blueprint()).requirements(
-    typesafe_api_key
-)
+unitree_go2_typesafe = autoconnect(
+    unitree_go2_basic, TypeSafeNavigationAgent.blueprint()
+).requirements(typesafe_api_key)

@@ -11,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""The JSON state the model reads: goal, pose, objects with word buckets, room sectors."""
+"""The JSON state the navigation questions read: goal, pose, objects with word buckets, room sectors."""
 
 from __future__ import annotations
 
@@ -21,8 +20,15 @@ from typing import TYPE_CHECKING, TypedDict
 
 from typing_extensions import NotRequired
 
+from dimos.agents.typesafe.constants import (
+    BEARING_WORDS_2D,
+    DISTANCE_WORDS,
+    MAX_OBJECTS,
+    SECTOR_NAMES,
+    SIZE_WORDS_2D,
+)
 from dimos.msgs.geometry_msgs.PoseStamped import PoseJson, XyzJson
-from dimos.msgs.sensor_msgs.PointCloud2 import SECTOR_NAMES, SectorJson
+from dimos.msgs.sensor_msgs.PointCloud2 import SectorJson
 from dimos.msgs.vision_msgs.Detection2DArray import BBoxJson
 
 if TYPE_CHECKING:
@@ -30,11 +36,6 @@ if TYPE_CHECKING:
     from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
     from dimos.msgs.vision_msgs.Detection2DArray import Detection2DArray
     from dimos.msgs.vision_msgs.Detection3DArray import Detection3DArray
-
-MAX_OBJECTS = 20  # closest first; the model reads words, not a scene graph
-_DISTANCE = ((0.5, "touching"), (1.5, "near"), (4.0, "mid"), (math.inf, "far"))
-_BEARING_2D = ("far_left", "left", "center", "right", "far_right")
-_SIZE_2D = ((0.4, "filling_view"), (0.15, "large"), (0.03, "medium"), (-1.0, "small"))
 
 
 class ObjectState(TypedDict):
@@ -54,7 +55,7 @@ class RobotState(PoseJson):
 
 
 class GoalPoint(TypedDict):
-    """World-frame XY the goal resolved to, with the same words objects carry."""
+    """World-frame XY the goal resolved to, with the words objects carry."""
 
     x: float
     y: float
@@ -78,7 +79,7 @@ def bearing_word(rel: float) -> str:
 
 
 def distance_word(d: float) -> str:
-    return next(word for limit, word in _DISTANCE if d < limit)
+    return next(word for limit, word in DISTANCE_WORDS if d < limit)
 
 
 def relative(pose: PoseStamped, x: float, y: float) -> tuple[str, float, str, float]:
@@ -118,8 +119,8 @@ def _objects_2d(dets: Detection2DArray, image_size: tuple[int, int]) -> list[Obj
                 "label": d["label"],
                 "score": d["score"],
                 "bbox": b,
-                "bearing": _BEARING_2D[min(4, int(5 * b["cx"] / w))],
-                "size": next(word for limit, word in _SIZE_2D if area > limit),
+                "bearing": BEARING_WORDS_2D[min(4, int(5 * b["cx"] / w))],
+                "size": next(word for limit, word in SIZE_WORDS_2D if area > limit),
             }
         )
     return sorted(out, key=lambda o: -o["bbox"]["w"] * o["bbox"]["h"])[:MAX_OBJECTS]
@@ -160,5 +161,7 @@ def build_world_state(
         }
     if lidar is not None:
         z_min, z_max, max_range = lidar_band
-        state["room"] = lidar.to_json(pose, z_min=z_min, z_max=z_max, max_range=max_range)
+        state["room"] = lidar.to_json(
+            pose, sectors=SECTOR_NAMES, z_min=z_min, z_max=z_max, max_range=max_range
+        )
     return state

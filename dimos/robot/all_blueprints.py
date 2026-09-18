@@ -334,6 +334,7 @@ all_modules = {
     "temporal-memory": "dimos.perception.experimental.temporal_memory.temporal_memory.TemporalMemory",
     "twist-teleop-module": "dimos.teleop.webxr.extensions.TwistTeleopModule",
     "type-safe-agent": "dimos.agents.typesafe.agent.TypeSafeAgent",
+    "type-safe-navigation-agent": "dimos.agents.typesafe.navigation.TypeSafeNavigationAgent",
     "unitree-g1-skill-container": "dimos.robot.unitree.g1.skill_container.UnitreeG1SkillContainer",
     "unitree-skill-container": "dimos.robot.unitree.unitree_skill_container.UnitreeSkillContainer",
     "video-arm-teleop-module": "dimos.teleop.webxr.extensions.VideoArmTeleopModule",

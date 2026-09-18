@@ -19,12 +19,13 @@
 - ``habitat-nav``: + MLS planner and follower; click the surface to set a goal.
 - ``habitat-voxel``: :class:`VoxelGridMapper` on a world-frame scan. An alternative,
   not a layer: the two mappers want the scan in different frames.
-- ``habitat-typesafe``: teleop + :class:`TypeSafeAgent` steering to a named visible object.
+- ``habitat-typesafe``: teleop + :class:`TypeSafeNavigationAgent` steering to a named visible object.
 """
 
 from typing import Any
 
-from dimos.agents.typesafe.agent import TypeSafeAgent, typesafe_api_key
+from dimos.agents.typesafe.agent import typesafe_api_key
+from dimos.agents.typesafe.navigation import TypeSafeNavigationAgent
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap, RayTracingVoxelMapConfig
@@ -209,7 +210,7 @@ habitat_typesafe = (
                 (HabitatConnection, "objects", "detections_3d"),
             ]
         ),
-        TypeSafeAgent.blueprint(),
+        TypeSafeNavigationAgent.blueprint(),
     )
     .requirements(typesafe_api_key)
     .global_config(transport="zenoh")

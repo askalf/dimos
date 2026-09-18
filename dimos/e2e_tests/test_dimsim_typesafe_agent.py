@@ -32,15 +32,14 @@ from dimos.msgs.vision_msgs.Detection3DArray import Detection3DArray
 CHAIR = (4.0, 2.0)
 
 
-@pytest.fixture
-def chair_publisher() -> Iterator[None]:
+def _publisher(xy: tuple[float, float]) -> Iterator[None]:
     transport = make_transport("/detections_3d", Detection3DArray)
     transport.start()
     stop = threading.Event()
 
     def pump() -> None:
         while not stop.is_set():
-            transport.publish(det3d("chair", *CHAIR))
+            transport.publish(det3d("chair", *xy))
             stop.wait(0.5)
 
     thread = threading.Thread(target=pump, daemon=True)
@@ -49,6 +48,11 @@ def chair_publisher() -> Iterator[None]:
     stop.set()
     thread.join(timeout=2)
     transport.stop()
+
+
+@pytest.fixture
+def chair_publisher() -> Iterator[None]:
+    yield from _publisher(CHAIR)
 
 
 @pytest.mark.self_hosted_large

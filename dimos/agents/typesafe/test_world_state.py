@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
+import time
 
 from dimos_lcm.vision_msgs import (
     BoundingBox2D,
@@ -41,13 +42,14 @@ def pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
     return p
 
 
-def det3d(label: str, x: float, y: float) -> Detection3DArray:
+def det3d(label: str, x: float, y: float, ts: float | None = None) -> Detection3DArray:
+    ts = time.time() if ts is None else ts
     d = Detection3D()
-    d.header = Header(1.0, "world")
+    d.header = Header(ts, "world")
     d.results = [ObjectHypothesisWithPose(hypothesis=ObjectHypothesis(class_id=label, score=0.9))]
     d.results_length = 1
     d.bbox = BoundingBox3D(center=Pose(position=(x, y, 0.3)), size=Vector3(0.5, 0.5, 0.6))
-    return Detection3DArray(detections_length=1, header=Header(1.0, "world"), detections=[d])
+    return Detection3DArray(detections_length=1, header=Header(ts, "world"), detections=[d])
 
 
 def _det2d(label: str, cx: float, w: float, h: float) -> Detection2DArray:

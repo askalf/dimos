@@ -23,13 +23,14 @@ Reads one JSON line on stdin: ``topics`` (port -> zenoh key), ``config``, ``sess
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import importlib.util
 import json
 import math
 from pathlib import Path
 import sys
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from dimos_lcm.geometry_msgs.Pose import Pose as LCMPose
 from dimos_lcm.geometry_msgs.Quaternion import Quaternion
@@ -50,6 +51,7 @@ from dimos_lcm.vision_msgs.Detection3DArray import Detection3DArray as LCMDetect
 from dimos_lcm.vision_msgs.ObjectHypothesis import ObjectHypothesis
 from dimos_lcm.vision_msgs.ObjectHypothesisWithPose import ObjectHypothesisWithPose
 import numpy as np
+import numpy.typing as npt
 import zenoh
 
 _spec = importlib.util.spec_from_file_location(
@@ -237,37 +239,47 @@ def unproject(
 # Scene structure is not a navigation target.
 STRUCTURE = frozenset({"", "unknown", "wall", "floor", "ceiling"})
 
+FloatArray = npt.NDArray[np.floating[Any]]
+
+
+class VisibleObject(NamedTuple):
+    label: str
+    center: FloatArray  # world frame xyz
+    size: FloatArray  # world frame extent xyz
+
 
 def visible_objects(
-    depth: np.ndarray,
-    semantic: np.ndarray,
+    depth: FloatArray,
+    semantic: npt.NDArray[np.integer[Any]],
     k: dict[str, float],
     trunc: float,
     stride: int,
-    world: np.ndarray,
-    labels: list[str],
+    world: FloatArray,
+    labels: Sequence[str],
     min_points: int = 20,
-) -> list[tuple[str, np.ndarray, np.ndarray]]:
-    """Per visible instance: (label, world-frame box center, box size).
+) -> list[VisibleObject]:
+    """One box per annotated instance in view.
 
-    HM3D annotations carry no object boxes, so a box is the extent of the depth
-    pixels the instance covers in this frame.
+    HM3D annotations carry no object boxes, so a box is the extent of the depth pixels
+    the instance covers in this frame. ``world`` is the 4x4 optical-to-world matrix.
     """
-    pts, valid = _pixels(depth, k, trunc, stride)
-    ids = semantic[::stride, ::stride][valid]
-    pts = pts @ world[:3, :3].T + world[:3, 3]
-    out = []
-    for i in np.unique(ids):
-        label = labels[i] if 0 <= i < len(labels) else ""
-        sel = pts[ids == i]
-        if label in STRUCTURE or len(sel) < min_points:
+    points, valid = _pixels(depth, k, trunc, stride)
+    instance_ids = semantic[::stride, ::stride][valid]
+    points = points @ world[:3, :3].T + world[:3, 3]
+    out: list[VisibleObject] = []
+    for instance_id in np.unique(instance_ids):
+        label = labels[instance_id] if 0 <= instance_id < len(labels) else ""
+        if label in STRUCTURE:
             continue
-        lo, hi = sel.min(axis=0), sel.max(axis=0)
-        out.append((label, (lo + hi) / 2.0, hi - lo))
+        hits = points[instance_ids == instance_id]
+        if len(hits) < min_points:
+            continue
+        low, high = hits.min(axis=0), hits.max(axis=0)
+        out.append(VisibleObject(label, (low + high) / 2.0, high - low))
     return out
 
 
-def objects_msg(objects: list[tuple[str, np.ndarray, np.ndarray]], ts: float) -> bytes:
+def objects_msg(objects: Sequence[VisibleObject], ts: float) -> bytes:
     m = LCMDetection3DArray()
     m.header = Header()
     _stamp(m.header, ts)
