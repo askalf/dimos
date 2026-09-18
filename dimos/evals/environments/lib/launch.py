@@ -99,6 +99,27 @@ def _free_display() -> str:
     return f":{n}"
 
 
+def _park_pointer(display: str, x: int, y: int) -> None:
+    """Move the pointer off the viewer so no hover tooltip lands in the recording."""
+    import ctypes
+
+    x11 = ctypes.cdll.LoadLibrary("libX11.so.6")
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XWarpPointer.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        *[ctypes.c_int] * 6,
+    ]
+    x11.XFlush.argtypes = x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    d = x11.XOpenDisplay(display.encode())
+    if d:
+        x11.XWarpPointer(d, 0, x11.XDefaultRootWindow(d), 0, 0, 0, 0, x, y)
+        x11.XFlush(d)
+        x11.XCloseDisplay(d)
+
+
 @contextmanager
 def screen_capture(path: Path, url: str, size: str = "1920x1080", fps: int = 15) -> Iterator[None]:
     """The viewer connected to ``url`` on a virtual display, captured to ``path`` as H.264."""
@@ -125,11 +146,13 @@ def screen_capture(path: Path, url: str, size: str = "1920x1080", fps: int = 15)
         ],
         env=env, stdin=null, stdout=null, stderr=null,
     )  # fmt: skip
+    region = _window_region(display, screen)
+    _park_pointer(display, w + 511, h + 255)
     ffmpeg = subprocess.Popen(
         [
             "ffmpeg", "-loglevel", "error", "-y",
             "-f", "x11grab", "-draw_mouse", "0", "-framerate", str(fps),
-            *_window_region(display, screen),
+            *region,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", str(path),
         ],
         stdin=subprocess.DEVNULL,

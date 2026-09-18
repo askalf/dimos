@@ -66,13 +66,18 @@ def _small_points(cloud: Any) -> Any:
     return cloud.to_rerun(mode="points", ui_radius=1.0)
 
 
+def _scan_points(cloud: Any) -> Any:
+    """The live scan, big enough to read in a recording."""
+    return cloud.to_rerun(mode="points", ui_radius=2.5)
+
+
 def _render_path(msg: Any) -> Any:
     """Skip empty paths so a failed plan keeps the last good one drawn."""
     return None if len(msg.poses) == 0 else msg
 
 
 def _view() -> Any:
-    """3D view anchored on the world frame, camera and depth beside it."""
+    """3D view anchored on the world frame, the camera view beside it at the same width."""
     import rerun as rr
     import rerun.blueprint as rrb
 
@@ -84,12 +89,10 @@ def _view() -> Any:
                 line_grid=rrb.LineGrid3D(plane=rr.components.Plane3D.XY.with_distance(0.0)),
                 overrides={p: rrb.EntityBehavior(visible=False) for p in HIDDEN},
             ),
-            rrb.Vertical(
-                rrb.Spatial2DView(origin="world/color_image"),
-                rrb.Spatial2DView(origin="world/depth_image"),
-            ),
-            column_shares=[3, 1],
+            rrb.Spatial2DView(origin="world/color_image"),
+            column_shares=[1, 1],
         ),
+        collapse_panels=True,
     )
 
 
@@ -98,7 +101,7 @@ def _rerun_config(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "blueprint": _view,
         "tf_axes": 0.3,
         "visual_override": {
-            f"world/{SCAN_TOPIC}": _small_points,
+            f"world/{SCAN_TOPIC}": _scan_points,
             "world/global_map": _small_points,
             "world/local_map": _small_points,
             **(extra or {}),
