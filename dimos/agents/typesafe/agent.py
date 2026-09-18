@@ -92,7 +92,6 @@ class TypeSafeAgentConfig(ModuleConfig):
     angular_accel: float = 1.6
     min_confidence: float = 0.5
     stop_threshold: float = 0.7
-    finished_threshold: float = 0.7
     reached_m: float = 0.5
     give_up_s: float = 5.0  # goal clears after this long without motion
     image_size: tuple[int, int] = (1280, 720)
@@ -247,7 +246,6 @@ class TypeSafeAgent(Module):
             answers,
             min_confidence=self.config.min_confidence,
             stop_threshold=self.config.stop_threshold,
-            finished_threshold=self.config.finished_threshold,
         )
         self._steer(state, drive)
 

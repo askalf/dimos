@@ -45,9 +45,9 @@ def _choice(label: str, *options: str) -> Answer:
     }
 
 
-def _answers(x: str = "none", stop: float = 0.0, finished: float = 0.0) -> Answers:
+def _answers(x: str = "none", stop: float = 0.0, task: str = "continue") -> Answers:
     return {
-        "finished": {"type": "noul", "noul": finished},
+        "task": _choice(task, "finished", "continue"),
         "target": _choice("chair", "chair", "none"),
         "drive.x": _choice(x, "forward", "none", "backward"),
         "drive.y": _choice("none", "left", "none", "right"),
@@ -162,7 +162,7 @@ def test_finished_answer_publishes_and_clears(rig: Rig) -> None:
     a, fake, _ = rig
     done: list[Bool] = []
     a.finished.transport.subscribe(done.append)
-    fake.answers = _answers(x="forward", finished=0.9)
+    fake.answers = _answers(x="forward", task="finished")
     _scene(a, robot_x=2.8)
     a.set_goal("briefing line\ngo to the chair")
     assert a.goal() in (None, "go to the chair")

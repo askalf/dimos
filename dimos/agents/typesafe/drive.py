@@ -104,14 +104,22 @@ def questions(labels: tuple[str, ...]) -> dict[str, Question]:
                 "false": "the target is in `objects` with `distance` near, mid or far, and there is a clear direction to move; being near is not a reason to stop",
             },
         ),
-        "finished": noul(
+        "task": choice(
             {
-                "question": "Is the task in `goal` complete: has the robot arrived at the target object?",
+                "question": "Is the task in `goal` complete, or should the robot keep going?",
                 "context": "Read `task`, `goal` and `objects`. `distance` is measured to the object's nearest edge.",
             },
             {
-                "true": "the target named in `goal` is in `objects` with `distance` touching: the robot is at the object and the task is done",
-                "false": "the target's `distance` is near, mid or far, or the target is not in `objects`",
+                "finished": _opt(
+                    "the target named in `goal` is in `objects` with `distance` touching: the robot is at the object and the task is done",
+                    "the target is near, mid or far, or not in `objects`",
+                    ["chair ahead, touching"],
+                ),
+                "continue": _opt(
+                    "the target's `distance` is near, mid or far, or the target is not yet in `objects`",
+                    "the robot is already touching the target",
+                    ["chair ahead_left, mid"],
+                ),
             },
         ),
     }
@@ -149,10 +157,11 @@ def _noul(answers: Answers, key: str, threshold: float) -> bool:
     return a is not None and a["type"] == "noul" and a["noul"] >= threshold
 
 
-def decode(
-    answers: Answers, *, min_confidence: float, stop_threshold: float, finished_threshold: float
-) -> Drive:
-    finished = _noul(answers, "finished", finished_threshold)
+def decode(answers: Answers, *, min_confidence: float, stop_threshold: float) -> Drive:
+    task = _choice(answers, "task")
+    finished = (
+        task is not None and task["choice"] == "finished" and task["confidence"] >= min_confidence
+    )
     stop = finished or _noul(answers, "stop", stop_threshold)
     vals: list[float] = []
     labels: list[str] = []
