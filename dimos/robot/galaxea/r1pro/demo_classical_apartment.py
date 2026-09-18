@@ -63,7 +63,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         ),
                     )
                     if a.module is sim_class
-                    else dict(mcp_server_url=f"http://127.0.0.1:{args.mcp_port}/mcp")
+                    else dict(
+                        mcp_server_url=f"http://127.0.0.1:{args.mcp_port}/mcp",
+                        **({"model": args.model} if args.model else {}),
+                    )
                     if a.module is McpClient
                     else {}
                 ),
@@ -248,6 +251,7 @@ def main() -> None:
     parser.add_argument("--stay-open", action="store_true")
     parser.add_argument("--recover-on-failure", action="store_true")
     parser.add_argument("--agent", action="store_true")
+    parser.add_argument("--model", default=None, help="Language model for --agent runs")
     parser.add_argument("--say", nargs="*", default=[])
     parser.add_argument("--mcp-port", type=int, required=True)
     parser.add_argument("--zenoh-scout-addr", required=True)
