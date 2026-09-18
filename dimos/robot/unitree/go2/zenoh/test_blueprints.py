@@ -41,8 +41,6 @@ def _mount(blueprint: Blueprint) -> tuple[float, float, float]:
         ("go2_zenoh_raycaster", "SF"),
         ("go2_zenoh_nav", "SF"),
         ("go2_zenoh_nav_remote", "SF"),
-        ("go2_zenoh_nav_baked", "SF"),
-        ("go2_zenoh_htc", "SF"),
         ("go2_zenoh_motion", "ATHENS"),
         ("go2_zenoh_motion_pointlio", "ATHENS"),
     ],

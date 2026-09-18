@@ -16,40 +16,33 @@
 """Go2 blueprints for a robot running the go2web zenoh bridge.
 
 The ``unitree_go2_nav_3d`` stack minus the modules the robot now runs itself: no WebRTC
-``GO2Connection``, no local ``PointLio``. Three layers, each a superset of the one above,
-so a failure can be bisected by dropping down a level:
+``GO2Connection``, no local ``PointLio``. Each layer is a superset of the one above, so a
+failure can be bisected by dropping down a level:
 
-- ``go2-zenoh-basic`` — streams plus teleop; the bridge, tf and camera, no mapping.
-- ``go2-zenoh-raycaster`` — adds :class:`RayTracingVoxelMap`.
-- ``go2-zenoh-nav`` — the full stack: planner and path follower.
+- ``go2-zenoh-basic``: streams plus teleop; the bridge, tf and camera, no mapping.
+- ``go2-zenoh-raycaster``: adds :class:`RayTracingVoxelMap`.
+- ``go2-zenoh-nav``: the full stack: MLS planner and basic path follower.
 - ``go2-zenoh-nav-remote``: ``go2-zenoh-nav`` with both natives dropped, for when
   a baked host on the robot publishes their outputs.
-- ``go2-zenoh-nav-baked``: ``go2-zenoh-nav`` with both natives replaced by the one
-  binary ``dimos bake`` links them into.
-- ``go2-zenoh-htc``: ``go2-zenoh-nav`` with the follower swapped for the
-  ``DanLocalPlanner`` + ``DanHolonomicTC`` pair from ``unitree-go2-mls-htc``.
-- ``go2-zenoh-motion``: ``local_planner`` + ``trajectory_follower``: replanning over the
+- ``go2-zenoh-motion``: ``local_planner`` + ``trajectory_follower`` replanning over the
   raycaster's local map, the follower reading the required precision off the path stamps.
 - ``go2-zenoh-motion-pointlio``: ``go2-zenoh-motion`` running its own ``PointLioRust``,
   for when the MID-360 hangs off this box rather than the robot.
+- ``go2-viewer``: the rerun half alone, as a zenoh client of the robot's router.
 """
 
 import os
 from typing import Any
 
-from dimos.core.baked_host import baked_host
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.global_config import global_config
 from dimos.hardware.sensors.lidar.pointlio.module import PointLioRust
 from dimos.hardware.sensors.lidar.pointlio.pointlio_blueprints import mid360_for_pointlio
 from dimos.mapping.ray_tracing.module import RayTracingVoxelMap, RayTracingVoxelMapConfig
-from dimos.navigation.experimental.dannav.holonomic_tc.module import DanHolonomicTC
-from dimos.navigation.experimental.dannav.local_planner.module import DanLocalPlanner
 from dimos.navigation.global_planner.mls_planner.mls_planner_native import (
     MLSPlannerNative,
     MLSPlannerNativeConfig,
 )
-from dimos.navigation.global_planner.mls_planner.start_relay import StartRelay
 from dimos.navigation.global_planner.mls_planner.viz import planner_visual_override
 from dimos.navigation.local_planner.native import LocalPlannerNative
 from dimos.navigation.local_planner.viz import motion_visual_override
@@ -93,7 +86,7 @@ def _static_robot_body(rr: Any) -> list[Any]:
 def _camera_info_to_pinhole(camera_info: Any) -> Any:
     """Log the pinhole onto the video's entity instead of camera_info's own.
 
-    Entities are named after topics, so the two land on sibling paths — and a Pinhole only
+    Entities are named after topics, so the two land on sibling paths, and a Pinhole only
     projects its own entity and its children, hence a frustum that draws but stays empty.
     No ``optical_frame``: the video's frame_id already anchors it, a second parent is
     rejected.
@@ -104,7 +97,7 @@ def _camera_info_to_pinhole(camera_info: Any) -> Any:
 def _rerun_blueprint() -> Any:
     """Split layout: camera feed + 3D world, as the WebRTC go2 blueprint has.
 
-    The 2D view sits on ``world/video``, not ``world/color_image`` — over zenoh the camera
+    The 2D view sits on ``world/video``, not ``world/color_image``: over zenoh the camera
     arrives as H.264 on the ``video`` port, which is also where the pinhole is logged.
     """
     import rerun as rr
@@ -231,41 +224,7 @@ go2_zenoh_nav_remote = autoconnect(
     MovementManager.blueprint(),
 ).global_config(transport="zenoh", n_workers=6, robot_model="unitree_go2")
 
-# `go2-zenoh-nav` with both natives replaced by the single host binary `dimos bake`
-# links them into. The internal local_map hop stays inside that process.
-GoNav = baked_host(
-    "GoNav",
-    executable="dist/go2-nav",
-    members={"ray_tracing": RayTracingVoxelMap, "mls_planner": MLSPlannerNative},
-    remaps={("mls_planner", "global_map"): "global_map_unused"},
-)
-
-go2_zenoh_nav_baked = autoconnect(
-    go2_zenoh_basic,
-    _raytraced_vis,
-    GoNav.blueprint(
-        ray_tracing_config=ray_tracing_config,
-        mls_planner_config=mls_planner_config,
-    ),
-    BasicPathFollower.blueprint(speed=0.5, heading_gain=1.5, max_angular=1.5),
-    MovementManager.blueprint(),
-).global_config(transport="zenoh", n_workers=7, robot_model="unitree_go2")
-
-go2_zenoh_htc = autoconnect(
-    go2_zenoh_raycaster,
-    _mls_planner.remappings([(MLSPlannerNative, "path", "planner_path")]),
-    # Solely the tf-driven start_pose source for the dannav odom remaps below.
-    StartRelay.blueprint(),
-    DanLocalPlanner.blueprint(resample_spacing_m=0.1).remappings(
-        [(DanLocalPlanner, "odom", "start_pose")]
-    ),
-    DanHolonomicTC.blueprint(run_profile="walk").remappings(
-        [(DanHolonomicTC, "odom", "start_pose")]
-    ),
-    MovementManager.blueprint(),
-).global_config(transport="zenoh", n_workers=9, robot_model="unitree_go2")
-
-# The motion rigs' mount; `MID360_MOUNT` above stays whatever the nav/htc stacks want.
+# The motion rigs' mount; `MID360_MOUNT` above stays whatever the nav stack wants.
 MOTION_MID360_MOUNT = "ATHENS"
 
 # Permissive global graph: the local planner + follower are the precision layer, so hard
