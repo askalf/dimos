@@ -72,7 +72,7 @@ def rrd_recorder(path: Path, url: str) -> Iterator[None]:
         _end(proc)
 
 
-def _window_region(display: str, screen: str, wait_s: float = 20.0) -> list[str]:
+def _window_region(display: str, screen: str, wait_s: float = 90.0) -> list[str]:
     """``-video_size WxH -i :N+X,Y`` for the viewer's window, or the whole screen if not found."""
     sw, sh = (int(v) for v in screen.split("x"))
     deadline = time.monotonic() + wait_s
@@ -88,6 +88,7 @@ def _window_region(display: str, screen: str, wait_s: float = 20.0) -> list[str]
                 w, h = min(int(m.group(1)), sw - x) // 2 * 2, min(int(m.group(2)), sh - y) // 2 * 2
                 return ["-video_size", f"{w}x{h}", "-i", f"{display}+{x},{y}"]
         time.sleep(0.5)
+    Path("/tmp/dimos-eval-xwininfo.txt").write_text(tree)  # why the window was not found
     return ["-video_size", screen, "-i", display]
 
 

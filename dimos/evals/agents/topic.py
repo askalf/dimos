@@ -32,6 +32,7 @@ one step.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import re
 import threading
@@ -75,6 +76,29 @@ def floor_z(wait_s: float = 5.0) -> float:
     return seen[0] if seen else 0.0
 
 
+class _Stillness:
+    """Sets *done* once the robot has moved at least 0.5 m and then held still."""
+
+    def __init__(self, still_s: float, done: threading.Event) -> None:
+        self.still_s, self.done = still_s, done
+        self.origin: tuple[float, float] | None = None
+        self.moved = False
+        self.anchor: tuple[float, float] | None = None
+        self.since = 0.0
+
+    def on_pose(self, m: Any, *_: Any) -> None:
+        x, y, now = float(m.x), float(m.y), time.monotonic()
+        if self.origin is None:
+            self.origin = (x, y)
+        if not self.moved:
+            self.moved = math.hypot(x - self.origin[0], y - self.origin[1]) > 0.5
+            return
+        if self.anchor is None or math.hypot(x - self.anchor[0], y - self.anchor[1]) > 0.05:
+            self.anchor, self.since = (x, y), now
+        elif now - self.since >= self.still_s:
+            self.done.set()
+
+
 class TopicAgentConfig(AgentConfig):
     send: str = "human_input"
     send_type: Literal["text", "point"] = "text"
@@ -83,6 +107,10 @@ class TopicAgentConfig(AgentConfig):
     frame_id: str = "world"
     # Module handle (class name) whose ``set_trace_dir`` records model calls, if any.
     trace: str | None = None
+    # Also done once the robot has moved and then stood still for ``still_s`` (a planner
+    # that arrived, or gave up, without publishing on ``done``).
+    done_when_still: bool = False
+    still_s: float = 8.0
     model: str = ""  # reported in the trajectory when the trace does not say
 
 
@@ -97,6 +125,16 @@ class TopicAgent(Agent):
     def preflight(self, environment: Environment) -> None:
         if not environment.has_robot:
             raise RuntimeError(f"{type(environment).__name__} launches no modules to drive")
+
+    def _stillness_watch(self, done: threading.Event) -> Any:
+        """An ``/odom`` transport whose subscriber sets *done* after motion, then stillness."""
+        from dimos.core.transport_factory import make_transport
+        from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+
+        watch = _Stillness(self.config.still_s, done)
+        odom = make_transport("/odom", PoseStamped)
+        odom.subscribe(watch.on_pose)
+        return odom
 
     def run(
         self, inputs: str, env: RunningEnvironment, run_dir: Path, *, timeout_s: float
@@ -129,14 +167,17 @@ class TopicAgent(Agent):
         )
         done = threading.Event()
         started = time.time()
-        for t in (send_t, done_t):
+        transports = [send_t, done_t]
+        if self.config.done_when_still:
+            transports.append(self._stillness_watch(done))
+        for t in transports:
             t.start()
         try:
             done_t.subscribe(lambda m, *_: done.set() if getattr(m, "data", m) else None)
             send_t.publish(payload)
             finished = done.wait(timeout_s)
         finally:
-            for t in (send_t, done_t):
+            for t in transports:
                 t.stop()
 
         trajectory = TrajectoryBuilder(inputs, name=type(self).__name__, model=self.config.model)

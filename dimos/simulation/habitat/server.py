@@ -243,6 +243,32 @@ def unproject(
     return pts.astype(np.float32), c[valid].astype(np.uint8)
 
 
+def navmesh_points(pathfinder: Any, spacing: float) -> np.ndarray:
+    """The navmesh triangles rasterized to a grid of points (Habitat frame)."""
+    verts = np.asarray(pathfinder.build_navmesh_vertices(), dtype=np.float64)
+    tris = np.asarray(pathfinder.build_navmesh_vertex_indices(), dtype=np.int64).reshape(-1, 3)
+    out = []
+    for a, b, c in verts[tris]:
+        lo = np.floor(np.minimum(np.minimum(a, b), c)[[0, 2]] / spacing) * spacing
+        hi = np.maximum(np.maximum(a, b), c)[[0, 2]]
+        gx, gz = np.meshgrid(
+            np.arange(lo[0], hi[0] + spacing, spacing), np.arange(lo[1], hi[1] + spacing, spacing)
+        )
+        px, pz = gx.ravel(), gz.ravel()
+        # Barycentric test in the floor plane (x, z); y interpolated from the corners.
+        d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2])
+        if abs(d) < 1e-9:
+            continue
+        w1 = ((b[2] - c[2]) * (px - c[0]) + (c[0] - b[0]) * (pz - c[2])) / d
+        w2 = ((c[2] - a[2]) * (px - c[0]) + (a[0] - c[0]) * (pz - c[2])) / d
+        w3 = 1.0 - w1 - w2
+        keep = (w1 >= -1e-6) & (w2 >= -1e-6) & (w3 >= -1e-6)
+        if keep.any():
+            py = w1[keep] * a[1] + w2[keep] * b[1] + w3[keep] * c[1]
+            out.append(np.column_stack([px[keep], py, pz[keep]]))
+    return np.concatenate(out) if out else np.zeros((0, 3))
+
+
 class HabitatHost:
     """Owns the Simulator and applies twist commands against the navmesh."""
 
@@ -293,6 +319,11 @@ class HabitatHost:
         log("navmesh: " + navmesh.ensure_navmesh(self._sim, scene_id, NAVMESH_CACHE))
         self._agent = self._sim.initialize_agent(0)
         self.reset_pose()
+
+    def scene_map_ros(self) -> np.ndarray:
+        """The known floor as a world-frame cloud: a planner's map before anything is seen."""
+        pts = navmesh_points(self._sim.pathfinder, float(self.cfg.get("scene_map_spacing_m", 0.05)))
+        return np.asarray([frames.position_to_ros(q) for q in pts], dtype=np.float32)
 
     def reset_pose(self) -> None:
         self._sim.pathfinder.seed(int(self.cfg.get("seed", 0)))
@@ -408,6 +439,11 @@ def main() -> None:
     trunc = float(cfg.get("max_depth_m", 5.0))
     cam_h = float(cfg.get("camera_height_m", 0.45))
     scan_enabled = bool(cfg.get("publish_scan", True))
+    scene_map_period = float(cfg.get("scene_map_period_s", 5.0))
+    last_scene_map = 0.0
+    scene_map = host.scene_map_ros() if "scene_map" in pubs else np.zeros((0, 3), np.float32)
+    if "scene_map" in pubs:
+        log(f"scene map: {len(scene_map)} navmesh points")
     scan_frame = str(cfg.get("scan_frame", "world"))
     optical = frames.optical_to_body_matrix()
 
@@ -466,6 +502,26 @@ def main() -> None:
 
         put("odometry", odometry_msg(position, quat, vel, "world", "base_link", now))
         put("odom", pose_msg(position, quat, "world", now))
+
+        if "scene_map" in pubs and now - last_scene_map >= scene_map_period and len(scene_map):
+            last_scene_map = now
+            m = scene_map
+            lo, hi = m.min(axis=0), m.max(axis=0)
+            center = (lo + hi) / 2.0
+            radius = float(np.hypot(hi[0] - lo[0], hi[1] - lo[1]) / 2.0 + 1.0)
+            gray = np.full((len(m), 3), 160, dtype=np.uint8)
+            put("scene_map", cloud_msg(m, gray, "world", now))
+            # Same stamp as the cloud: the planner pairs the two. Orientation carries
+            # (radius, z_min, z_max) as the ray-tracing mapper's region_bounds does.
+            put(
+                "scene_bounds",
+                pose_msg(
+                    np.array([center[0], center[1], 0.0]),
+                    np.array([radius, float(lo[2]) - 0.5, float(hi[2]) + 1.0, 0.0]),
+                    "world",
+                    now,
+                ),
+            )
         put(
             "tf",
             tf_msg(

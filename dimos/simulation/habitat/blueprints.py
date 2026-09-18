@@ -139,21 +139,22 @@ _ray_tracing_config = RayTracingVoxelMapConfig(
 )
 
 # Planner runs on local_map + region_bounds only, as on the robot.
-_mls_planner = MLSPlannerNative.blueprint(
-    **MLSPlannerNativeConfig(
-        world_frame=WORLD_FRAME,
-        voxel_size=voxel_size,
-        robot_height=ROBOT_HEIGHT,
-        start_z_offset_m=0.0,  # base_link sits on the navmesh
-        surface_closing_radius=0.3,
-        wall_clearance_m=0.1,
-        wall_buffer_m=0.75,
-        wall_buffer_weight=100.0,
-        step_threshold_m=0.16,
-        step_penalty_weight=4.0,
-        viz_publish_hz=planner_viz_hz,
-    ).model_dump(exclude_unset=True)
-).remappings([(MLSPlannerNative, "global_map", "global_map_unused")])
+_mls_planner_config = MLSPlannerNativeConfig(
+    world_frame=WORLD_FRAME,
+    voxel_size=voxel_size,
+    robot_height=ROBOT_HEIGHT,
+    start_z_offset_m=0.0,  # base_link sits on the navmesh
+    surface_closing_radius=0.3,
+    wall_clearance_m=0.1,
+    wall_buffer_m=0.75,
+    wall_buffer_weight=100.0,
+    step_threshold_m=0.16,
+    step_penalty_weight=4.0,
+    viz_publish_hz=planner_viz_hz,
+).model_dump(exclude_unset=True)
+_mls_planner = MLSPlannerNative.blueprint(**_mls_planner_config).remappings(
+    [(MLSPlannerNative, "global_map", "global_map_unused")]
+)
 
 
 # Newest duplicate wins: re-declared with the sensor-frame scan.
@@ -181,6 +182,42 @@ habitat_nav = autoconnect(
         rerun_config=_rerun_config(
             {
                 "world/path": _render_path,
+                **planner_visual_override(
+                    planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=0.1
+                ),
+            }
+        ),
+    ).remappings(
+        [
+            (RerunWebSocketServer, "tele_cmd_vel", CMD_VEL_TOPIC),
+            (RerunWebSocketServer, "clicked_point", GOAL_TOPIC),
+        ]
+    ),
+).global_config(transport="zenoh")
+
+
+# The navmesh as the planner's map: complete before any goal, no mapping drive, no raycaster.
+# Evals use it so every arm starts from the same known floor.
+habitat_nav_gt = autoconnect(
+    HabitatConnection.blueprint(publish_scan=True, scan_frame=SCAN_FRAME_SENSOR).remappings(
+        [(HabitatConnection, "registered_scan", SCAN_TOPIC)]
+    ),
+    MLSPlannerNative.blueprint(**_mls_planner_config).remappings(
+        [
+            (MLSPlannerNative, "global_map", "global_map_unused"),
+            (MLSPlannerNative, "local_map", "scene_map"),
+            (MLSPlannerNative, "region_bounds", "scene_bounds"),
+        ]
+    ),
+    BasicPathFollower.blueprint(
+        world_frame=WORLD_FRAME, speed=0.5, heading_gain=1.5, max_angular=1.5
+    ).remappings([(BasicPathFollower, "nav_cmd_vel", CMD_VEL_TOPIC)]),
+    vis_module(
+        global_config.viewer,
+        rerun_config=_rerun_config(
+            {
+                "world/path": _render_path,
+                "world/scene_map": _small_points,
                 **planner_visual_override(
                     planner_viz_hz, voxel_size=voxel_size, wall_clearance_m=0.1
                 ),

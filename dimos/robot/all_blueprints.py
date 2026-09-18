@@ -75,6 +75,7 @@ all_blueprints = {
     "go2-zenoh-nav-remote": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_nav_remote",
     "go2-zenoh-raycaster": "dimos.robot.unitree.go2.zenoh.blueprints:go2_zenoh_raycaster",
     "habitat-nav": "dimos.simulation.habitat.blueprints:habitat_nav",
+    "habitat-nav-gt": "dimos.simulation.habitat.blueprints:habitat_nav_gt",
     "habitat-raycaster": "dimos.simulation.habitat.blueprints:habitat_raycaster",
     "habitat-teleop": "dimos.simulation.habitat.blueprints:habitat_teleop",
     "habitat-voxel": "dimos.simulation.habitat.blueprints:habitat_voxel",

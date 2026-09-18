@@ -24,7 +24,7 @@ use lcm_msgs::nav_msgs::Path;
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 use lcm_msgs::std_msgs::{Header, Time};
 use tokio::sync::Notify;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// A point in the planner's world frame.
 type Xyz = (f32, f32, f32);
@@ -121,12 +121,12 @@ impl MlsPlanner {
     }
 
     async fn on_local_map(&mut self, msg: PointCloud2) {
-        push_recent(&mut self.pending_local, msg);
+        push_recent(&mut self.pending_local, msg, PENDING_CLOUDS_KEEP);
         self.try_pair();
     }
 
     async fn on_region_bounds(&mut self, msg: PoseStamped) {
-        push_recent(&mut self.pending_bounds, msg);
+        push_recent(&mut self.pending_bounds, msg, PENDING_BOUNDS_KEEP);
         self.try_pair();
     }
 
@@ -157,26 +157,48 @@ impl MlsPlanner {
     }
 }
 
-/// How many recent messages per stream are kept for pairing.
-const PENDING_KEEP: usize = 4;
+/// Recent messages kept for pairing: bounds are tiny, clouds are not.
+const PENDING_BOUNDS_KEEP: usize = 32;
+const PENDING_CLOUDS_KEEP: usize = 4;
+/// Bounds this close in time may stand in for a cloud's exact stamp; they change slowly.
+const PAIR_TOLERANCE_S: f64 = 0.5;
+/// With a goal set, this long without a region update is worth a warning.
+const STARVED_AFTER: Duration = Duration::from_secs(5);
 
-fn push_recent<T>(queue: &mut VecDeque<T>, msg: T) {
-    if queue.len() == PENDING_KEEP {
+fn push_recent<T>(queue: &mut VecDeque<T>, msg: T, keep: usize) {
+    if queue.len() == keep {
         queue.pop_front();
     }
     queue.push_back(msg);
 }
 
-/// Indices of the newest bounds and cloud with the same stamp, if any.
+fn stamp_secs(t: &Time) -> f64 {
+    t.sec as f64 + t.nsec as f64 * 1e-9
+}
+
+/// Indices of the newest cloud and its bounds: same stamp, else the nearest within tolerance.
 fn find_pair(
     bounds: &VecDeque<PoseStamped>,
     clouds: &VecDeque<PointCloud2>,
 ) -> Option<(usize, usize)> {
-    for (bi, b) in bounds.iter().enumerate().rev() {
-        for (ci, c) in clouds.iter().enumerate().rev() {
-            if same_stamp(&b.header.stamp, &c.header.stamp) {
-                return Some((bi, ci));
-            }
+    for (ci, c) in clouds.iter().enumerate().rev() {
+        if let Some(bi) = bounds
+            .iter()
+            .rposition(|b| same_stamp(&b.header.stamp, &c.header.stamp))
+        {
+            return Some((bi, ci));
+        }
+    }
+    for (ci, c) in clouds.iter().enumerate().rev() {
+        let ct = stamp_secs(&c.header.stamp);
+        let nearest = bounds
+            .iter()
+            .enumerate()
+            .map(|(bi, b)| (bi, (stamp_secs(&b.header.stamp) - ct).abs()))
+            .filter(|(_, d)| *d <= PAIR_TOLERANCE_S)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((bi, _)) = nearest {
+            return Some((bi, ci));
         }
     }
     None
@@ -208,12 +230,30 @@ impl Worker {
         let mut planner = Planner::new(self.config.worker_threads);
         let mut last_path_at: Option<Instant> = None;
         let mut last_viz_at: Option<Instant> = None;
+        let mut last_region_at: Option<Instant> = None;
+        let mut regions: u64 = 0;
         loop {
             self.wake.notified().await;
             let update = self.pending.lock().expect("pending mutex").take();
             if let Some(update) = update {
+                let is_region = matches!(update, MapUpdate::Region { .. });
                 self.apply_update(&mut planner, update, &mut last_viz_at)
                     .await;
+                if is_region {
+                    last_region_at = Some(Instant::now());
+                    regions += 1;
+                    if regions == 1 {
+                        info!("first local region ingested");
+                    }
+                }
+            }
+            let goal_set = self.active_goal.lock().expect("goal mutex").is_some();
+            if goal_set && last_region_at.is_none_or(|t| t.elapsed() > STARVED_AFTER) {
+                warn_throttled!(
+                    STARVED_AFTER,
+                    regions,
+                    "goal set but no local region update recently; the map is not reaching the planner",
+                );
             }
             self.maybe_replan(&mut planner, &mut last_path_at).await;
         }
@@ -664,27 +704,31 @@ mod tests {
         let mut bounds = VecDeque::new();
         let mut clouds = VecDeque::new();
         assert_eq!(find_pair(&bounds, &clouds), None);
-        push_recent(&mut bounds, bounds_at(t(3)));
-        push_recent(&mut clouds, cloud_at(t(4)));
-        assert_eq!(find_pair(&bounds, &clouds), None);
+        push_recent(&mut bounds, bounds_at(t(3)), PENDING_BOUNDS_KEEP);
+        push_recent(&mut clouds, cloud_at(t(4)), PENDING_CLOUDS_KEEP);
+        // Within tolerance (1 ns apart): the nearest bounds stand in.
+        assert_eq!(find_pair(&bounds, &clouds), Some((0, 0)));
 
         // The cloud lags its bounds by one tick: latest-of-each never matches,
-        // the recent queues do.
-        push_recent(&mut bounds, bounds_at(t(4)));
+        // the recent queues do, exact stamp first.
+        push_recent(&mut bounds, bounds_at(t(4)), PENDING_BOUNDS_KEEP);
         assert_eq!(find_pair(&bounds, &clouds), Some((1, 0)));
-        push_recent(&mut clouds, cloud_at(t(3)));
-        push_recent(&mut bounds, bounds_at(t(5)));
-        push_recent(&mut clouds, cloud_at(t(5)));
+        push_recent(&mut clouds, cloud_at(t(5)), PENDING_CLOUDS_KEEP);
+        push_recent(&mut bounds, bounds_at(t(5)), PENDING_BOUNDS_KEEP);
         assert_eq!(
             find_pair(&bounds, &clouds),
-            Some((2, 2)),
+            Some((2, 1)),
             "newest pair wins"
         );
 
-        for n in 10..20 {
-            push_recent(&mut bounds, bounds_at(t(n)));
+        // Far apart in time: no stand-in.
+        let far = VecDeque::from(vec![bounds_at(Time { sec: 9, nsec: 0 })]);
+        assert_eq!(find_pair(&far, &clouds), None);
+
+        for n in 10..60 {
+            push_recent(&mut bounds, bounds_at(t(n)), PENDING_BOUNDS_KEEP);
         }
-        assert_eq!(bounds.len(), PENDING_KEEP);
+        assert_eq!(bounds.len(), PENDING_BOUNDS_KEEP);
     }
 
     fn point(x: f64, y: f64, z: f64) -> Point {

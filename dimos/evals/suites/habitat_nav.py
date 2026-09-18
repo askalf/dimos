@@ -17,9 +17,10 @@
 One scene file per scene under ``scenes/habitat/``: the ground-truth boxes, either
 inline as ``detections`` (the ``detection3d_array_to_dict`` layout, ROS world frame)
 or by path as ``ground_truth`` (``misc/habitat/ground_truth/...``), the optional
-``scene_dataset_config``, the ``cases`` (label, spawn, end point beside the object,
-geodesic distance) and the mapping ``tour``; ``misc/habitat/nav_cases.py`` writes
-one from a ground-truth file. Every arm gets ``go to the <label> at (x, y)``; the
+``scene_dataset_config`` and the ``cases`` (label, spawn, end point on the object,
+geodesic distance, difficulty); ``misc/habitat/nav_cases.py`` writes one from a
+ground-truth file. The planner gets the navmesh as its map (``habitat-nav-gt``), so
+nothing drives before the task clock starts. Every arm gets ``go to the <label> at (x, y)``; the
 boxes are published by ``demo-objects`` so text-only agents see them in ``world_state``.
 
     # the planner alone, the end point straight to /goal
@@ -60,7 +61,7 @@ TASK_BRIEF = (
     "it. The last line is the goal; its coordinates are the target's centre in the world frame."
 )
 SCENES = Path(__file__).parent / "scenes" / "habitat"
-BLUEPRINT = ["habitat-nav", "mcp-server", "demo-objects", "nav-skills"]
+BLUEPRINT = ["habitat-nav-gt", "mcp-server", "demo-objects", "nav-skills"]
 TIMEOUT_S = float(os.environ.get("DIMOS_EVAL_TIMEOUT_S", 1800))
 # What grading and replay need; images and clouds stay out (1 GB per few minutes otherwise).
 RECORD_TOPICS = ("odom", "cmd_vel", "goal", "path", "goal_reached", "stop_movement", "finished")
@@ -99,12 +100,16 @@ def cases_for(scene_file: Path) -> list[EvalCase]:
     boxes = {d["id"]: box_of(d["center_xyz"], d["size_xyz"]) for d in detections}
     dataset = scene.get("scene_dataset_config")
     out = []
+    seen: dict[str, int] = {}
     for c in scene["cases"]:
         x, y = c["end_xy"]
         label = c["label"]
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_").lower()
+        seen[slug] = seen.get(slug, 0) + 1
+        case_id = f"{scene['scene_id']}_{slug}" + (f"_{seen[slug]}" if seen[slug] > 1 else "")
         out.append(
             EvalCase(
-                id=f"{scene['scene_id']}_{re.sub(r'[^A-Za-z0-9]+', '_', label).strip('_').lower()}",
+                id=case_id,
                 inputs=f"{TASK_BRIEF}\n\ngo to the {label} at ({x:.2f}, {y:.2f})",
                 environment=HabitatEnvironment(
                     blueprint=BLUEPRINT,
@@ -115,7 +120,6 @@ def cases_for(scene_file: Path) -> list[EvalCase]:
                     raw_bridge=True,  # inert unless an agent connects; identical launches per arm
                     raw_topics=("world_state", "cmd_vel", "finished"),
                     record_topics=RECORD_TOPICS,
-                    tour=tuple((float(x), float(y)) for x, y in scene.get("tour", ())),
                     extra_env={"DEMOOBJECTS__SCENE_JSON": str(objects), **MODULE_ENV},
                 ),
                 grade=grade_nav((x, y), boxes[c["object_id"]]),

@@ -77,6 +77,8 @@ class HabitatConnectionConfig(NativeModuleConfig):
     # "world" pre-registers the scan for VoxelGridMapper; "camera_optical" lets
     # RayTracingVoxelMap register it via tf.
     scan_frame: str = "world"
+    scene_map_spacing_m: float = Field(default=0.05, gt=0.0)
+    scene_map_period_s: float = Field(default=5.0, gt=0.0)
 
 
 class HabitatConnection(NativeModule):
@@ -95,5 +97,9 @@ class HabitatConnection(NativeModule):
     odometry: Out[Odometry]
     # The pose alone, the Go2 convention consumers such as TypeSafeAgent and raw-robot-bridge take.
     odom: Out[PoseStamped]
+    # The navmesh as a world-frame floor cloud plus its bounds, every scene_map_period_s:
+    # a complete map for a planner before the robot has seen anything.
+    scene_map: Out[PointCloud2]
+    scene_bounds: Out[PoseStamped]
     tf: Out[TFMessage]
     semantic_image: Out[Image]
