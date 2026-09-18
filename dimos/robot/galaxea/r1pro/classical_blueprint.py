@@ -128,8 +128,8 @@ def build_classical_apartment(
             kwargs.update(
                 width=320,
                 height=240,
-                fps=10,
-                viewer_fps=20,
+                fps=1,
+                viewer_fps=10,
                 background_viewer_rendering=True,
                 extra_cameras=[],
             )
