@@ -12,23 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The follower's law: follow the path the gait can actually walk.
-
-Three mechanisms over :mod:`~...laws.seed`, in order of worth:
-
-1. :func:`walk_command`, the gait slip inverse. The twist is a REQUEST to a
-   learned policy that under-delivers it, and the governor's creep rung sits
-   inside the gait's dead-stall band, so asking for it stops the robot dead.
-2. Constant time headway: the carrot distance scales with commanded speed
-   instead of staying fixed, shrinking the pursuit chord where the plan is
-   tight — and the chord always falls toward the obstacle the planner curved
-   around.
-3. The stamped precision profile as the governor's input: the follower holds
-   no map of its own, so the room the planner priced arrives in the path's
-   own timestamps (:mod:`~...control.profile`).
-
-(1) and (2) are held here rather than shared with :mod:`~...laws.seed`, which
-is the frozen baseline.
+"""The follower's law: seed pursuit plus the gait slip inverse (:func:`walk_command`),
+constant time headway, and the stamped precision profile as the governor's input
+(:mod:`~...local_planner.profile`). Held apart from the frozen :mod:`~...laws.seed`.
 """
 
 from __future__ import annotations
@@ -63,15 +49,8 @@ def make_rust(emb: Embodiment = GO2) -> RustHintedController:
 
 
 def walk_command(want: float, gain: float, slip: float, ramp: float) -> float:
-    """The command that asks the gait for a ground speed of ``want`` m/s.
-
-    The twist is a request to a learning walking policy that under-delivers:
-    ground speed ~= ``gain * cmd - slip`` above the stall band, nothing at all
-    below it (the embodiment's ``walk_*``, measured open loop). This inverts
-    that affine map so the intended ground speed stays exactly the one the
-    governor chose — an actuator inverse, not a flat offset, which would
-    overshoot at cruise. Identity at ``want = 0``, the full inverse once
-    ``want >= ramp``, since a stop request has to remain a stop.
+    """Invert the gait's affine under-delivery (ground ~= ``gain * cmd - slip``, measured
+    open loop) so it walks ``want`` m/s; identity at 0 and full inverse from ``ramp`` up.
     """
     if want <= 0.0:
         return 0.0
@@ -80,11 +59,8 @@ def walk_command(want: float, gain: float, slip: float, ramp: float) -> float:
 
 
 class HintedController:
-    """Pursuit governed by the stamped precision profile, at gait-true speeds.
-
-    ``clearance`` is the lab's channel: an explicit per-waypoint room array
-    outranks the stamps when one is handed in. The follower never hands one.
-    """
+    """Pursuit governed by the stamped precision profile, at gait-true speeds. An explicit
+    ``clearance`` array (the lab's channel) outranks the stamps."""
 
     config: ControllerConfig
 
@@ -101,8 +77,7 @@ class HintedController:
     ) -> Twist:
         cfg, emb = self.config, self.emb
         if len(path) < 2:
-            # empty path or a single-pose veto stub: nothing to follow, hold
-            # position (the planner is saying "stop")
+            # empty path or single-pose veto stub: the planner says stop
             return Twist(Vector3(0, 0, 0), Vector3(0, 0, 0))
         xy = np.array([[p.position.x, p.position.y] for p in path.poses])
         yaws = np.array([p.yaw for p in path.poses])
@@ -112,9 +87,7 @@ class HintedController:
         seg = np.linalg.norm(np.diff(xy, axis=0), axis=1) if n > 1 else np.zeros(1)
         arcs = np.concatenate([[0.0], np.cumsum(seg)])
 
-        # closest waypoint = progress along the path; inside a fan the
-        # waypoints are coincident, so advance by yaw progress instead of
-        # re-rotating from the fan's first pose
+        # inside a fan the waypoints are coincident, so advance by yaw progress
         i = int(np.argmin(np.linalg.norm(xy - (px, py), axis=1)))
         while (
             i + 1 < n
@@ -123,8 +96,7 @@ class HintedController:
         ):
             i += 1
 
-        # Speed governor, hoisted above target selection because the lookahead
-        # distance is derived from it (constant time headway, below).
+        # governor first: the lookahead is derived from vmax (constant time headway)
         vmax = emb.max_speed
         governed = False
         if clearance is not None and len(clearance) == n:
@@ -134,39 +106,25 @@ class HintedController:
             frac = (room - emb.precision) / max(emb.speed_clearance - emb.precision, 1e-6)
             vmax = emb.min_speed + (emb.max_speed - emb.min_speed) * min(max(frac, 0.0), 1.0)
 
-        # THE SAME GOVERNOR, OFF THE STAMPS. When no clearance array arrives
-        # the room ahead has not been withheld, only re-encoded: the planner
-        # stamps the required-precision profile into the path's own timestamps
-        # on every replan (control/profile.py). Decoding it
-        # puts a speed ceiling back under this law at exactly the point the
-        # clearance branch occupies, so the two channels are alternatives
-        # rather than layers.
+        # the same governor off the stamped profile (local_planner/profile.py); the two
+        # channels are alternatives, not layers
         if not governed:
             ceilings = decode_ceilings(path, emb.min_speed, emb.max_speed)
             if ceilings is not None:
-                # Read from i + 1, not i. Not an off-by-one: a decoded ceiling
-                # is a property of the SEGMENT ending at its waypoint, so
-                # ceilings[k] already carries clr[k-1]. Scanning [i+1 ..]
-                # reproduces the clearance branch's window exactly, whereas
-                # starting at i would drag in the waypoint behind the robot.
+                # from i + 1: ceilings[k] belongs to the segment ending at k, so this is
+                # exactly the clearance branch's window
                 hi = arcs[i] + cfg.speed_lookahead
                 window = ceilings[i + 1 :][arcs[i + 1 :] <= hi]
-                # the segment about to be traversed always counts, even if a
-                # degenerate speed_lookahead would exclude it; at the end of
-                # the plan there is no next segment and the last one stands
+                # the next segment always counts, even if speed_lookahead would exclude it
                 nxt = float(ceilings[min(i + 1, n - 1)])
                 vmax = min(nxt, float(np.min(window))) if len(window) else nxt
 
-        # Constant time headway (lookahead / max_speed), not a constant
-        # distance: a fixed-distance carrot chords the curve to the inside of
-        # the turn, toward the obstacle the planner curved around. It costs no
-        # speed: the command is min(k_pos * L, vmax) and the floor keeps L
-        # saturating.
+        # constant time headway, not distance: a fixed carrot chords the turn toward the
+        # obstacle the planner curved around; the floor keeps the command saturating
         headway = cfg.lookahead / max(emb.max_speed, 1e-6)
         look = max(vmax * headway, vmax / max(abs(cfg.k_pos), 1e-6))
 
-        # fan detection at the current position: yaw stepping with (near-)zero
-        # displacement means the planner commands a rotation here
+        # fan: yaw stepping at (near-)zero displacement means rotate here
         j = min(i + 1, n - 1)
         ds = float(arcs[j] - arcs[i])
         dyaw = abs(angle_diff(float(yaws[j]), float(yaws[i])))
@@ -177,20 +135,15 @@ class HintedController:
         else:
             target_xy, target_yaw = _carrot_lerp(xy, yaws, arcs, i, look)
 
-        # body-frame error -> velocity
         ex, ey = target_xy[0] - px, target_xy[1] - py
         c, s_ = math.cos(-pyaw), math.sin(-pyaw)
         bx, by = c * ex - s_ * ey, s_ * ex + c * ey
         vx, vy = cfg.k_pos * bx, cfg.k_pos * by
-        # np.hypot, not math.hypot: CPython's hypot is correctly rounded, rust's
-        # f64::hypot is libm, and the ulp between them reaches the twist since
-        # this law divides by `speed` every tick. See test_rust_parity.
+        # np.hypot, not math.hypot: CPython's is correctly rounded, rust's is libm, and
+        # the ulp reaches the twist through the divide (test_rust_parity)
         speed = float(np.hypot(vx, vy))
         if speed > 1e-12:
-            # `want` is the intended ground speed: the pursuit gain, capped by
-            # the governor.
             want = min(speed, vmax)
-            # ...and this is what the gait has to be asked for to deliver it.
             cmd = walk_command(want, emb.walk_gain, emb.walk_slip, emb.walk_slip_ramp)
             vx, vy = vx / speed * cmd, vy / speed * cmd
         wz = float(
@@ -206,18 +159,12 @@ def _carrot_lerp(
     i: int,
     look: float,
 ) -> tuple[NDArray[np.float64], float]:
-    """The point at exactly ``arcs[i] + look``, interpolated within its segment.
-
-    The plan is discretised at 0.1 m — fine noise against a 0.35 m carrot, but
-    70% of a 0.14 m one. Without this the shortened headway would make the
-    carrot distance, and so the commanded heading, chatter waypoint to
-    waypoint.
-    """
+    """The point at exactly ``arcs[i] + look``, interpolated within its segment: snapping
+    to a waypoint would make a 0.14 m carrot chatter on the 0.1 m discretisation."""
     n = len(xy)
     s = float(arcs[i]) + look
     k = int(np.searchsorted(arcs, s))
     if k == 0 or k >= n:
-        # s is at or beyond an endpoint: pursue the endpoint itself
         k = min(k, n - 1)
         return xy[k], float(yaws[k])
     a0, a1 = float(arcs[k - 1]), float(arcs[k])
@@ -226,8 +173,7 @@ def _carrot_lerp(
         return xy[k], float(yaws[k])
     u = min(max((s - a0) / d, 0.0), 1.0)
     point = xy[k - 1] + u * (xy[k] - xy[k - 1])
-    # interpolate yaw the short way round, not linearly in the raw angle, so a
-    # wrap across +-pi does not spin the carrot
+    # yaw the short way round, so a wrap across +-pi does not spin the carrot
     yaw = float(yaws[k - 1]) + u * angle_diff(float(yaws[k]), float(yaws[k - 1]))
     return point, yaw
 
@@ -250,9 +196,7 @@ class RustHintedController:
         self, pose: PoseStamped, path: Path, t: float, clearance: NDArray[np.float64] | None = None
     ) -> Twist:
         clr = None if clearance is None else np.ascontiguousarray(clearance, dtype=np.float64)
-        # The path's own per-waypoint stamps. The law reads only the deltas,
-        # never the absolute times: the stamps are a precision profile and not
-        # a schedule.
+        # the law reads only stamp deltas: a precision profile, not a schedule
         ts = np.ascontiguousarray(
             np.array([p.ts for p in path.poses], dtype=np.float64).reshape(-1)
         )

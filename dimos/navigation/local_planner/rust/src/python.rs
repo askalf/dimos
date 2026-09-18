@@ -19,23 +19,11 @@ use pyo3::prelude::*;
 
 use crate::planner::{plan_explored as plan_impl, Emb, COMMIT_MARGIN};
 
-/// One plan call. points: (N, 2) float64 obstacle xy in world frame, every
-/// row an obstacle (the caller's model already decided which, see
-/// `planner.rs`). `emb` is the `Embodiment` as JSON, the same dict the native
-/// modules are configured with, dumped by `planners/target.py`; an empty
-/// `envelope` asks for the all-gait union at every heading, which is what an
-/// unmeasured embodiment gets. `incumbent` is the (M, 3) route the caller last
-/// published, or None on the first plan and after a reset; `commit_margin` is
-/// `se2.COMMIT_MARGIN`, which python owns and hands over here the way it hands
-/// over the body. Returns an (M, 3) array of (x, y, yaw) at
-/// `resolution`, or None to refuse. `ground` is the (N, 2) floor the cloud saw;
-/// `unseen_cost` > 1 prices every metre over a cell with no floor under it
-/// that many times higher (`planner.rs::plan_explored`).
+/// One plan call; python owns every argument (`search/target.py`). `points`/`ground`
+/// are (N, 2) world xy, `emb` the `Embodiment` JSON, `incumbent` (M, 3); (M, 3) or None.
 #[pyfunction]
 #[pyo3(signature = (points, pose, goal, emb, resolution, incumbent=None, commit_margin=COMMIT_MARGIN, ground=None, unseen_cost=1.0))]
-// The argument list IS the boundary, and it is the spec: every one of these is
-// a thing python owns and the crate is handed. Bundling them into a struct
-// would only move the same seven names one indirection away from the call.
+// the argument list is the boundary; a struct would only move the names one hop
 #[allow(clippy::too_many_arguments)]
 fn plan<'py>(
     py: Python<'py>,
@@ -77,9 +65,7 @@ fn plan<'py>(
         (0..v.shape()[0]).map(|k| [v[[k, 0]], v[[k, 1]]]).collect()
     };
     let pts = xy(&points);
-    // (N, 2) ground returns; a cell with none under it prices at `unseen_cost`.
     let gnd = ground.as_ref().map(xy).unwrap_or_default();
-    // the body as `Embodiment` dumps it: one dict, the native modules' own
     let emb: Emb = serde_json::from_str(emb)
         .map_err(|e| PyValueError::new_err(format!("emb is not an Embodiment: {e}")))?;
     let out = py.allow_threads(|| {

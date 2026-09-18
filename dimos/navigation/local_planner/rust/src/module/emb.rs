@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! What the adapters do with the body they are configured with. The body
-//! itself arrives in the config, deserialised from `embodiment/base.py`'s
-//! record: there is no table here to drift from it.
+//! Adapter helpers on the body; it arrives in the config as `embodiment/base.py`'s
+//! record, so there is no table here to drift from it.
 
 pub use crate::emb::{base_params, governor};
 use crate::planner::Emb;
 
-/// `Embodiment.dilated`, formula for formula: every box grown by `by` PER
-/// SIDE, the measured rows with it.
+/// `Embodiment.dilated`: every box grown by `by` per side, measured rows included.
 pub fn dilated(emb: Emb, by: f64) -> Emb {
     if by == 0.0 {
         return emb;
@@ -63,7 +61,6 @@ mod tests {
 
     #[test]
     fn the_body_round_trips_through_its_config_json() {
-        // the python module sends `Embodiment` as a dict
         let e = Emb::fixture();
         let back: Emb = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         assert_eq!(back.envelope, e.envelope);

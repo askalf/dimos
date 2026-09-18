@@ -44,9 +44,7 @@ from dimos.navigation.tf_pose import TfPose
 from dimos.navigation.trajectory_follower.fancy.laws.seed import PursuitController
 from dimos.protocol.tf.tf import MultiTBuffer
 
-# Modules built by the helpers below. The real constructor stands up the module's
-# LCM RPC transport (a run_forever + _lcm_loop daemon pair per instance); these
-# tests exercise pure methods on top of it, so the fixture hands them back.
+# The constructor stands up LCM RPC daemons per instance; the fixture stops them.
 _BUILT: list[LocalPlanner] = []
 
 
@@ -81,7 +79,6 @@ def test_stamped_empty():
 
 def test_carrot_walks_arc_from_closest_waypoint():
     path = np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 4.0]])
-    # closest waypoint to (2.1, 0.5) is (2, 0); 1.5 m of arc up the second leg
     assert carrot_along(path, (2.1, 0.5), 1.5) == (2.0, 1.5)
 
 
@@ -118,25 +115,24 @@ def test_hold_publishes_single_pose_stub_at_the_current_pose():
     assert len(published) == 1
     path = published[0]
     assert path.frame_id == "odom"
-    # a single pose is the planner's refusal shape: "hold, no safe route"
+    # a single pose is the planner's refusal shape
     assert len(path.poses) == 1
     assert path.poses[0].position.x == 1.5
     assert path.poses[0].position.y == -2.0
     assert abs(path.poses[0].yaw - math.pi / 2) < 1e-9
-    # the stub stands on the ground like every planned pose, not at z=0
+    # the stub stands on the ground like every planned pose
     assert abs(path.poses[0].position.z - (0.0 - GO2.base_height)) < 1e-9
 
 
 def test_a_route_that_vanished_clears_the_plan_once():
     planner, published = _holding_planner()
-    # nothing out there yet: a missing route is "waiting", not a clear
+    # a route that never existed is "waiting", not a clear
     planner.clear()
     assert published == []
     planner.hold(PoseStamped(position=(1.5, -2.0, 0.0)), age=7.0)
     planner.clear()
     planner.clear()
     assert len(published) == 2
-    # the empty path is the stop, in the plan's frame, and it says so once
     assert published[1].poses == [] and published[1].frame_id == "odom"
     assert planner._planned is None and planner._incumbent is None
 
@@ -157,8 +153,6 @@ def test_hold_warns_once_per_stale_episode(monkeypatch):
     planner, _published = _holding_planner()
     for _ in range(3):
         planner.hold(PoseStamped(position=(0.0, 0.0, 0.0)), age=7.0)
-    # edge-triggered: replan_hz would otherwise warn 5x a second for as long
-    # as the link stays down
     assert len(warnings) == 1
 
 
@@ -170,8 +164,7 @@ class _Clock:
 
 
 def test_a_stale_pose_is_a_missing_pose(monkeypatch):
-    # the pose is the world_frame -> base_frame edge on tf, read per tick; an
-    # edge whose stamp stopped advancing is no pose at all
+    # the pose is a tf edge read per tick; a stamp that stopped advancing is no pose
     planner, published = _holding_planner()
     tf, clock = MultiTBuffer(), _Clock()
     planner._pose_src = TfPose(tf, "base_link", planner.config.max_map_age_s, clock=clock)
@@ -200,10 +193,8 @@ def test_a_stale_pose_is_a_missing_pose(monkeypatch):
 
 
 def test_the_gate_is_the_one_the_diagnosis_replays():
-    # free functions, so a post-mortem can reconstruct the gate off a recording
     assert planner_module.replan_due(None, 7, (2.0, 0.0))
-    # MLS trims the route head to the robot and re-solves the tail on every
-    # ~1 Hz republish: the waypoints move, the carrot does not
+    # republish wobble: the waypoints move, the carrot does not
     assert not planner_module.replan_due((7, (2.0, 0.0)), 7, (2.02, -0.01))
     assert not planner_module.replan_due((7, (2.0, 0.0)), 7, (2.2, 0.0))
     assert planner_module.replan_due((7, (2.0, 0.0)), 7, (2.4, 0.0))
@@ -213,11 +204,10 @@ def test_the_gate_is_the_one_the_diagnosis_replays():
 def test_only_a_carrot_that_jumped_is_a_new_task():
     assert not planner_module.retask_due((7, (2.0, 0.0)), (2.3, 0.0))  # republish wobble
     assert planner_module.retask_due((7, (2.0, 0.0)), (6.6, 0.0))  # a reroute
-    # and nothing to compare against is not a jump
     assert not planner_module.retask_due(None, (6.6, 0.0))
 
 
-# --- the obstacle model (motion/obstacles.py is the rule; this is the wiring)
+# --- the obstacle model (obstacles.py is the rule; this is the wiring)
 
 
 def _room(floor_z: float, n: int = 400) -> NDArray[np.float64]:
@@ -229,17 +219,15 @@ def _room(floor_z: float, n: int = 400) -> NDArray[np.float64]:
 
 
 def test_the_band_rides_the_body_not_the_map_origin():
-    # base at +0.01, so the surface the feet stand on is at -0.28
+    # base at +0.01, so the feet stand at -0.28
     out = hard_points(load_model(LocalPlannerConfig().obstacle_model, GO2), _room(-0.28), -0.28)
-    # the slab is gone and the clutter reads as its true height over the ground
+    # the slab is gone and the clutter reads at its height over the ground
     assert len(out) == 2
     assert abs(float(out[:, 2].min()) - 0.3) < 1e-6
     assert abs(float(out[:, 2].max()) - 0.4) < 1e-6
 
 
 def test_a_map_with_a_non_finite_return_still_plans():
-    # one NaN x used to reach the search as a NaN grid corner: every tick
-    # raised, "keeping the last published path" forever
     planner, published = _holding_planner()
     room = np.concatenate([_room(-0.28), np.array([[np.nan, 0.0, -0.08]], dtype=np.float32)])
     cloud = PointCloud2.from_numpy(room, frame_id="odom")
@@ -268,16 +256,12 @@ def _detour(emb: Embodiment, cloud: NDArray[np.float64], ground_z: float) -> flo
 
 
 def test_a_tall_body_plans_around_what_the_old_band_cut_off():
-    """The latent bug the 2D search contract closes.
-
-    A 0.55 m wall is inside a 0.60 m body's band and outside the absolute
-    0.05..0.45 one. While the search re-sliced that band it dropped the very
-    points the model had correctly kept, and drove straight through them.
-    """
+    """A 0.55 m wall is inside a 0.60 m body's band but outside the absolute
+    0.05..0.45 one; the search must not re-slice the band and drop it."""
     wall = _wall_over(0.0, 0.55)
     tall = replace(GO2, height=0.60)
     assert _detour(tall, wall, 0.0) > 0.8, "the tall body drove through its own obstacle"
-    # and the control: the same wall IS over a go2's belly, so it is not a wall
+    # control: the same wall is over a go2's belly, so it is not a wall
     assert not len(hard_points(load_model("body_band", GO2), wall, 0.0))
     assert _detour(GO2, wall, 0.0) < 0.2
 

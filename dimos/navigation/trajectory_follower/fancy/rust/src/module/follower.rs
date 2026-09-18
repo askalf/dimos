@@ -12,24 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `trajectory_follower`: the motion controller as a robot-side module.
-//!
-//! A port of `adapter/follower.py`, which is the specification. The law is a
-//! pure pose+path -> twist function in `dimos_trajectory_follower`, parity-locked to its
-//! python twin; this module owns the subscriptions, the control clock, goal
-//! arrival and the deadman. The pose is the `path.frame_id -> base_frame` edge
-//! on tf, read per tick (`tf_pose.rs`), so the law controls in the frame the
-//! plan is expressed in.
-//!
-//! NO MAP. The room the planner priced arrives in the path's own timestamps
-//! (`stamps::decode_ceilings`), and the law reads it from there; the follower
-//! never sees the local map.
-//!
-//! THE DEADMAN. `max_path_age_s`, measured from ARRIVAL, zeroes the twist
-//! once the held path is that old: it guards a planner that stopped speaking,
-//! alive-and-failing included. The planner's own hold stub covers a stale
-//! map; this covers the planner itself. The same age on the pose's tf stamp
-//! zeroes it too: a plan with no live pose under it is not driven.
+//! `trajectory_follower`: the motion controller as a robot-side module, a port of `adapter/follower.py`.
+//! The law is a pure pose+path -> twist function; this owns subscriptions, the control clock, arrival and the deadman.
+//! No map: the room the planner priced arrives in the path's own timestamps (`stamps::decode_ceilings`).
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,21 +41,17 @@ pub struct Config {
     /// Planar distance that counts as arrival (m).
     #[validate(range(exclusive_min = 0.0))]
     pub goal_tolerance: f64,
-    /// The body, as `embodiment/base.py` records it: the planner's own value.
+    /// The planner's own body (`embodiment/base.py`).
     pub embodiment: Emb,
-    /// The pose is the `path.frame_id -> base_frame` edge on tf, read each
-    /// tick. Ticks wait until it resolves, and once its stamp stops advancing
-    /// for `max_path_age_s` it counts as missing again.
+    /// The pose is the `path.frame_id -> base_frame` edge on tf, read each tick.
     pub base_frame: String,
-    /// Zero the twist once the held path is this old, measured from ARRIVAL.
-    /// Sized to the replan gate: plans arrive per map (~1 Hz, gaps to ~1.3 s),
-    /// so anything under ~2 s stutters the walk on healthy cadence.
+    /// Deadman: zero the twist once the held path is this old, measured from arrival.
+    /// Must clear the replan cadence (one plan per map, gaps to ~1.3 s).
     #[validate(range(exclusive_min = 0.0))]
     pub max_path_age_s: f64,
 }
 
-/// Arrival edge detector: fires once per goal, then holds until it moves. A
-/// port of `follower.GoalLatch`.
+/// Arrival edge detector: fires once per goal, then holds until it moves (`follower.GoalLatch`).
 #[derive(Debug, Clone)]
 pub struct GoalLatch {
     tolerance: f64,
@@ -91,8 +72,7 @@ impl GoalLatch {
         self.reached
     }
 
-    /// Moves under the arrival tolerance are the SAME goal: replans snap the
-    /// path end to the search grid, and re-chasing that is jitter.
+    /// Moves under the tolerance are the same goal: replans snap the path end to the grid.
     pub fn set_goal(&mut self, xy: (f64, f64)) {
         if self.goal.is_none_or(|g| dist(xy, g) > self.tolerance) {
             self.goal = Some(xy);
@@ -117,10 +97,7 @@ fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     (a.0 - b.0).hypot(a.1 - b.1)
 }
 
-/// The goal a path carries, or `None` when it carries none.
-///
-/// A plan ends at the goal, so its last pose is the target. A single-pose
-/// path is the planner's refusal, not a target at the robot's own feet.
+/// The goal a path carries: its last pose, or `None` for a single-pose refusal stub.
 pub fn goal_of(path: &Path) -> Option<(f64, f64)> {
     if path.poses.len() < 2 {
         return None;
@@ -129,17 +106,12 @@ pub fn goal_of(path: &Path) -> Option<(f64, f64)> {
     Some((last.pose.position.x, last.pose.position.y))
 }
 
-/// Everything the handlers record and the worker reads.
 #[derive(Default)]
 struct Shared {
     path: Option<Arc<Path>>,
-    /// ARRIVAL, not `msg.ts`: what this guards is how long since the planner
-    /// was last heard from.
+    /// Arrival, not `msg.ts`: this measures how long since the planner was last heard.
     path_at: Option<Instant>,
-    /// Goals in the order the paths carrying them arrived, drained per tick.
-    /// A queue rather than "the latest path's goal" so the latch sees the same
-    /// `set_goal` SEQUENCE the python's subscription callback sees, even when
-    /// two plans land inside one control period.
+    /// Drained per tick in arrival order, so the latch sees the same `set_goal` sequence the python does.
     goals: Vec<(f64, f64)>,
 }
 
@@ -177,8 +149,7 @@ impl TrajectoryFollower {
         self.worker = Some(tokio::spawn(worker.run()));
     }
 
-    /// Stop the loop first, then say stop: a twist published while the worker
-    /// could still tick would be raced by its next command.
+    /// Abort the loop before the zero twist, or the next tick could race it.
     async fn stop_worker(&mut self) {
         if let Some(handle) = self.worker.take() {
             handle.abort();
@@ -186,9 +157,7 @@ impl TrajectoryFollower {
         msg::publish(&self.nav_cmd_vel, &msg::twist(0.0, 0.0, 0.0)).await;
     }
 
-    /// A plan to follow. An empty one is a stop: forget the plan and halt
-    /// now rather than a control period later, because a stop that waits is
-    /// not a stop.
+    /// An empty path is a stop: halt now, not a control period later.
     async fn on_path(&mut self, path: Path) {
         if path.poses.is_empty() {
             {
@@ -212,22 +181,19 @@ impl TrajectoryFollower {
 /// What one control tick should command.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tick {
-    /// Not running yet: no pose, or no plan (which is also where an empty
-    /// path leaves us).
+    /// No pose or no plan.
     Idle,
-    /// The planner has gone quiet. The deadman.
+    /// The deadman: the planner has gone quiet.
     Stale { age_s: f64 },
-    /// The tick the robot first reaches the goal: stop and latch.
+    /// First tick at the goal: stop and latch.
     Arrived,
-    /// The goal is reached and latched; hold until a new one.
+    /// Latched; hold until a new goal.
     Holding,
     /// Run the law.
     Drive,
 }
 
-/// The tick branch, lifted out of the loop so it can be tested with no
-/// transport and no clock. `latch` is advanced here because arrival is an
-/// EDGE and asking twice would lose it.
+/// The tick branch, clock-free for tests. Advances `latch` itself: arrival is an edge, asking twice loses it.
 pub fn decide(
     pose: Option<(f64, f64, f64)>,
     path_age_s: Option<f64>,
@@ -237,8 +203,7 @@ pub fn decide(
     let (Some(pose), Some(age)) = (pose, path_age_s) else {
         return Tick::Idle;
     };
-    // The deadman outranks arrival: a goal reached against a plan nobody is
-    // refreshing is a coincidence, not an arrival.
+    // the deadman outranks arrival: a goal reached against an unrefreshed plan is a coincidence
     if age > max_path_age_s {
         return Tick::Stale { age_s: age };
     }
@@ -251,8 +216,7 @@ pub fn decide(
     Tick::Drive
 }
 
-/// Edge trigger, so a dead planner warns once rather than `control_frequency`
-/// times a second for as long as it stays dead.
+/// Edge trigger: a dead planner warns once, not every tick.
 #[derive(Default)]
 struct Gate {
     on: bool,
@@ -301,8 +265,7 @@ impl Worker {
                 latch.set_goal(*goal);
             }
 
-            // the pose is read here, on the tick, off tf in the frame the plan
-            // is expressed in, so there is none to read before a plan
+            // read per tick in the plan's own frame: no plan, no pose
             let pose = snap.path.as_ref().and_then(|path| {
                 watch.get(
                     &self.tf,
@@ -355,8 +318,7 @@ impl Worker {
                     let path = snap.path.clone().expect("Drive implies a path");
                     let states = msg::path_states(&path);
                     let ts = msg::path_stamps(&path);
-                    // the law decodes the dialect itself; there is no
-                    // clearance array to hand it
+                    // no clearance array: the law decodes the stamps itself
                     let (vx, vy, wz) = hinted_update(pose, &states, None, Some(&ts), &hinted);
                     self.publish_twist(vx, vy, wz).await;
                 }
@@ -384,8 +346,7 @@ mod tests {
 
     #[test]
     fn a_hold_stub_is_a_stop_to_every_law() {
-        // The planner's refusal is one pose, which sits under the laws'
-        // `path.len() < 2` veto: the whole contract the shape rests on.
+        // the refusal is one pose, under the laws' `path.len() < 2` veto
         let held =
             dimos_local_planner::module::planner::hold_stub((1.5, -2.0, 0.0), "odom", 0.0, 0.0);
         let states = msg::path_states(&held);
@@ -429,8 +390,6 @@ mod tests {
         assert!(!latch().arrive((0.0, 0.0)));
     }
 
-    // the goal a path carries
-
     fn path_of(states: &[msg::State]) -> Path {
         msg::build_path(states, &[], 0.0, "odom", 0.0)
     }
@@ -456,8 +415,6 @@ mod tests {
         assert!(!l.arrive((5.0, 5.0)));
     }
 
-    // the tick branch
-
     #[test]
     fn no_pose_or_no_path_is_idle() {
         assert_eq!(decide(None, Some(0.0), 1.0, &mut latch()), Tick::Idle);
@@ -475,7 +432,7 @@ mod tests {
             decide(Some((0.0, 0.0, 0.0)), Some(1.5), 1.0, &mut l),
             Tick::Stale { age_s: 1.5 }
         );
-        // and the boundary is exclusive, so a path exactly at the limit drives
+        // exclusive boundary: exactly at the limit still drives
         assert_eq!(
             decide(Some((0.0, 0.0, 0.0)), Some(1.0), 1.0, &mut l),
             Tick::Drive
@@ -484,9 +441,7 @@ mod tests {
 
     #[test]
     fn a_stale_path_outranks_an_arrival() {
-        // standing on the goal of a plan nobody is refreshing is a
-        // coincidence: the deadman fires and the latch stays unarmed, so a
-        // live plan later still gets its arrival edge
+        // the latch stays unarmed under the deadman, so a live plan later still gets its edge
         let mut l = latch();
         l.set_goal((0.0, 0.0));
         assert_eq!(
@@ -507,14 +462,12 @@ mod tests {
         let at_goal = Some((1.0, 0.0, 0.0));
         assert_eq!(decide(at_goal, Some(0.0), 1.0, &mut l), Tick::Arrived);
         assert_eq!(decide(at_goal, Some(0.0), 1.0, &mut l), Tick::Holding);
-        // and it keeps holding even after the robot drifts off the goal
+        // still holding after drifting off the goal
         assert_eq!(
             decide(Some((0.5, 0.0, 0.0)), Some(0.0), 1.0, &mut l),
             Tick::Holding
         );
     }
-
-    // the law's parameters off the body
 
     fn fixture() -> Emb {
         Emb::fixture()
@@ -524,7 +477,6 @@ mod tests {
     fn the_params_land_every_field_in_the_law() {
         let p = emb::hinted_params(&fixture());
         assert_eq!(p.base.lookahead, 0.35);
-        // the law drives inside the governor's band
         assert_eq!(p.base.min_speed, fixture().min_speed);
         assert_eq!(p.base.max_speed, fixture().max_speed);
         assert_eq!(p.base.speed_lookahead, 2.0);
@@ -535,8 +487,7 @@ mod tests {
 
     #[test]
     fn an_unstamped_path_leaves_the_law_ungoverned_rather_than_creeping() {
-        // a producer that does not speak the dialect must not be read as a
-        // tight corridor; None is the honest answer and the law cruises
+        // an unstamped path is None, not a tight corridor
         let states: Vec<msg::State> = (0..5).map(|k| [k as f64 * 0.2, 0.0, 0.0]).collect();
         let band = emb::hinted_params(&Emb::fixture()).base;
         assert!(crate::stamps::decode_ceilings(&[0.0; 5], &states, &band).is_none());

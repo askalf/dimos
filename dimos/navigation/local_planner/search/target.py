@@ -12,12 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The shipped planner: an SE(2) search whose world model is built from the
-cloud rather than from any ground truth.
-
-Two factories: `make_py` is the python port spec, and `make` adapts the rust crate (dimos_local_planner) — same algorithm, and
-the crate is what runs on a robot.
-"""
+"""The shipped planner: SE(2) search over the cloud. `make_py` is the python
+spec, `make` the rust crate (dimos_local_planner) that runs on the robot."""
 
 from __future__ import annotations
 
@@ -34,7 +30,7 @@ from .base import RESOLUTION, densify_states, pose_stamped, states_of
 from .se2 import COMMIT_MARGIN, PERIOD, SdfGrid, anchor, se2_search
 
 PAD = 1.5
-# Free space around the working area, in whole periods (se2_path's own).
+# Free space around the working area, in whole lattice periods.
 GRID_PAD = 3 * PERIOD
 
 BUILD_CMD = "uv run maturin develop --uv --release --features python -m dimos/navigation/local_planner/rust/Cargo.toml"
@@ -63,8 +59,7 @@ class TargetEpisode:
 
         xs = [pose.x, goal.x] + ([] if not len(band) else [band[:, 0].min(), band[:, 0].max()])
         ys = [pose.y, goal.y] + ([] if not len(band) else [band[:, 1].min(), band[:, 1].max()])
-        # Anchored on the world frame's own lattice, exactly as se2_path is: a
-        # return past the cloud's low corner may add rows, never move a sample.
+        # Anchored on the world lattice: a new return may add rows, never move a sample.
         x0, y0 = anchor(min(xs) - PAD), anchor(min(ys) - PAD)
         x1, y1 = max(xs) + PAD, max(ys) + PAD
         grid = SdfGrid.from_obstacles(
@@ -120,8 +115,6 @@ class RustTargetEpisode:
             self._emb,
             self._res,
             None if inc is None else np.ascontiguousarray(inc, dtype=np.float64),
-            # One copy of the constant, crossing the boundary the way the
-            # envelope does: python owns it, the crate is handed it.
             COMMIT_MARGIN,
             None
             if ground is None

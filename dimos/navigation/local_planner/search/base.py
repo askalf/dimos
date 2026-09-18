@@ -16,8 +16,8 @@
 
 A candidate is a factory `make(emb, resolution) -> PlannerEpisode`. The episode
 is stateful across plan() calls (warm starts, hysteresis live inside it) and
-nothing survives reset(). Honest candidates read only what plan() receives —
-obstacles, pose, goal; the factory sees the embodiment and the waypoint
+nothing survives reset(). Honest candidates read only what plan() receives
+(obstacles, pose, goal); the factory sees the embodiment and the waypoint
 spacing, never a world.
 
 `plan` also takes the route the caller has PUBLISHED, or None on the first call

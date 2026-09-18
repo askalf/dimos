@@ -12,12 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Reading a `PointCloud2` off the wire, safely.
-//!
-//! The wire fields are signed and untrusted: a negative width, a point_step
-//! that overflows the buffer length, an offset past the step. Every count is
-//! range-checked before it indexes anything, so a malformed cloud is an
-//! `ExtractError` for the module to drop, never a panic.
+//! Reading a `PointCloud2` off the wire. Every wire count is signed and untrusted, so each
+//! is range-checked before it indexes; a malformed cloud is an `ExtractError`, never a panic.
 
 use lcm_msgs::sensor_msgs::{PointCloud2, PointField};
 

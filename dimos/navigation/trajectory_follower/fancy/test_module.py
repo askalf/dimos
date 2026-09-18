@@ -33,9 +33,7 @@ from dimos.navigation.trajectory_follower.fancy.module import (
 from dimos.navigation.trajectory_follower.fancy.native import TrajectoryFollowerNativeConfig
 from dimos.protocol.tf.tf import MultiTBuffer
 
-# Followers built by the helper below. The real constructor stands up the module's
-# LCM RPC transport (a run_forever + _lcm_loop daemon pair per instance); these
-# tests exercise pure geometry on top of it, so the fixture hands them back.
+# The real constructor stands up an LCM RPC transport per instance; the fixture stops them.
 _BUILT: list[TrajectoryFollower] = []
 
 
@@ -54,8 +52,7 @@ def test_clearance_is_obstacle_distance_minus_half_width():
 
 
 def test_clearance_reads_every_point_it_is_handed_whatever_its_z():
-    # the model already decided; a floor or ceiling z arriving here means the
-    # model KEPT it, and re-judging it would price a world nobody planned
+    # a floor or ceiling z arriving here means the model kept it
     xy = np.array([[0.0, 0.0]])
     for z in (-0.5, 0.01, 0.2, 0.46, 1.0):
         points = np.array([[0.1, 0.0, z]])
@@ -84,9 +81,6 @@ def test_goal_latch_ignores_sub_tolerance_goal_moves():
     assert latch.reached
     latch.set_goal((3.0, 0.0))  # a new task
     assert not latch.reached
-
-
-# --- the module shell
 
 
 def _follower(**config):
@@ -164,7 +158,7 @@ def test_a_stale_path_outranks_an_arrival():
     follower.step(at_goal, path, age=9.0)
     assert out[-1].linear.x == 0.0
     assert not reached
-    # ...and the same tick against a fresh path IS the arrival
+    # and the same tick against a fresh path is the arrival
     follower.step(at_goal, path, age=0.0)
     assert [m.data for m in reached] == [True]
 

@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Marshalling between dimos messages and the plain arrays the pure crates
-//! take. Both modules share it so a plan cannot be written by one convention
-//! and read back by another.
+//! Marshalling between dimos messages and the plain arrays the pure crates take;
+//! shared by both modules so a plan is written and read by one convention.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,12 +25,8 @@ use lcm_msgs::std_msgs::{Header, Time};
 /// A plan waypoint as the laws and the planner see it: `(x, y, yaw)`.
 pub type State = [f64; 3];
 
-/// Yaw of a quaternion, matching `Quaternion.euler[2]`.
-///
-/// The python goes through `scipy.Rotation.as_euler("xyz")`, extrinsic
-/// x-then-y-then-z, composite `Rz(yaw) Ry(pitch) Rx(roll)`: the ROS
-/// convention, in its closed form. Only the yaw is taken, both modules work
-/// in SE(2).
+/// Yaw of a quaternion, matching `Quaternion.euler[2]` (scipy "xyz" extrinsic, the ROS
+/// convention, closed form).
 pub fn yaw_of(q: &Quaternion) -> f64 {
     let siny = 2.0 * (q.w * q.z + q.x * q.y);
     let cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
@@ -82,12 +77,8 @@ pub fn header(frame_id: &str, ts: f64) -> Header {
     }
 }
 
-/// One plan waypoint as a stamped pose in `frame_id`, on the plane at
-/// `ground_z`.
-///
-/// The search is planar, but `odom` z = 0 is wherever the LIO frame started,
-/// typically a sensor's height above the floor. Stamping the surface the feet
-/// stand on puts the route on the ground; only a viewer reads the z.
+/// One plan waypoint as a stamped pose on the plane at `ground_z`; `odom` z = 0 is
+/// wherever LIO started, and only a viewer reads the z.
 pub fn pose_stamped(state: &State, ts: f64, frame_id: &str, ground_z: f64) -> PoseStamped {
     PoseStamped {
         header: header(frame_id, ts),
@@ -102,10 +93,8 @@ pub fn pose_stamped(state: &State, ts: f64, frame_id: &str, ground_z: f64) -> Po
     }
 }
 
-/// A plan as a nav Path, per-waypoint stamps carrying the precision profile.
-///
-/// `stamps` of the wrong length leaves every pose at `t0`: an unstamped path
-/// to `decode_ceilings`, the honest shape for a plan without a profile.
+/// A plan as a nav Path, per-waypoint stamps carrying the precision profile;
+/// `stamps` of the wrong length leaves every pose at `t0` (unstamped to `decode_ceilings`).
 pub fn build_path(
     states: &[State],
     stamps: &[f64],
@@ -192,8 +181,7 @@ mod tests {
 
     #[test]
     fn stamps_round_trip_through_the_wire_form() {
-        // a real planner t0 is a unix second count, so the nanosecond field is
-        // where the precision profile actually lives
+        // a real t0 is a unix second count, so the profile lives in the nanosecond field
         for ts in [0.0, 1754212345.75, 1754212345.000000001, 7.0] {
             let got = secs_of(&time_of_secs(ts));
             assert!((got - ts).abs() < 1e-6, "{ts} -> {got}");
@@ -202,8 +190,7 @@ mod tests {
 
     #[test]
     fn a_non_finite_stamp_does_not_wrap_around() {
-        // `as i32` on a NaN or an out-of-range float is a saturating cast, but
-        // a zero stamp is the honest "no time" rather than i32::MAX seconds
+        // a saturating `as i32` would give i32::MAX seconds; zero is the honest "no time"
         assert_eq!(time_of_secs(f64::NAN), Time { sec: 0, nsec: 0 });
         assert_eq!(time_of_secs(f64::INFINITY), Time { sec: 0, nsec: 0 });
     }
@@ -216,7 +203,6 @@ mod tests {
         assert_eq!(secs_of(&path.header.stamp), 10.0);
         assert_eq!(path.poses[1].pose.position.x, 1.0);
         assert!((secs_of(&path.poses[1].header.stamp) - 12.0).abs() < 1e-6);
-        // and reads back as the same rows the laws take
         let back = path_states(&path);
         for (a, b) in back.iter().zip(states.iter()) {
             for k in 0..3 {
@@ -227,8 +213,6 @@ mod tests {
 
     #[test]
     fn a_wrong_length_stamp_vector_leaves_the_path_unstamped() {
-        // flat ts is exactly what `decode_ceilings` rejects, which is the
-        // honest signal for "this plan carries no profile"
         let states = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let path = build_path(&states, &[], 5.0, "odom", 0.0);
         assert_eq!(path_stamps(&path), vec![5.0, 5.0]);

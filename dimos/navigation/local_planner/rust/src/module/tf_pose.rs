@@ -12,12 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The base pose off tf, read per tick: the rust twin of `TfPose` in
-//! `dimos/navigation/tf_pose.py`, which is the specification.
-//!
-//! GO2Zenoh publishes `odom -> mid360_link` and the static mounts beside it,
-//! so tf carries `odom -> base_link`. The deadman is on our clock, keyed by
-//! the edge's stamp: it asks how long since tf last moved.
+//! The base pose off tf per tick: rust twin of `dimos/navigation/tf_pose.py::TfPose`.
+//! tf carries `odom -> base_link` (GO2Zenoh publishes `odom -> mid360_link` plus the
+//! static mounts). The deadman is on our clock, keyed by the edge's stamp.
 
 use std::time::Instant;
 
@@ -26,8 +23,7 @@ use dimos_module::{Tf, Transform};
 
 use crate::module::msg::{yaw_of, State};
 
-/// The base as one tick sees it: the planar state, and the height the floor
-/// prior needs.
+/// The planar state, plus the height the floor prior needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BasePose {
     pub state: State,
@@ -88,7 +84,6 @@ fn edge_of(t: Transform) -> (f64, Isometry3<f64>) {
     )
 }
 
-/// The planar `(x, y, yaw)` a full transform implies.
 pub fn state_of(iso: &Isometry3<f64>) -> State {
     let q = iso.rotation.quaternion();
     let yaw = yaw_of(&lcm_msgs::geometry_msgs::Quaternion {
@@ -154,7 +149,6 @@ mod tests {
     #[test]
     fn age_is_measured_on_our_clock_not_the_stamp() {
         let mut watch = PoseWatch::new(2.5);
-        // a robot clock nowhere near ours
         assert!(watch
             .observe(body_at(1.0, 0.0, 0.0), Instant::now())
             .is_some());

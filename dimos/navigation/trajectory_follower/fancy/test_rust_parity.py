@@ -12,15 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The rust controller is a PORT, so the python is its oracle.
+"""The rust controller is a port, so the python is its oracle.
 
-Every branch of the law gets sampled: straight runs, S-curves, fan clusters
-of coincident waypoints, degenerate one/zero-pose paths, clearance annotated
-and bare, poses on/off/behind the path, yaws swept across +-pi. Agreement is
-asserted per component at 1e-9, but the observed spread is exactly zero
-(`test_parity_headroom` pins that separately): the two run the same operations
-in the same order against the same libm, so they agree bit for bit, and any
-drift off zero is a real divergence rather than accumulated noise.
+Agreement is asserted at 1e-9 but the observed spread is exactly zero (`test_parity_headroom`):
+same operations, same order, same libm.
 """
 
 from dataclasses import replace
@@ -87,8 +82,7 @@ def _s_curve(rng: np.random.Generator) -> list[tuple[float, float, float]]:
 
 
 def _with_fans(rng: np.random.Generator) -> list[tuple[float, float, float]]:
-    """An S-curve with coincident-waypoint rotations spliced in: the branch
-    that exercises both fan detection and the yaw-progress advance."""
+    """An S-curve with coincident-waypoint rotations spliced in: fan detection and yaw advance."""
     base = _s_curve(rng)
     out: list[tuple[float, float, float]] = []
     for k, (x, y, yaw) in enumerate(base):
@@ -120,9 +114,7 @@ GENERATORS = (_straight, _s_curve, _with_fans, _with_fans, _degenerate)
 def _cases(seed: int = 20260802, n: int = CASES):  # type: ignore[no-untyped-def]
     """(config, pose, path, clearance) tuples covering every branch."""
     rng = np.random.default_rng(seed)
-    # a SEPARATE stream for the stamps: drawing them from `rng` would shift
-    # every later draw and silently replace the sweep this file's tolerances
-    # were characterised on
+    # a separate stream for the stamps: drawing from `rng` would shift every later draw
     srng = np.random.default_rng(seed + 1)
     for k in range(n):
         states = GENERATORS[k % len(GENERATORS)](rng)
@@ -143,9 +135,7 @@ def _cases(seed: int = 20260802, n: int = CASES):  # type: ignore[no-untyped-def
             clearance = rng.uniform(0.0, 0.8, len(states))
             if k % 8 == 1:  # a wrong-length annotation must be ignored by both
                 clearance = clearance[:-1]
-        # Stamp a share of the paths with the precision profile: it is the
-        # hinted law's governor channel on the robot, and an unstamped path exercises
-        # its fallback. k % 8 == 3 leaves stamps that are deliberate nonsense.
+        # a share of the paths stamped with the precision profile; k % 8 == 3 leaves nonsense
         if k % 3 and len(states) > 1:
             enc = np.clip(srng.uniform(0.0, 0.8, len(states)), 0.0, None)
             encode_precision(path, enc, GO2, t0=float(srng.uniform(0.0, 1e9)))
@@ -153,8 +143,7 @@ def _cases(seed: int = 20260802, n: int = CASES):  # type: ignore[no-untyped-def
                 for q in path.poses:
                     q.ts = 5.0  # flat: not the dialect, both must ignore it
 
-        # non-default gains AND plant every fifth case, so the params tuple
-        # order across the boundary is load-bearing
+        # non-default gains and plant every fifth case: the params tuple order is load-bearing
         emb = GO2
         if k % 5 == 0:
             emb = replace(
@@ -181,7 +170,6 @@ def _cases(seed: int = 20260802, n: int = CASES):  # type: ignore[no-untyped-def
         yield emb.control, pose, path, clearance, emb
 
 
-# every law and its rust twin; each pair is held to TOL independently
 LAWS = {
     "seed": (seed.make, seed.make_rust),
     "hinted": (hinted.make, hinted.make_rust),
@@ -221,14 +209,12 @@ def test_rust_matches_python(law: str) -> None:
 
 @pytest.mark.parametrize("law", sorted(LAWS))
 def test_parity_headroom(law: str) -> None:
-    """Report the real spread: it must sit far under the asserted tolerance."""
     worst = 0.0
     for case in _cases():
         a, b = _twists(law, *case)
         worst = max(worst, max(abs(x - y) for x, y in zip(a, b, strict=True)))
     assert worst <= TOL, f"max component diff {worst:.3e}"
-    # libm hypot/sin/cos are shared between the two, so the only expected
-    # spread is zero; a non-zero worst here is a real divergence to explain
+    # libm is shared, so the only expected spread is zero; non-zero is a real divergence
     assert worst == 0.0, f"unexpected non-zero divergence {worst:.3e}"
 
 
@@ -249,20 +235,13 @@ def test_rust_factories_build() -> None:
 
 
 def test_encode_precision_matches_python() -> None:
-    """The dialect's producer side, the half the planner module runs.
-
-    Same sweep as the laws, because the encoder sees the same paths: fan
-    clusters price by yaw, degenerate paths must not raise, and a
-    wrong-length annotation has to be ignored identically on both sides or a
-    stamped path would decode to a speed the planner never intended.
-    """
+    """The producer side of the dialect; a wrong-length annotation must be ignored identically."""
     rs = load_extension()
     worst = 0.0
-    for case in _cases():  # indexed, not unpacked: `_pose` is taken by the helper
+    for case in _cases():
         path, clearance = case[2], case[3]
         clr = np.asarray([] if clearance is None else clearance, dtype=np.float64)
-        # a t0 well off zero: only the deltas are the dialect, so an offset
-        # that cancels in the diff would hide a divergence in the base stamp
+        # a t0 well off zero: an offset that cancels in the diff would hide a base-stamp divergence
         t0 = 1754212345.75
         want = [p.ts for p in encode_precision(path, clr, GO2, t0=t0).poses]
         got = rs.encode_precision(path_xy_yaw(path), clr if len(clr) else None, t0, GOVERNOR)
@@ -274,21 +253,14 @@ def test_encode_precision_matches_python() -> None:
 
 
 def test_path_clearance_matches_scipy() -> None:
-    """The room hint, against the cKDTree the python uses.
-
-    Only the DISTANCE crosses this boundary, never which point produced it,
-    so the rust is free to use a grid where the python uses a KD-tree: an
-    exact nearest-neighbour distance is unique even when the nearest point is
-    not. Agreement here is therefore exact, not approximate.
-    """
+    """The room hint against the python cKDTree; only the distance crosses, so it is exact."""
     rs = load_extension()
     rng = np.random.default_rng(20260803)
     for case in range(60):
-        # spreads either side of the rust grid's cell size, so both the
-        # first-ring hit and the long ring walk are covered
+        # spreads either side of the rust grid's cell size
         spread = (0.05, 0.5, 5.0, 40.0)[case % 4]
         pts = rng.uniform(-spread, spread, size=(1 + case * 7, 3)).astype(np.float32)
-        # spread over z, which neither side reads: the model already decided
+        # z is read by neither side: the model already decided
         pts[:, 2] = rng.uniform(-0.2, 0.7, size=len(pts)).astype(np.float32)
         xy = rng.uniform(-spread, spread, size=(12, 2))
 
@@ -296,7 +268,5 @@ def test_path_clearance_matches_scipy() -> None:
         got = np.asarray(rs.path_clearance(np.ascontiguousarray(xy), pts, 0.25))
         assert got.shape == want.shape
         for k, (a, b) in enumerate(zip(want, got, strict=True)):
-            # equality, not a difference: infinite room is a real value here
-            # (an empty band means nothing can touch the body) and inf - inf
-            # is nan, which would pass a tolerance check by accident
+            # equality, not a difference: inf - inf is nan and would pass a tolerance check
             assert a == b, f"case {case} waypoint {k}: python {a!r} vs rust {b!r}"

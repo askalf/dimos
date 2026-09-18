@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! One pyfunction per law. A new law gets a new entry point rather than a
-//! flag on an existing one: the signatures differ (a law marshals only the
-//! inputs it reads) and the baseline's binding must not shift when a
-//! generation lands.
+//! One pyfunction per law: signatures differ (a law marshals only what it reads) and
+//! the baseline's binding must not shift when a new law lands.
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -29,8 +27,7 @@ use crate::laws::hinted::update as hinted_impl;
 use crate::laws::seed::update as seed_impl;
 use crate::stamps;
 
-/// The body as `Embodiment` dumps it: one JSON dict, the same string the
-/// planner crate and the native modules take.
+/// `Embodiment.to_json()`, the same string the planner crate and the native modules take.
 fn emb_of(emb: &str) -> PyResult<Emb> {
     serde_json::from_str(emb)
         .map_err(|e| PyValueError::new_err(format!("emb is not an Embodiment: {e}")))
@@ -49,16 +46,13 @@ fn rows_of(path: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<[f64; 3]>> {
         .collect())
 }
 
-// copied rather than borrowed as a slice: a strided or non-contiguous view
-// has no slice, and these are one float per waypoint
+// copied, not borrowed: a strided view has no slice
 fn vec_of(a: Option<&PyReadonlyArray1<'_, f64>>) -> Option<Vec<f64>> {
     a.map(|v| v.as_array().iter().copied().collect())
 }
 
-/// One tick of the seed law. `path` is an (N, 3) float64 array of (x, y, yaw)
-/// in the pose's frame; `clearance` is an optional length-N float64 room
-/// annotation (any other length is ignored, as in the python); `emb` the
-/// body as JSON. Returns the body-frame twist (vx, vy, wz).
+/// `path` is (N, 3) float64 (x, y, yaw) in the pose's frame, `clearance` an optional
+/// length-N room annotation (other lengths ignored), `emb` the body as JSON.
 #[pyfunction]
 #[pyo3(signature = (pose, path, clearance, emb))]
 fn update_seed(
@@ -75,9 +69,8 @@ fn update_seed(
     Ok(py.allow_threads(|| seed_impl(pose, &rows, clr.as_deref(), &cfg)))
 }
 
-/// One tick of the hinted law. As `update_seed`, plus `ts`, the optional
-/// length-N vector of the path's own per-waypoint stamps carrying the
-/// planner's required-precision profile (see `stamps::decode_ceilings`).
+/// As `update_seed`, plus `ts`: the path's per-waypoint stamps carrying the
+/// required-precision profile (`stamps::decode_ceilings`).
 #[pyfunction]
 #[pyo3(signature = (pose, path, clearance, ts, emb))]
 fn update_hinted(
@@ -95,9 +88,7 @@ fn update_hinted(
     Ok(py.allow_threads(|| hinted_impl(pose, &rows, clr.as_deref(), stamps.as_deref(), &cfg)))
 }
 
-/// The planner's side of the stamp dialect: per-waypoint timestamps carrying
-/// the required-precision profile. Twin of `profile.encode_precision`; on the
-/// robot the planner module calls the rust directly.
+/// Twin of `profile.encode_precision`: per-waypoint stamps carrying the profile.
 #[pyfunction]
 #[pyo3(signature = (path, clearance, t0, emb))]
 fn encode_precision(
@@ -109,16 +100,13 @@ fn encode_precision(
 ) -> PyResult<Vec<f64>> {
     let gov = governor(&emb_of(emb)?);
     let rows = rows_of(&path)?;
-    // no clearance and a wrong-length clearance are the same case to the
-    // encoder, so the empty vec stands in for both
+    // missing and wrong-length clearance are the same case to the encoder
     let clr = vec_of(clearance.as_ref()).unwrap_or_default();
     Ok(py.allow_threads(|| stamps::encode_precision(&rows, &clr, t0, &gov)))
 }
 
-/// Per-waypoint room hint. `xy` is (N, 2) float64 waypoints, `points` the
-/// obstacle model's (M, 3) float32 hard set (every row counts, z unread).
-/// Twin of the python's `cKDTree` version; on the robot both modules call the
-/// rust directly.
+/// Twin of the python `cKDTree` version. `xy` is (N, 2) float64 waypoints, `points`
+/// the (M, 3) float32 hard set (every row counts, z unread).
 #[pyfunction]
 #[pyo3(signature = (xy, points, half_width))]
 fn path_clearance(

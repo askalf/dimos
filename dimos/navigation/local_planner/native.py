@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""LocalPlannerNative: the rust twin of :mod:`.planner`.
+"""LocalPlannerNative: the rust twin of :mod:`.module`, same ports, wire and defaults.
 
-Same ports, same wire, same defaults, and no python in the replan tick, so it
-can run on the robot beside the follower. :mod:`.planner` stays the reference
-implementation. The one config field that does not cross is ``planner``: the
-deployed module is the rust target planner.
+:mod:`.module` stays the reference. The one config field that does not cross is
+``planner``: the deployed module is the rust target planner.
 """
 
 from __future__ import annotations
@@ -36,7 +34,6 @@ from dimos.navigation.local_planner.search.base import RESOLUTION
 
 
 def _default(field: str) -> Any:
-    """The python planner's default for a field the native twin shares."""
     return LocalPlannerConfig.model_fields[field].default
 
 
@@ -47,16 +44,11 @@ class LocalPlannerNativeConfig(NativeModuleConfig):
     stdin_config: bool = True
     cli_exclude: frozenset[str] = frozenset({"embodiment"})
 
-    # Every field below crosses to the rust struct verbatim, and every one of
-    # them must: a native config has no rust-side defaults, so a field added
-    # there and not here fails startup with `missing [...]`. Defaults are the
-    # python module's own, read off its config so the twins cannot drift
-    # (test_planner.py asserts it).
+    # Every field crosses to rust verbatim and rust has no defaults, so a field missing
+    # here fails startup. Defaults are read off the python config (test_planner.py).
     embodiment: Embodiment = _default("embodiment")
     body_dilate_m: float = _default("body_dilate_m")
     unseen_cost: float = _default("unseen_cost")
-    # planners/base.py RESOLUTION; here it crosses explicitly, because the rust
-    # planner has no python default to read.
     resolution: float = RESOLUTION
     replan_hz: float = _default("replan_hz")
     goal_lookahead_m: float = _default("goal_lookahead_m")
@@ -76,8 +68,7 @@ class LocalPlannerNative(NativeModule, spec.MapLocalPlanner):
 
     local_map: In[PointCloud2]
     planner_path: In[Path]
-    # IO, not In: `#[tf]` both subscribes and publishes, and the rust side
-    # refuses to start unless the topic map matches the ports it claims.
+    # IO, not In: rust `#[tf]` subscribes and publishes, and refuses to start on a mismatch.
     tf: IO[TFMessage]
 
     path: Out[Path]

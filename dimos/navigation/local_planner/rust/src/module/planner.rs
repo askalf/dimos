@@ -12,18 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `local_planner`: the SE(2) local planner as a robot-side module.
-//!
-//! A port of `adapter/planner.py`, which is the specification. The raycaster's
-//! `local_map` is the cloud, the `world_frame -> base_frame` edge on tf is the
-//! pose (read per tick, `tf_pose.rs`), and the goal is a carrot: `goal_lookahead_m`
-//! of arc along the MLS global route (`planner_path`), clamped to its end. A
-//! spawned worker ticks on a fixed cadence but replans only when an input that
-//! matters has changed, and publishes the result as a stamped nav Path.
-//!
-//! A refusal comes out as the planner made it: a single-pose stub, which the
-//! follower reads as "hold". The staleness guard publishes the same shape,
-//! since a quiet map and a failed search both mean no safe way forward.
+//! The SE(2) local planner as a robot-side module; `adapter/planner.py` is the spec. Cloud from
+//! `local_map`, pose from tf (`world_frame -> base_frame`), goal a carrot `goal_lookahead_m`
+//! along `planner_path`. A refusal or a stale map publishes a one-pose hold stub.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -41,26 +32,19 @@ use crate::module::msg;
 use crate::module::obstacles::{self, ObstacleModel};
 use crate::module::tf_pose::PoseWatch;
 
-/// Mirrors `LocalPlannerConfig` (adapter/planner.py). The python `planner`
-/// registry field deliberately does not cross: this module IS the rust target
-/// planner, and a wrapper that wants a different one is not this module.
+/// Mirrors `LocalPlannerConfig` (adapter/planner.py); the python `planner` registry
+/// field does not cross, this module is the rust target planner.
 #[native_config]
 #[derive(Clone)]
 #[validate(schema(function = "validate_obstacle_model"))]
 pub struct Config {
-    /// The body, as `embodiment/base.py` records it: the python module's
-    /// own value, so the two halves cannot plan for different robots.
+    /// The python module's own value (`embodiment/base.py`), so both halves plan the same robot.
     pub embodiment: Emb,
-    /// Every planning box grown by this much PER SIDE; negative shrinks it,
-    /// which is how a deployment asks for a tighter plan than the measured
-    /// legs. A gap admits a route when it is `box_width + 2 * precision` wide.
+    /// Growth of every planning box per side (m); negative shrinks.
     pub body_dilate_m: f64,
-    /// Price multiplier per metre over a lattice cell no floor return was seen
-    /// under: the search skirts unexplored terrain rather than crossing it, and
-    /// still crosses it when nothing else reaches the goal. <= 1 turns it off.
+    /// Price multiplier per metre over lattice cells with no floor return; <= 1 turns it off.
     pub unseen_cost: f64,
-    /// Plan discretisation (m). The python takes it from
-    /// `planners/base.py RESOLUTION`; here it crosses explicitly.
+    /// Plan discretisation (m); the python reads `planners/base.py RESOLUTION`.
     #[validate(range(exclusive_min = 0.0))]
     pub resolution: f64,
     #[validate(range(exclusive_min = 0.0))]
@@ -68,29 +52,22 @@ pub struct Config {
     /// Carrot arc along the global route.
     #[validate(range(exclusive_min = 0.0))]
     pub goal_lookahead_m: f64,
-    /// The pose is the `world_frame -> base_frame` edge on tf, read each tick.
-    /// Ticks wait until it resolves, and once its stamp stops advancing for
-    /// `max_map_age_s` it counts as missing again.
+    /// The pose is the `world_frame -> base_frame` tf edge; it counts as missing
+    /// again once its stamp stalls for `max_map_age_s`.
     pub world_frame: String,
     pub base_frame: String,
-    /// Plan only on a new local map or a moved carrot, not on every tick of
-    /// the clock.
+    /// Plan only on a new local map or a moved carrot.
     pub replan_on_change: bool,
-    /// How far the carrot has to move to be worth re-solving for. The route is
-    /// republished at ~1 Hz with its head trimmed and tail re-solved, so the
-    /// waypoints move every time and the carrot does not.
-    ///
+    /// Carrot movement worth re-solving for; MLS republishes at ~1 Hz with the
+    /// waypoints moving and the carrot not.
     #[validate(range(min = 0.0))]
     pub replan_carrot_m: f64,
-    /// A carrot that jumped this far is a different task: the held route is
-    /// dropped and the next search starts from nothing.
+    /// A carrot jump beyond this drops the held route.
     #[validate(range(min = 0.0))]
     pub reset_carrot_m: f64,
-    /// What counts as an obstacle (`obstacles.rs`). "body_band" reads the cloud
-    /// against the surface the feet stand on, which the embodiment knows the
-    /// base's height above.
+    /// What counts as an obstacle (`obstacles.rs`).
     pub obstacle_model: String,
-    /// Hold once the local map is this old, measured from ARRIVAL.
+    /// Hold once the local map is this old, measured from arrival.
     #[validate(range(exclusive_min = 0.0))]
     pub max_map_age_s: f64,
 }
@@ -104,15 +81,13 @@ fn validate_obstacle_model(config: &Config) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// Everything the handlers record and the worker reads. Only the newest of
-/// each is kept: a replan is a fresh look at the world, never a queue.
+/// Newest of each input; a replan is a fresh look at the world, never a queue.
 #[derive(Default)]
 struct Shared {
     cloud: Option<Arc<PointCloud2>>,
     /// Bumped per arrival so the worker can cache the extracted points.
     cloud_seq: u64,
-    /// ARRIVAL, not `msg.ts`: the mapper's clock is not the robot's, and what
-    /// this guards is how long since the mapper was last heard from.
+    /// Arrival time, not `msg.ts`: the mapper's clock is not the robot's.
     cloud_at: Option<Instant>,
     global_xy: Option<Vec<[f64; 2]>>,
 }
@@ -161,8 +136,7 @@ impl LocalPlanner {
         }
     }
 
-    // Handlers do nothing but record. Anything slower would back up every
-    // other input of this module, and the replan is the slow part.
+    // Handlers only record; the replan is the slow part and lives on the worker.
 
     async fn on_local_map(&mut self, msg: PointCloud2) {
         let mut s = self.shared.lock().expect("shared mutex");
@@ -171,8 +145,7 @@ impl LocalPlanner {
         s.cloud_at = Some(Instant::now());
     }
 
-    /// MLS emits an empty path when it finds no route (a cancelled goal
-    /// included): no carrot, and the next tick clears what was published.
+    /// MLS emits an empty path when it finds no route; the next tick clears what was published.
     async fn on_planner_path(&mut self, msg: Path) {
         let xy: Vec<[f64; 2]> = msg
             .poses
@@ -184,11 +157,11 @@ impl LocalPlanner {
     }
 }
 
-/// `lookahead` metres of arc along the route from the waypoint closest to the
-/// robot, clamped to the route's end. A port of `planner.carrot_along`.
+/// `lookahead` metres of arc from the waypoint closest to the robot, clamped to
+/// the route's end; port of `planner.carrot_along`.
 pub fn carrot_along(route: &[[f64; 2]], robot: (f64, f64), lookahead: f64) -> Option<(f64, f64)> {
     let last = route.last()?;
-    // np.argmin keeps the FIRST minimum on a tie
+    // np.argmin keeps the first minimum on a tie
     let mut i = 0usize;
     let mut best = f64::INFINITY;
     for (k, p) in route.iter().enumerate() {
@@ -211,11 +184,8 @@ pub fn carrot_along(route: &[[f64; 2]], robot: (f64, f64), lookahead: f64) -> Op
     Some((last[0], last[1]))
 }
 
-/// Has an input the plan depends on moved since the plan was made?
-///
-/// The plan consumes the global route through exactly one quantity, the
-/// carrot, so that is what the gate compares. The waypoint array moves on
-/// every ~1 Hz republish while the carrot does not.
+/// Has an input the plan depends on moved? The route enters only through the
+/// carrot, so that is what is compared.
 pub fn replan_due(
     gate: bool,
     planned: Option<(u64, (f64, f64))>,
@@ -234,15 +204,13 @@ pub fn replan_due(
     }
 }
 
-/// What one tick of the replan loop should do. The python `_plan_loop`'s
-/// three-way branch, lifted out of the loop so it can be tested without a
-/// transport.
+/// One tick's branch of the replan loop, the python `_plan_loop`'s three-way,
+/// lifted out so it tests without a transport.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tick {
-    /// The map has gone quiet. Refuse, and say so once.
+    /// The map has gone quiet: refuse.
     Hold { age_s: f64 },
-    /// The global route is gone while a plan is out there: publish an empty
-    /// path, which the follower reads as stop, and forget the plan.
+    /// The route is gone while a plan is out: publish an empty path, forget the plan.
     Clear,
     /// Everything the search needs has arrived.
     Plan,
@@ -258,26 +226,22 @@ pub fn decide(
     max_map_age_s: f64,
 ) -> Tick {
     match (has_pose, cloud_age_s) {
-        // The stale branch comes FIRST and needs no route: a frozen map at
-        // cruise speed is the failure this guards, and waiting for a global
-        // route before refusing would leave the follower on the last plan.
+        // Stale outranks everything and needs no route: a frozen map at cruise
+        // speed is the failure this guards.
         (true, Some(age)) if age > max_map_age_s => Tick::Hold { age_s: age },
-        // A clear needs neither pose nor map: it is about the route, and it
-        // fires once because it is what turns `published` off.
+        // A clear needs neither pose nor map; it fires once because it turns `published` off.
         _ if !has_route && published => Tick::Clear,
         (true, Some(_)) if has_route => Tick::Plan,
         _ => Tick::Wait,
     }
 }
 
-/// The planner's refusal: one pose at where the robot is, which every law
-/// reads as "there is nothing to follow, hold position".
+/// The planner's refusal: one pose at the robot, which every law reads as hold.
 pub fn hold_stub(pose: (f64, f64, f64), frame_id: &str, ts: f64, ground_z: f64) -> Path {
     msg::build_path(&[[pose.0, pose.1, pose.2]], &[ts], ts, frame_id, ground_z)
 }
 
-/// Edge trigger for the stale spell, so a dead map warns once rather than
-/// `replan_hz` times a second for as long as it stays dead.
+/// Edge trigger so a dead map warns once per spell, not `replan_hz` times a second.
 #[derive(Default)]
 pub struct StaleGate {
     stale: bool,
@@ -295,14 +259,8 @@ impl StaleGate {
     }
 }
 
-/// One search plus the precision annotation: `planner.py::_plan_once` and
-/// `planner.py::annotate`, in that order.
-///
-/// Free rather than a method so it can be exercised with no transport, which
-/// is the whole reason the async shell above stays as thin as it is.
-// The argument list IS the module's own state, laid out: everything the search
-// reads, named at the call. A struct would only move the same names one
-// indirection away from it.
+/// One search plus the precision annotation: `planner.py::_plan_once` then
+/// `planner.py::annotate`. Free so it runs with no transport.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_once(
     config: &Config,
@@ -316,10 +274,7 @@ pub fn plan_once(
 ) -> Path {
     let started = Instant::now();
     let t0 = msg::now_secs();
-    // The search gets the obstacles, as xy: which returns are obstacles was
-    // decided here, by the model, and the search has no z to decide it again
-    // with. The follower's room hint is measured off the very same points, so
-    // the governor and the stamped profile cannot be pricing different worlds.
+    // The model decides which returns are obstacles; the search only sees xy.
     let hard = obstacles::hard_points(model, points, ground_z);
     let ground = obstacles::ground_points(points, ground_z);
     let points: &[[f32; 3]] = &hard;
@@ -344,9 +299,7 @@ pub fn plan_once(
             return hold_stub(pose, &config.world_frame, t0, ground_z);
         }
     };
-    // The room hint the follower's governor reads back out of the stamps has
-    // to be the same quantity, measured off the same cloud, or the plan is
-    // priced for a world the follower does not see.
+    // Room is measured off the same points the search saw, or the stamps price a different world.
     let xy: Vec<[f64; 2]> = states.iter().map(|s| [s[0], s[1]]).collect();
     let room = clearance::path_clearance(&xy, points, emb::half_width(emb));
     let ts = stamps::encode_precision(&states, &room, t0, &emb::governor(emb));
@@ -380,9 +333,7 @@ impl Worker {
     async fn run(self) {
         let mut ticker =
             tokio::time::interval(Duration::from_secs_f64(1.0 / self.config.replan_hz));
-        // A tick missed because a replan overran is a tick that is gone; firing
-        // the backlog immediately afterwards would only make the next one late
-        // too.
+        // A tick lost to an overrunning replan is gone; a burst afterwards makes the next late.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let mut gate = StaleGate::default();
@@ -390,26 +341,21 @@ impl Worker {
         let mut points: Option<(u64, Arc<Vec<[f32; 3]>>)> = None;
         // The (cloud, carrot) the published plan was made from.
         let mut planned: Option<(u64, (f64, f64))> = None;
-        // ...and the plan itself. The search prefers the route it already
-        // published unless a fresh one earns the switch, and this module is
-        // where that memory lives: the shell owns it, the planner judges it.
+        // The published plan; the search keeps it unless a fresh one earns the switch.
         let mut incumbent: Option<Vec<[f64; 3]>> = None;
-        // Whether a path is out there for the follower to act on.
         let mut published = false;
 
         loop {
             ticker.tick().await;
             let now = Instant::now();
             let snap = self.snapshot(now);
-            // the pose is read here, on the tick, straight off tf
             let pose = watch.get(
                 &self.tf,
                 &self.config.world_frame,
                 &self.config.base_frame,
                 now,
             );
-            // the surface under the robot, off the BODY rather than off the
-            // scene: the base rides `Emb::base_height` above it
+            // the ground is `Emb::base_height` under the body, not read off the scene
             let ground_z = pose.map(|p| p.z - self.config.embodiment.base_height);
             let pose = pose.map(|p| (p.state[0], p.state[1], p.state[2]));
             match decide(
@@ -427,11 +373,8 @@ impl Worker {
                             "local_map is stale, holding"
                         );
                     }
-                    // A hold is not gated: it is a statement about the CLOCK,
-                    // and nothing arriving is exactly the case it fires on.
-                    // Forget what was planned so the first live tick plans, and
-                    // what was published with it: a route held across a dead
-                    // link is a route nothing has re-validated.
+                    // A hold is not change-gated: it is about the clock. Forget the plan
+                    // and the incumbent, a route held across a dead link is unvalidated.
                     planned = None;
                     incumbent = None;
                     let pose = pose.expect("Hold implies a pose");
@@ -459,8 +402,6 @@ impl Worker {
                     }
                     let pose = pose.expect("Plan implies a pose");
                     let route = snap.route.expect("Plan implies a route");
-                    // the carrot is the whole of the route the plan consumes,
-                    // so it is taken every tick and the gate reads it
                     let Some(goal) =
                         carrot_along(&route, (pose.0, pose.1), self.config.goal_lookahead_m)
                     else {
@@ -475,17 +416,15 @@ impl Worker {
                     ) {
                         continue;
                     }
-                    // A carrot that jumped is a different task, and the route
-                    // being held is about the old one.
+                    // A carrot that jumped is a different task; the held route is the old one's.
                     if planned.is_some_and(|(_, was)| {
                         (was.0 - goal.0).hypot(was.1 - goal.1) > self.config.reset_carrot_m
                     }) {
                         incumbent = None;
                     }
                     let cloud = snap.cloud.expect("Plan implies a cloud");
-                    // The search is the expensive call in this process, and it
-                    // is synchronous. block_in_place keeps it off the runtime's
-                    // async workers, which is why the module asks for 2 threads.
+                    // The search is synchronous; block_in_place keeps it off the async
+                    // workers, hence the module's 2 threads.
                     let produced = tokio::task::block_in_place(|| {
                         let pts = self.points(&cloud, snap.cloud_seq, &mut points)?;
                         Some(plan_once(
@@ -600,8 +539,6 @@ mod tests {
 
     #[test]
     fn carrot_never_walks_backwards_past_the_robot() {
-        // the arc starts at the nearest waypoint, so a robot at the far end
-        // gets the end, not a point behind it
         let r = route(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
         assert_eq!(carrot_along(&r, (2.0, 0.0), 1.0), Some((2.0, 0.0)));
     }
@@ -619,8 +556,6 @@ mod tests {
         assert_eq!(got, (1.0, 0.0));
     }
 
-    // the tick branch
-
     #[test]
     fn a_stale_map_holds_even_with_everything_else_present() {
         assert_eq!(
@@ -631,8 +566,7 @@ mod tests {
             decide(true, Some(7.0), false, false, 5.0),
             Tick::Hold { age_s: 7.0 }
         );
-        // ...and outranks a clear: both stop the robot, and the hold is the
-        // one that says why
+        // and outranks a clear: both stop the robot, the hold says why
         assert_eq!(
             decide(true, Some(7.0), false, true, 5.0),
             Tick::Hold { age_s: 7.0 }
@@ -654,11 +588,9 @@ mod tests {
 
     #[test]
     fn a_missing_input_waits_rather_than_holding() {
-        // no pose is "not running yet", not "the map died": publishing a
-        // hold stub would need a pose to put it at anyway
+        // no pose is "not running yet", not "the map died"
         assert_eq!(decide(false, Some(9.0), true, false, 5.0), Tick::Wait);
         assert_eq!(decide(true, None, true, false, 5.0), Tick::Wait);
-        // no route and nothing ever published: nothing to clear either
         assert_eq!(decide(true, Some(0.2), false, false, 5.0), Tick::Wait);
     }
 
@@ -666,8 +598,6 @@ mod tests {
     fn the_age_boundary_is_exclusive() {
         assert_eq!(decide(true, Some(5.0), true, false, 5.0), Tick::Plan);
     }
-
-    // the refusal shape
 
     #[test]
     fn a_hold_stub_is_one_pose_at_the_robot() {
@@ -680,8 +610,6 @@ mod tests {
         assert!((yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
     }
 
-    // the log gates
-
     #[test]
     fn the_stale_gate_fires_once_per_spell() {
         let mut gate = StaleGate::default();
@@ -692,8 +620,6 @@ mod tests {
         assert!(!gate.recover()); // a live map does not announce itself
         assert!(gate.enter()); // and a second spell warns again
     }
-
-    // the annotation, end to end
 
     fn config() -> Config {
         Config {
@@ -717,14 +643,12 @@ mod tests {
         Emb::fixture()
     }
 
-    /// The model a config names, for the plan_once calls below.
     fn model(cfg: &Config) -> Box<dyn ObstacleModel> {
         obstacles::load(&cfg.obstacle_model, &cfg.embodiment).expect("known model")
     }
 
     #[test]
     fn a_planned_path_carries_monotone_stamps() {
-        // open floor: the search runs and the profile prices every segment
         let cfg = config();
         let produced = plan_once(
             &cfg,
@@ -755,9 +679,6 @@ mod tests {
 
     #[test]
     fn a_tighter_world_stamps_a_slower_plan() {
-        // the annotation is the point of the module: the same route through a
-        // narrower gap has to come out priced slower, or the follower's
-        // governor is reading nothing
         let cfg = config();
         let gap = |half: f32| {
             let mut pts = Vec::new();
@@ -835,8 +756,6 @@ mod tests {
 
     #[test]
     fn a_wall_over_the_body_is_not_a_wall() {
-        // the band has a ceiling: the same wall, lifted over the belly, stops
-        // being an obstacle at all
         let mut walls = Vec::new();
         let mut t = -1.0f32;
         while t <= 1.0 {
@@ -861,22 +780,17 @@ mod tests {
         assert!(produced.poses.len() > 1, "an overhead wall is not a wall");
     }
 
-    // the obstacle model
-
-    /// A sealed box on a ground surface at `ground_z`, the whole thing sunk so
-    /// the map's z origin is base height rather than the ground (the
-    /// recording's case).
+    /// A sealed box on a floor at `ground_z`, so the map's z origin is base height, not the ground.
     fn room_on_a_floor(ground_z: f32) -> Vec<[f32; 3]> {
         let mut pts = Vec::new();
         let mut t = -2.0f32;
         while t <= 2.0 {
             let mut u = -2.0f32;
             while u <= 2.0 {
-                pts.push([t, u, ground_z]); // the ground slab
+                pts.push([t, u, ground_z]);
                 u += 0.08;
             }
-            // walls, standing 0.10..0.30 m above that ground: entirely under
-            // the absolute 0.05..0.45 band once the ground is at -0.28
+            // walls 0.10..0.30 m above the ground: under the absolute 0.05..0.45 band at -0.28
             for k in 1..=3 {
                 let z = ground_z + 0.1 * k as f32;
                 pts.push([-1.0, t, z]);
@@ -892,8 +806,7 @@ mod tests {
     #[test]
     fn the_body_band_reads_the_walls_off_the_body_reference() {
         let room = room_on_a_floor(-0.28);
-        // the walls sit under an absolute band; off the body's own reference
-        // the same room is a sealed box
+        // under an absolute band the walls are invisible; off the body reference the room is sealed
         let cfg = Config {
             obstacle_model: "body_band".into(),
             ..config()
@@ -911,13 +824,8 @@ mod tests {
         assert_eq!(seen.poses.len(), 1, "the walls are still invisible");
     }
 
-    /// The latent bug the planar search contract closes, twin of
-    /// `adapter/test_planner.py::test_a_tall_body_plans_around_what_the_old_band_cut_off`.
-    ///
-    /// A 0.55 m wall is inside a 0.60 m body's band and outside the absolute
-    /// 0.05..0.45 one. While the search re-sliced that band on its way in, it
-    /// dropped the very points the model had correctly kept, and the body
-    /// drove straight through them.
+    /// Twin of `adapter/test_planner.py::test_a_tall_body_plans_around_what_the_old_band_cut_off`:
+    /// a 0.55 m wall is inside a 0.60 m body's band and outside the absolute 0.05..0.45 one.
     #[test]
     fn a_tall_body_plans_around_what_the_old_band_cut_off() {
         let mut wall: Vec<[f32; 3]> = Vec::new();
@@ -954,7 +862,7 @@ mod tests {
             detour(tall_model.as_ref()) > 0.8,
             "the tall body drove through its own obstacle"
         );
-        // and the control: the same wall IS over a go2's belly, so it is not a wall
+        // control: the same wall is over a go2's belly, so it is not a wall
         let cfg = config();
         let fixture_model = model(&cfg);
         assert!(obstacles::hard_points(fixture_model.as_ref(), &wall, 0.0).is_empty());
@@ -963,8 +871,7 @@ mod tests {
 
     #[test]
     fn the_body_band_drops_the_ground_slab_rather_than_walling_the_robot_in() {
-        // the +0.29 counterfactual in the diagnosis: quantisation puts the
-        // ground's own layer just inside a naive band, and every tick refuses
+        // quantisation puts the ground's own layer just inside a naive band
         let cfg = Config {
             obstacle_model: "body_band".into(),
             ..config()
@@ -993,8 +900,6 @@ mod tests {
         );
         assert!(produced.poses.len() > 1, "the ground read as a wall");
     }
-
-    // the replan gate
 
     const CARROT_M: f64 = 0.2;
 
@@ -1029,8 +934,6 @@ mod tests {
 
     #[test]
     fn a_republished_route_moves_the_carrot_by_nothing_and_is_not_a_replan() {
-        // MLS trims the route head to the robot and re-solves the tail on
-        // every ~1 Hz republish: the waypoints move, the carrot does not
         assert!(!replan_due(
             true,
             Some((7, (2.0, 0.0))),

@@ -12,18 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The room hint's cases, and the proof that its grid is exact.
-//!
-//! The grid exists for speed on the robot, so the test that matters is not any
-//! particular scenario but that it never disagrees with brute force. Brute
-//! force IS the definition of the nearest-neighbour distance, and the python
-//! reaches the same answer via `cKDTree`, so agreement here plus agreement
-//! against scipy (`control/test_rust_parity.py`) pins the port from both ends.
+//! The room hint's cases, and the proof that its grid never disagrees with brute force.
+//! Brute force is the definition; `control/test_rust_parity.py` pins the same answer against scipy.
 
 use dimos_trajectory_follower::clearance::path_clearance;
 
-/// Deterministic pseudo-random floats: a plain LCG, because the crate's
-/// dependencies stay at pyo3/numpy and a seeded sweep needs no more than this.
+/// Seeded LCG: the crate's dependencies stay at pyo3/numpy.
 struct Rng(u64);
 
 impl Rng {
@@ -58,8 +52,7 @@ fn brute(xy: &[[f64; 2]], points: &[[f32; 3]], half_width: f64) -> Vec<f64> {
 fn the_grid_never_disagrees_with_brute_force() {
     let mut rng = Rng(0x5eed);
     for case in 0..200 {
-        // spreads from far tighter than one cell to far wider than one, so
-        // both the first-ring hit and the long ring walk are exercised
+        // tighter and wider than one cell: first-ring hits and long ring walks
         let spread = [0.05, 0.5, 5.0, 40.0][case % 4];
         let n_points = 1 + case * 3;
         let points: Vec<[f32; 3]> = (0..n_points)
@@ -89,8 +82,7 @@ fn the_grid_never_disagrees_with_brute_force() {
 
 #[test]
 fn a_query_far_outside_the_cloud_still_terminates() {
-    // the ring walk has to stop on its own once it has outgrown the grid,
-    // rather than spiralling out over an empty plane
+    // the ring walk must stop once it outgrows the grid
     let points = vec![[0.0f32, 0.0, 0.2]];
     let got = path_clearance(&[[1000.0, -1000.0]], &points, 0.0);
     let want = (1000.0f64 * 1000.0 + 1000.0 * 1000.0).sqrt();
@@ -99,26 +91,19 @@ fn a_query_far_outside_the_cloud_still_terminates() {
 
 #[test]
 fn every_point_handed_in_takes_room_away_whatever_its_z() {
-    // The model already decided; a floor-height or overhead z reaching this
-    // function means the model KEPT it, and re-judging it here would take the
-    // hint back off the world the plan was priced against.
+    // the model already decided; re-judging z here would take the hint off the world the plan was priced on
     let q = [[0.0, 0.0]];
-    // Compared against the f32 widened to f64, not against 0.1: the cloud
-    // arrives as f32 and 0.1f32 is 0.10000000149..., so testing against the
-    // f64 literal would be asserting that the widening is lossless, which it
-    // is not.
+    // compared against the widened f32: 0.1f32 is not 0.1
     for z in [-0.5f32, 0.0, 0.04, 0.2, 0.46, 2.0] {
         let pts = vec![[0.1f32, 0.0, z]];
         assert_eq!(path_clearance(&q, &pts, 0.0)[0], 0.1f32 as f64, "z {z}");
     }
-    // Nothing at all is still infinite room.
     assert_eq!(path_clearance(&q, &[], 0.0)[0], f64::INFINITY);
 }
 
 #[test]
 fn the_body_is_subtracted_and_may_go_negative() {
-    // room is measured from the body's edge, so a point already inside the
-    // footprint reports negative; the governor floors it, this must not
+    // inside the footprint is negative; the governor floors it, this must not
     let q = [[0.0, 0.0]];
     let points = vec![[0.1f32, 0.0, 0.2]];
     assert_eq!(path_clearance(&q, &points, 0.25)[0], 0.1f32 as f64 - 0.25);

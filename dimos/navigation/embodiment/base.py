@@ -15,8 +15,7 @@
 
 """The body: what the planner plans for and the follower drives.
 
-Pure geometry, gait plant and cost numbers, no dependency on worlds or on any
-module. The deployed adapters are configured with one to configure a live robot.
+Pure geometry, gait plant and cost numbers; no dependency on worlds or modules.
 """
 
 from __future__ import annotations
@@ -35,63 +34,44 @@ from dimos.navigation.trajectory_follower.fancy.controller import ControllerConf
 class Embodiment:
     """One robot's measured and fitted numbers; a new robot is a new one of these.
 
-    Nothing measured has a default: a body states every number
-    (`embodiment/go2.py::GO2`) or is `replace(GO2, ...)` of one that does.
-    comfort = obstacles-we-care-about radius (preference, tunable);
-    precision = local control tracking accuracy (hard floor: clearance
-    below it is fiction, planning it is planning a contact).
+    Nothing measured has a default: a body states every number (`embodiment/go2.py::GO2`)
+    or is `replace(GO2, ...)` of one that does.
     """
 
-    # Moving-body envelope, measured: the union of all robot geometry over a
-    # command sweep, in the yaw-aligned base frame. It is the fallback wherever
-    # a body has no per-heading `envelope`, so it has to stay conservative.
+    # Moving-body envelope, measured, in the yaw-aligned base frame; the fallback where
+    # `envelope` has no row.
     length: float
     width: float
-    comfort: float
-    precision: float
-    # The governor curve: the speed the planner prices a metre of clearance at
-    # and the follower reads back out of the path's stamps (control/profile.py).
-    # The ramp's floor is `precision`. It is a wire contract between the two
-    # modules, so it is the body's and not either module's config.
+    comfort: float  # obstacles-we-care-about radius, tunable
+    precision: float  # tracking accuracy; clearance below it is fiction
+    # The governor curve, a wire contract between planner and follower (control/profile.py),
+    # so it is the body's and not either module's config.
     max_speed: float
     min_speed: float
     speed_clearance: float
     max_yaw_rate: float
-    # The gait plant, measured: how the walking policy answers a command.
-    # ground speed ~= walk_gain * cmd - walk_slip above the stall band; the laws
-    # invert it so a request is the speed the governor chose. Below
-    # walk_slip_ramp the inverse fades to identity: a stop stays a stop.
+    # The gait plant, measured: ground speed ~= walk_gain * cmd - walk_slip above the stall
+    # band; below walk_slip_ramp the inverse fades to identity so a stop stays a stop.
     command_slew: tuple[float, float, float]
     gait_band: tuple[float, float]
     walk_gain: float
     walk_slip: float
     walk_slip_ramp: float
-    # gait preferences for the planner's cost function.
-    # forward = 1; strafe/reverse scale it; yaw_w prices rotation per rad.
+    # Cost preferences: forward = 1, strafe/reverse scale it, yaw_w prices rotation per rad.
     strafe: float
     reverse: float
     yaw_w: float
-    # Vertical geometry, all measured from the surface the feet stand on.
-    # The base rides a known height above the ground (motion/obstacles.py)
+    # Vertical geometry, measured from the surface the feet stand on.
     steppable: float
     height: float
     base_height: float
-    # The follower tuning searched on this body: fitted, where everything
-    # above is measured. Nested so the line between the two stays visible.
+    # Fitted, where everything above is measured.
     control: ControllerConfig = field(hash=False)
     center_off: float = 0.0  # body center relative to the pose point
-    # Motion-conditioned envelope, one row per |drift| angle in degrees:
-    # (deg, length, width, off_x, off_y). 0 = nose-first, 90 = strafe,
-    # 180 = reverse. Rows sit at the lattice's own drift angles, so
-    # nearest-row lookup is exact for every edge the SE(2) search generates.
-    # off_y is stored for POSITIVE drift and mirrored by sign at lookup: the
-    # swept box lags the drift laterally, and a row that covers +theta covers
-    # -theta only when it is mirrored with it. EMPTY = the union applies at
-    # every heading.
+    # Per-|drift| rows (deg, length, width, off_x, off_y) at the lattice's own drift angles;
+    # off_y is stored for positive drift and mirrored by sign at lookup. Empty = union everywhere.
     envelope: tuple[tuple[float, float, float, float, float], ...] = ()
-    # Extra swept WIDTH per rad-per-metre of curvature (edge dyaw / edge
-    # length). Curvature, not per-edge yaw, so the number survives a lattice
-    # pitch change unmeasured.
+    # Extra swept width per rad-per-metre of curvature, so it survives a lattice pitch change.
     arc_inflate: float = 0.0
 
     @property
@@ -118,9 +98,8 @@ class Embodiment:
         return self.envelope_at(drift)
 
     def dilated(self, by: float = 0.0, precision: float | None = None) -> Embodiment:
-        """This body with every box grown by `by` PER SIDE (negative shrinks; the
-        boxes are measured, so a deployment that shrinks them owns it), and an
-        optional clearance floor."""
+        """This body with every box grown by `by` per side (negative shrinks) and an optional
+        clearance floor."""
         pad = 2.0 * by
         rows = tuple((a, ln + pad, w + pad, ox, oy) for a, ln, w, ox, oy in self.envelope)
         return replace(
@@ -132,9 +111,8 @@ class Embodiment:
         )
 
     def stand_box(self) -> tuple[float, float, float, float]:
-        """The STANDING body: the largest box nested in every envelope row, both
-        drift signs, so a pose any edge was cleared by clears this too and a
-        replan from this planner's own route cannot refuse."""
+        """The standing body: the largest box nested in every envelope row, so a replan from
+        this planner's own route cannot refuse."""
         if not self.envelope:
             return self.length, self.width, self.center_off, 0.0
         lo = max(r[3] - r[1] / 2.0 for r in self.envelope)
@@ -144,11 +122,7 @@ class Embodiment:
         return hi - lo, 2.0 * half_w, (lo + hi) / 2.0, 0.0
 
     def offsets(self, step: float = 0.05, drift: float | None = None) -> NDArray[np.float64]:
-        """Footprint sample points, dense enough that thin slats can't slip.
-
-        ``drift`` None asks for the all-gait union; a body-frame drift angle
-        in rad asks for the swept box that heading actually needs.
-        """
+        """Footprint sample points; ``drift`` None asks for the all-gait union."""
         return box_offsets(self.box(drift), step)
 
 

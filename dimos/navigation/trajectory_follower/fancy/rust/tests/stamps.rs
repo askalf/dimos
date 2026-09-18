@@ -12,13 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The wire dialect, from the producer's end.
-//!
-//! `decode_ceilings` has its cases in `hinted.rs`, written from the consumer's
-//! end. These are the mirror: the encoder's own
-//! behaviour, plus the round trip that ties the two together. If both files
-//! pass, a stamp written here is read as the same speed there — which is the
-//! only property the dialect actually has to have.
+//! The wire dialect from the producer's end; `hinted.rs` has `decode_ceilings` from
+//! the consumer's. Together they pin that a stamp written here reads as the same speed there.
 
 use std::f64::consts::PI;
 
@@ -28,7 +23,6 @@ use dimos_trajectory_follower::stamps::{
     decode_ceilings, encode_precision, governor_speed, Governor,
 };
 
-/// A straight run along +x at `step` metres per waypoint.
 fn straight(n: usize, step: f64) -> Vec<[f64; 3]> {
     (0..n).map(|k| [k as f64 * step, 0.0, 0.0]).collect()
 }
@@ -52,26 +46,22 @@ fn open_room_cruises_and_the_floor_creeps() {
     assert_eq!(governor_speed(f64::INFINITY, &GOV), MAX_SPEED);
     assert_eq!(governor_speed(SPEED_CLEARANCE, &GOV), MAX_SPEED);
     assert_eq!(governor_speed(FLOOR_CLEARANCE, &GOV), MIN_SPEED);
-    // below the floor is still the floor, never negative or reversed
+    // below the floor is still the floor
     assert_eq!(governor_speed(0.0, &GOV), MIN_SPEED);
     assert_eq!(governor_speed(-1.0, &GOV), MIN_SPEED);
-    // and the curve is monotone between them
     let mid = governor_speed((FLOOR_CLEARANCE + SPEED_CLEARANCE) / 2.0, &GOV);
     assert!(mid > MIN_SPEED && mid < MAX_SPEED);
 }
 
 #[test]
 fn a_stamped_segment_reads_back_as_the_speed_it_was_priced_at() {
-    // the property the whole dialect rests on: encode then decode is identity
-    // on the governor speed, with no round trip through a synthetic clearance
     let path = straight(5, 0.4);
     let clearance = vec![f64::INFINITY, 0.3, 0.1, FLOOR_CLEARANCE, 1.0];
     let ts = encode_precision(&path, &clearance, 0.0, &GOV);
     let got = decode_ceilings(&ts, &path, &hinted_params(&Emb::fixture()).base)
         .expect("stamped path decodes");
 
-    // a ceiling is a property of the segment ENDING at its waypoint, so
-    // ceilings[k] carries the tighter of clearance[k-1], clearance[k]
+    // a ceiling belongs to the segment ending at its waypoint: min(clearance[k-1], clearance[k])
     for k in 1..path.len() {
         let want = governor_speed(clearance[k - 1], &GOV).min(governor_speed(clearance[k], &GOV));
         assert!(
@@ -87,7 +77,6 @@ fn tighter_room_stamps_a_longer_dt() {
     let path = straight(2, 1.0);
     let roomy = encode_precision(&path, &[f64::INFINITY, f64::INFINITY], 0.0, &GOV);
     let tight = encode_precision(&path, &[FLOOR_CLEARANCE, FLOOR_CLEARANCE], 0.0, &GOV);
-    // 1 m at cruise vs 1 m at creep
     assert!((roomy[1] - 1.0 / MAX_SPEED).abs() < 1e-12);
     assert!((tight[1] - 1.0 / MIN_SPEED).abs() < 1e-12);
     assert!(tight[1] > roomy[1]);
@@ -95,7 +84,6 @@ fn tighter_room_stamps_a_longer_dt() {
 
 #[test]
 fn t0_only_offsets_the_stamps() {
-    // absolute time carries nothing: only the deltas are the dialect
     let path = straight(4, 0.3);
     let clearance = vec![0.2; 4];
     let base = encode_precision(&path, &clearance, 0.0, &GOV);
@@ -107,9 +95,7 @@ fn t0_only_offsets_the_stamps() {
 
 #[test]
 fn a_fan_is_priced_by_yaw_not_by_room() {
-    // coincident waypoints, a quarter turn: dt is the yaw span at MAX_YAW_RATE,
-    // and the clearance must not enter or the decoder would read a speed out
-    // of a rotation
+    // coincident waypoints: dt is the yaw span at MAX_YAW_RATE and clearance must not enter
     let path = vec![[0.0, 0.0, 0.0], [0.0, 0.0, PI / 2.0]];
     let roomy = encode_precision(&path, &[f64::INFINITY, f64::INFINITY], 0.0, &GOV);
     let tight = encode_precision(&path, &[FLOOR_CLEARANCE, FLOOR_CLEARANCE], 0.0, &GOV);
@@ -119,8 +105,7 @@ fn a_fan_is_priced_by_yaw_not_by_room() {
 
 #[test]
 fn a_fan_takes_the_short_way_round() {
-    // -3pi/4 and +3pi/4 are a quarter turn apart through pi, not three
-    // quarters the other way; the wrap is what makes that true
+    // -3pi/4 to +3pi/4 is a quarter turn through pi, not three quarters the other way
     let path = vec![[0.0, 0.0, -3.0 * PI / 4.0], [0.0, 0.0, 3.0 * PI / 4.0]];
     let ts = encode_precision(&path, &[], 0.0, &GOV);
     assert!((ts[1] - (PI / 2.0) / MAX_YAW_RATE).abs() < 1e-12);
@@ -128,8 +113,6 @@ fn a_fan_takes_the_short_way_round() {
 
 #[test]
 fn clearance_of_the_wrong_length_prices_everything_at_cruise() {
-    // a planner that could not compute room still emits a well-formed path;
-    // it just carries no hint, and must not be read as a tight one
     let path = straight(4, 0.5);
     let ts = encode_precision(&path, &[0.05, 0.05], 0.0, &GOV);
     for k in 1..path.len() {
@@ -141,7 +124,7 @@ fn clearance_of_the_wrong_length_prices_everything_at_cruise() {
 #[test]
 fn degenerate_paths_do_not_panic() {
     assert!(encode_precision(&[], &[], 0.0, &GOV).is_empty());
-    // a single pose is the planner's refusal stub: one stamp, no segments
+    // a single pose is the planner's refusal stub
     assert_eq!(
         encode_precision(&[[1.0, 2.0, 0.3]], &[0.1], 7.0, &GOV),
         vec![7.0]
@@ -150,8 +133,7 @@ fn degenerate_paths_do_not_panic() {
 
 #[test]
 fn a_nan_clearance_creeps_rather_than_panicking() {
-    // no caller can produce one (clearance is a distance), but a panic in the
-    // planner tick is worse than the creep this degrades to
+    // a panic in the planner tick is worse than the creep this degrades to
     let path = straight(2, 1.0);
     let ts = encode_precision(&path, &[f64::NAN, f64::NAN], 0.0, &GOV);
     assert!(ts[1].is_finite());

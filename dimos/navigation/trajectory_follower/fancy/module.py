@@ -14,12 +14,8 @@
 
 """TrajectoryFollower: the motion controller as a dimos module.
 
-A thin transport shell around the pluggable ``TrajectoryController`` — the
-controller stays a pure pose+path -> twist law (the piece that ports to
-rust); this module owns subscriptions, the control clock and goal arrival.
-
-It holds no map: the room the planner priced arrives in the path's own
-timestamps (``control/profile.py``), and the law reads it from there.
+A transport shell around the pure pose+path -> twist ``TrajectoryController``; it owns subscriptions, the
+control clock and arrival. No map: the room the planner priced arrives in the path's stamps (``control/profile.py``).
 """
 
 from __future__ import annotations
@@ -66,8 +62,7 @@ class GoalLatch:
         return self._reached
 
     def set_goal(self, xy: tuple[float, float]) -> None:
-        # moves under the arrival tolerance are the same goal — replans snap
-        # the path end to the search grid, and re-chasing that is jitter
+        # moves under the tolerance are the same goal: replans snap the path end to the grid
         if self._goal is None or math.dist(xy, self._goal) > self.tolerance:
             self._goal = xy
             self._reached = False
@@ -83,21 +78,15 @@ class GoalLatch:
 
 
 class TrajectoryFollowerConfig(ModuleConfig):
-    # "module:factory" of the law; None runs `laws/hinted.py`, which is what
-    # the native twin runs. `laws/seed.py:make` is the baseline for an A/B.
+    # "module:factory" of the law; None runs `laws/hinted.py` (the native twin's law), `laws/seed.py:make` is the A/B baseline.
     controller: ImportString[Callable[..., Any]] | None = None
     control_frequency: float = 10.0
     goal_tolerance: float = 0.20  # planar distance that counts as arrival (m)
     # The planner's own body: the law decodes the path stamps with its governor band.
     embodiment: Embodiment = GO2
-    # The pose is read off tf each tick: `path.frame_id -> base_frame`, so the
-    # law controls in the frame the plan is expressed in. Ticks wait until it
-    # resolves, and zero the twist once its stamp stops advancing for
-    # max_path_age_s.
+    # The pose is the `path.frame_id -> base_frame` edge on tf, read each tick.
     base_frame: str = "base_link"
-    # The deadman: zero the twist once the held path is this old, measured from
-    # arrival. Guards a planner that stopped speaking, alive-and-failing included.
-    # Must clear the replan cadence (one plan per map, gaps to ~1.3 s).
+    # Deadman: zero the twist once the held path is this old, measured from arrival; must clear the ~1 Hz replan cadence.
     max_path_age_s: float = 2.5
 
 
@@ -154,11 +143,10 @@ class TrajectoryFollower(Module, spec.TrajectoryFollower):
                 self._path = msg
                 self._path_at = time.monotonic()
                 if len(msg.poses) >= 2:
-                    # the plan ends at the goal; a single-pose stub is a refusal,
-                    # never an arrival target
+                    # a single-pose stub is a refusal, not an arrival target
                     self._latch.set_goal((msg.poses[-1].position.x, msg.poses[-1].position.y))
         if not msg.poses:
-            # now, not a control period later: a stop that waits is not a stop
+            # now, not a control period later
             self.nav_cmd_vel.publish(Twist())
 
     def _control_loop(self) -> None:
@@ -175,7 +163,6 @@ class TrajectoryFollower(Module, spec.TrajectoryFollower):
         with self._lock:
             path = self._path
             age = None if self._path_at is None else now - self._path_at
-        # the pose is read here, on the tick thread, in the frame the plan is in
         pose = None
         if path is not None and self._pose_src is not None:
             pose = self._pose_src.get(path.frame_id)
@@ -188,8 +175,7 @@ class TrajectoryFollower(Module, spec.TrajectoryFollower):
 
     def step(self, pose: PoseStamped, path: Path, age: float) -> None:
         """One control tick against a path that arrived `age` seconds ago."""
-        # The deadman outranks arrival: a goal reached against a plan nobody
-        # is refreshing is a coincidence, not an arrival.
+        # the deadman outranks arrival: a goal reached against an unrefreshed plan is a coincidence
         if age > self.config.max_path_age_s:
             self.nav_cmd_vel.publish(Twist())
             return

@@ -222,11 +222,8 @@ class Config(ModuleConfig):
     static: dict[str, Callable[[Any], Any]] = field(default_factory=dict)
     max_hz: dict[str, float] = field(default_factory=dict)
 
-    # Topic names to subscribe to, without the `dimos/` prefix. Empty means every
-    # topic there is. Naming them matters when the bridge runs on the viewer's
-    # machine rather than beside the robot: an unlisted topic is never subscribed,
-    # so on zenoh it never crosses the link. `visual_override: None` only stops the
-    # drawing; by then the bytes have already arrived.
+    # Topic names without the `dimos/` prefix; empty means every topic.
+    # On zenoh an unlisted topic never crosses the link, unlike `visual_override: None`.
     topics: list[str] = field(default_factory=list)
 
     entity_prefix: str = "world"
@@ -495,9 +492,7 @@ class RerunBridgeModule(Module):
     def _subscribe(self, pubsub: SubscribeAllCapable[Any, Any]) -> Callable[[], None]:
         """Subscribe to the named topics, or to everything when none are named.
 
-        A zenoh key is `dimos/<topic>/<Type>`, so one wildcard per name subscribes
-        to a topic without knowing its message type. Only zenoh can do this: LCM's
-        subscribe_all is a single regex and keeps the firehose.
+        A zenoh key is `dimos/<topic>/<Type>`, so one wildcard per name needs no type; LCM cannot do this.
         """
         if not self.config.topics:
             return pubsub.subscribe_all(self._on_message)
@@ -509,9 +504,7 @@ class RerunBridgeModule(Module):
             )
             return pubsub.subscribe_all(self._on_message)
 
-        # The wildcard stands in for the key's type segment, which the decoder
-        # resolves per sample, so this Topic is a pattern, not the concrete one
-        # LCMTopicProto asks for.
+        # a pattern over the type segment, not the concrete Topic LCMTopicProto asks for
         unsubs = [
             pubsub.subscribe(ZenohTopic(f"dimos/{name.strip('/')}/*"), self._on_message)  # type: ignore[arg-type]
             for name in self.config.topics

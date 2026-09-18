@@ -12,14 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Behavioural invariants that hold for ANY planner, no matter how it is
-//! rewritten. These live outside `src/` on purpose: `planner.rs` is the file
-//! under optimization and its own `#[cfg(test)]` block goes wherever a
-//! rewrite takes it, so the invariants that must survive a rewrite cannot
-//! live there.
-//!
-//! Run with `cargo test --release --no-default-features --test invariants`
-//! (no pyo3 link needed: the crate exposes `planner` as an rlib).
+//! Invariants any planner rewrite must keep; outside `src/` so a rewrite of
+//! `planner.rs` cannot take them with it.
+//! Run: `cargo test --release --no-default-features --test invariants` (no pyo3 link).
 
 use std::time::Instant;
 
@@ -48,7 +43,7 @@ fn slalom() -> Vec<[f64; 2]> {
     pts
 }
 
-/// Rule 2: same inputs -> bit-identical output. Not "close": identical.
+/// Same inputs, bit-identical output.
 #[test]
 fn deterministic_across_calls() {
     let pts = slalom();
@@ -91,24 +86,14 @@ fn deterministic_across_calls() {
     }
 }
 
-/// The scored `avoid_ms` is the MINIMUM over repeated calls on identical
-/// input. A planner that memoizes its answer would report ~0 ms on the
-/// repeat and collect the whole speed pillar without planning anything
-/// faster. Each call must do its own work.
-///
-/// The threshold is deliberately loose (a real cache is ~1000x, not 3x), so
-/// this only fires on genuine short-circuiting, never on ordinary variance.
+/// Each call must do its own work; the threshold is loose so only a real
+/// cache trips it, never load variance.
 #[test]
 fn no_cross_call_memoization() {
     let pts = slalom();
     let emb = Emb::fixture();
-    // The assertion is repeat-A against fresh-B: a query already answered
-    // versus an equivalent one not yet seen, a ratio immune to machine load.
-    //
-    // The control must differ in every input, not just the goal, or a cache
-    // keyed on the cloud (a stashed distance field or roadmap) sails through.
-    // Rigidly translating the whole world keeps the work identical while
-    // making every possible cache key miss. Do not simplify this.
+    // The control is the whole world rigidly translated: identical work, every
+    // possible cache key (cloud, field, roadmap) misses. Do not simplify.
     let pose_a = (0.0, 0.0, 0.0);
     let goal_a = (7.5, 0.0);
 
@@ -125,7 +110,6 @@ fn no_cross_call_memoization() {
     let mut fresh_b = f64::INFINITY;
     for k in 0..3 {
         rep_a = rep_a.min(timed(&pts, pose_a, goal_a));
-        // Same world, same route, translated: identical work, nothing reusable.
         let d = 0.37 * (k + 1) as f64;
         let shifted: Vec<[f64; 2]> = pts.iter().map(|p| [p[0] + d, p[1] + d]).collect();
         fresh_b = fresh_b.min(timed(&shifted, (d, d, 0.0), (goal_a.0 + d, goal_a.1 + d)));
@@ -143,7 +127,6 @@ fn no_cross_call_memoization() {
     );
 }
 
-/// A body that fits through nothing must refuse rather than invent a route.
 #[test]
 fn sealed_box_refuses() {
     let pts = ring(0.0, 0.0, 1.0, 0.02);
@@ -162,8 +145,7 @@ fn sealed_box_refuses() {
     );
 }
 
-/// A thin wall blocks only one lattice column: the search must not hop it.
-/// This is the collision invariant in miniature.
+/// A thin wall blocks only one lattice column; knight steps must not hop it.
 #[test]
 fn thin_wall_not_hopped() {
     let emb = Emb {
@@ -206,7 +188,6 @@ fn thin_wall_not_hopped() {
     }
 }
 
-/// An empty world has a straight answer; refusing it is never correct.
 #[test]
 fn open_world_routes() {
     let path = plan(

@@ -12,17 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The hinted law's behavioural cases, from `motion-tc-autoresearch` branch
-//! `blind_research01`, where the law was called `blind`.
-//!
-//! The seed's portrait carries over with one restatement: the envelope bounds
-//! the ground speed the law intends, not the number in the twist, so
-//! `walk_command(max_speed)` is the largest linear command it may emit (see
-//! `walk_slip`).
-//!
-//! The stamp cases at the bottom are written against the referee's encoder,
-//! not this law's decoder, so a misread wire dialect fails here instead of
-//! silently becoming a wrong speed.
+//! The hinted law's behavioural cases. The envelope bounds the intended ground speed,
+//! not the twist, so `walk_command(max_speed)` is the largest linear command (see
+//! `walk_slip`). The stamp cases are written against the encoder, not this law's decoder.
 
 use std::f64::consts::PI;
 
@@ -32,7 +24,6 @@ use dimos_trajectory_follower::geom::{ieee_remainder, TAU};
 use dimos_trajectory_follower::laws::hinted::{update, walk_command, HintedParams};
 use dimos_trajectory_follower::stamps::decode_ceilings;
 
-/// The fixture's tuning and gait plant inside its governor band.
 fn cfg() -> HintedParams {
     hinted_params(&Emb::fixture())
 }
@@ -43,12 +34,12 @@ fn ground(cmd: f64) -> f64 {
     (cmd - c.walk_slip) / c.walk_gain
 }
 
-/// 4 m of straight path along +x at yaw 0, the python `_straight_path()`.
+/// The python `_straight_path()`.
 fn straight() -> Vec<[f64; 3]> {
     (0..40).map(|k| [k as f64 * 0.1, 0.0, 0.0]).collect()
 }
 
-/// Rotate in place at the origin, then walk away: the python `_fan_path()`.
+/// The python `_fan_path()`.
 fn fan() -> Vec<[f64; 3]> {
     let mut p: Vec<[f64; 3]> = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5]
         .iter()
@@ -68,7 +59,6 @@ fn on_path_drives_forward() {
 
 #[test]
 fn lateral_offset_commands_crab_back() {
-    // path is at y=0, robot at +0.3: crab right while still advancing
     let (vx, vy, _) = update((1.0, 0.3, 0.0), &straight(), None, None, &cfg());
     assert!(vy < -0.1 && vx > 0.0, "vx={vx} vy={vy}");
 }
@@ -79,8 +69,7 @@ fn behind_the_path_still_drives_onto_it() {
     assert!(vx > 0.0 && vy.abs() < 1e-12, "vx={vx} vy={vy}");
 }
 
-/// Restated from the seed: the envelope bounds the intended ground speed.
-/// Asserting both ways round shows it changed units, not width.
+/// Asserting the envelope both ways round shows it changed units, not width.
 #[test]
 fn speed_and_yaw_rate_clamped() {
     let c = cfg();
@@ -97,13 +86,12 @@ fn speed_and_yaw_rate_clamped() {
     );
     let (_, _, wz) = update((0.0, 0.0, PI - 0.1), &straight(), None, None, &c);
     assert!(wz.abs() <= c.base.max_yaw_rate + 1e-12, "wz={wz}");
-    // and the clamp is a saturation, not a sign flip
+    // saturation, not a sign flip
     let (_, _, wz) = update((0.0, 0.0, PI / 2.0), &straight(), None, None, &c);
     assert!(wz < -0.5, "wz={wz}");
 }
 
-/// A stop request has to remain a stop: the correction fades to zero with the
-/// intended speed rather than stepping off a cliff at the ramp.
+/// The correction fades to zero with the intended speed, no cliff at the ramp.
 #[test]
 fn walk_command_is_identity_at_rest_and_continuous() {
     let c = cfg();
@@ -158,9 +146,8 @@ fn fan_advances_by_yaw_progress() {
     );
 }
 
-/// The creep is asserted on the ground speed the command buys, not on the
-/// command: the seed asked for a speed the gait answers with 0.002 m/s (see
-/// `walk_slip`), a stall dressed as caution.
+/// Asserted on the ground speed the command buys, not the command: the seed's creep
+/// was a stall dressed as caution (see `walk_slip`).
 #[test]
 fn governor_creeps_in_tight_room() {
     let c = cfg();
@@ -230,9 +217,7 @@ fn stateless_and_deterministic() {
 
 // Constant time headway.
 
-/// The carrot shortens with the governed speed: on a curving plan a
-/// governed-down follower cuts less of the corner, on the side the planner
-/// curved away from.
+/// A governed-down follower gets a shorter carrot and cuts less of the corner.
 #[test]
 fn headway_shortens_the_carrot_when_governed_down() {
     let c = cfg();
@@ -248,9 +233,8 @@ fn headway_shortens_the_carrot_when_governed_down() {
     let pose = (p[5][0], p[5][1], p[5][2]);
     let (fx, fy, _) = update(pose, &p, Some(&wide), None, &c);
     let (sx, sy, _) = update(pose, &p, Some(&tight), None, &c);
-    // Heading of the command in the body frame. On a left turn the chord to a
-    // far carrot leans further left than the path tangent; that lean is the
-    // corner cut, toward the inside of the turn. A nearer carrot leans less.
+    // on a left turn the chord to a far carrot leans left of the tangent; that lean is
+    // the corner cut, and a nearer carrot leans less
     let fast_off = fy.atan2(fx);
     let slow_off = sy.atan2(sx);
     assert!(
@@ -263,14 +247,12 @@ fn headway_shortens_the_carrot_when_governed_down() {
     );
 }
 
-/// It must not cost speed: shortening the carrot cannot turn into a slower
-/// robot, or the fix trades collisions for timeouts.
+/// Shortening the carrot must not trade collisions for timeouts.
 #[test]
 fn headway_never_reduces_the_commanded_speed() {
     let c = cfg();
     let p = straight(); // 0 .. 3.9 m
-                        // stop well before the end: near the terminus the carrot IS the endpoint
-                        // and the law decelerates into it, which is arrival, not headway.
+                        // near the terminus the carrot is the endpoint and the law decelerates into it
     for step in 0..20 {
         let pose = (step as f64 * 0.13, 0.0, 0.0);
         let (vx, vy, _) = update(pose, &p, None, None, &c);
@@ -290,9 +272,8 @@ fn governor_speed(clearance: f64) -> f64 {
     0.2 + (0.5 - 0.2) * frac
 }
 
-/// `profile.encode_precision`, transcribed: the planner's side of the wire.
-/// dt across a segment is its length over the governor speed of its TIGHTER
-/// endpoint; a fan (zero-length) segment is priced by yaw span instead.
+/// `profile.encode_precision`, transcribed: dt across a segment is its length over the
+/// governor speed of its tighter endpoint; a fan (zero-length) segment is priced by yaw.
 fn encode_precision(path: &[[f64; 3]], clearance: &[f64], t0: f64) -> Vec<f64> {
     let mut ts = vec![t0; path.len()];
     let mut t = t0;
@@ -337,8 +318,7 @@ fn stamps_decode_back_to_the_governor_curve() {
     assert_eq!(got[0], got[1]);
 }
 
-/// The point of the whole exercise: the stamps are a lossless carrier for the
-/// clearance annotation, so the law drives the same way with either channel.
+/// The stamps are a lossless carrier for the clearance annotation.
 #[test]
 fn stamped_path_governs_exactly_like_the_clearance_array() {
     let c = cfg();
@@ -358,8 +338,7 @@ fn stamped_path_governs_exactly_like_the_clearance_array() {
     }
 }
 
-/// An explicit clearance array still wins: the stamps are the fallback
-/// channel, not a second governor stacked on top of the first.
+/// The stamps are the fallback channel, not a second governor stacked on the first.
 #[test]
 fn clearance_array_takes_precedence_over_the_stamps() {
     let c = cfg();
@@ -371,8 +350,6 @@ fn clearance_array_takes_precedence_over_the_stamps() {
     assert_eq!(with_both, with_clr);
 }
 
-/// A producer that does not speak the dialect must not be able to slow the
-/// robot down by accident, nor speed it up.
 #[test]
 fn unstamped_and_nonsense_stamps_fall_back_to_cruise() {
     let c = cfg();
@@ -385,34 +362,30 @@ fn unstamped_and_nonsense_stamps_fall_back_to_cruise() {
         update((0.0, 0.0, 0.0), &p, None, Some(&vec![3.0; n]), &c),
         bare
     );
-    // non-monotone: the timeline goes backwards
+    // non-monotone
     let mut backwards: Vec<f64> = (0..n).map(|k| k as f64 * 0.2).collect();
     backwards[7] = 0.0;
     assert_eq!(
         update((0.0, 0.0, 0.0), &p, None, Some(&backwards), &c),
         bare
     );
-    // wrong length: ignored like a wrong-length clearance annotation
+    // wrong length
     assert_eq!(
         update((0.0, 0.0, 0.0), &p, None, Some(&vec![0.1; n - 1]), &c),
         bare
     );
-    // default-constructed poses, stamped microseconds apart: decodes to an
-    // absurd speed, clips to cruise, changes nothing
+    // default-constructed poses microseconds apart: an absurd speed clips to cruise
     let jittery: Vec<f64> = (0..n).map(|k| 1.7e9 + k as f64 * 1e-6).collect();
     assert_eq!(update((0.0, 0.0, 0.0), &p, None, Some(&jittery), &c), bare);
 }
 
-/// THE constraint on this channel. A decoded ceiling is an intended GROUND
-/// speed, and the gait does not initiate below ~0.30 m/s COMMANDED. Every
-/// governed speed therefore has to leave through `walk_command`, or the
-/// governor reinstates the stall band it is supposed to be steering around.
+/// A decoded ceiling is an intended ground speed and the gait does not initiate below
+/// ~0.30 m/s commanded, so every governed speed has to leave through `walk_command`.
 #[test]
 fn the_stamped_creep_is_a_speed_the_gait_can_realize() {
     let c = cfg();
     let p = straight();
-    // the tightest thing the encoder can express: at or under the floor, so
-    // every segment is stamped at min_speed
+    // at or under the floor: every segment stamped at min_speed
     let ts = encode_precision(&p, &vec![0.02; p.len()], 0.0);
     let (vx, vy, _) = update((0.0, 0.0, 0.0), &p, None, Some(&ts), &c);
     let cmd = vx.hypot(vy);
@@ -420,8 +393,7 @@ fn the_stamped_creep_is_a_speed_the_gait_can_realize() {
         cmd >= 0.30,
         "commanded {cmd} m/s is inside the gait dead band: the robot marches in place"
     );
-    // ...and it is still a creep, not cruise: the intended ground speed is the
-    // governor floor, not max_speed.
+    // still a creep, not cruise
     assert!(
         ground(cmd) <= c.base.min_speed + 0.02,
         "ground={}",
@@ -429,8 +401,7 @@ fn the_stamped_creep_is_a_speed_the_gait_can_realize() {
     );
 }
 
-/// Fan segments carry yaw, not clearance, so their dt must not be read as a
-/// speed: the decoder inherits across them instead.
+/// Fan segments carry yaw, not clearance; the decoder inherits across them.
 #[test]
 fn fan_segments_inherit_rather_than_decode() {
     let c = cfg();

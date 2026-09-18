@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Precision encoded in the path's own timestamps — the wire dialect.
+"""Precision encoded in the path's own timestamps: the wire dialect.
 
-Planner and follower share stock dimos/ROS types; the required-precision
-profile rides in per-waypoint ``ts``: dt between consecutive waypoints =
-segment length / governor speed for that segment's clearance. Seconds are
-the carrier, clearance is the meaning. The stamps are NOT a schedule — a
-follower must never chase the clock (catch-up would accelerate exactly in
-the tight zones); only the deltas carry information, and running slower
-than the encoding is always legal.
+Per-waypoint ``ts`` deltas = segment length / governor speed at that segment's
+clearance. Not a schedule: a follower never chases the clock, only the deltas
+carry information, and running slower than the encoding is always legal.
 
 Encoding is planner/annotator-owned: when the executor's measured precision
 improves, only :func:`governor_speed` moves and every follower keeps
@@ -88,15 +84,8 @@ def encode_precision(
 def decode_ceilings(path: Path, lo: float, hi: float) -> NDArray[np.float64] | None:
     """Per-waypoint speed ceiling (m/s) from the stamps; None if unstamped.
 
-    Unstamped = flat or non-monotone ts (a plain path from a producer that
-    does not speak this dialect) — the follower then drives at plain max
-    speed. Fan segments inherit the previous
-    ceiling; the result is clipped into ``[lo, hi]`` so a slow upstream
-    planner can only ever make the robot more careful, and garbage stamps
-    saturate at cruise instead of commanding something absurd.
-
-    ``lo``/``hi`` is the CONSUMER's band: the embodiment's governor band for
-    anyone reading the wire as stamped.
+    Unstamped = flat or non-monotone ts. Fan segments inherit the previous
+    ceiling; the result is clipped into the consumer's band ``[lo, hi]``.
     """
     n = len(path.poses)
     if n < 2:

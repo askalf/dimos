@@ -14,13 +14,8 @@
 
 """LocalPlanner: the SE(2) local planner as a dimos module.
 
-Bridges the ``PlannerEpisode`` protocol onto module streams:
-the raycaster's ``local_map`` is the cloud, the ``world_frame -> base_frame``
-edge on tf is the pose, and the goal is a carrot — ``goal_lookahead_m`` of arc along the MLS
-global path (``planner_path``), clamped to its end. Ticks on a fixed cadence
-but replans only when an input that matters has changed, and publishes the
-result as a nav Path. A refusal comes out as the planner made it — a
-single-pose stub the follower reads as "hold" — while MLS reroutes globally.
+Cloud = ``local_map``, pose = the ``world_frame -> base_frame`` edge on tf, goal = a carrot ``goal_lookahead_m``
+along the MLS ``planner_path``. Replans only when an input changed; a refusal goes out as the planner's single-pose stub.
 """
 
 from __future__ import annotations
@@ -81,11 +76,7 @@ def annotate(
 
 
 def stamped(ref: Path, ts: float = 0.0, frame_id: str = "odom", ground_z: float = 0.0) -> Path:
-    """The planner's planar route stamped with time, frame and the ground it stands on.
-
-    The search hands back z = 0, but `odom` z = 0 is wherever the LIO frame
-    started. `ground_z` puts the route on the floor; only a viewer reads the z.
-    """
+    """The route stamped with time, frame and ground: the search's z = 0 is not the floor, `ground_z` is."""
     poses = [
         PoseStamped(
             ts=ts,
@@ -103,8 +94,7 @@ def stamped(ref: Path, ts: float = 0.0, frame_id: str = "odom", ground_z: float 
 def carrot_along(
     path_xy: NDArray[np.float64], robot_xy: tuple[float, float], lookahead: float
 ) -> tuple[float, float]:
-    """`lookahead` metres of arc along the path from the waypoint closest to
-    the robot, clamped to the path end."""
+    """`lookahead` metres of arc from the waypoint nearest the robot, clamped to the path end."""
     xy = np.asarray(path_xy, dtype=float).reshape(-1, 2)
     i = int(np.argmin(np.linalg.norm(xy - robot_xy, axis=1)))
     remaining = lookahead
@@ -130,11 +120,7 @@ def replan_due(
 ) -> bool:
     """Has an input the plan depends on moved since the plan was made?
 
-    The plan consumes the global route through exactly one quantity — the
-    carrot — so that is what the gate compares. Keying on the waypoint array
-    instead never dedups anything: MLS trims the route head to the robot on
-    every ~1 Hz republish and re-solves with tail wobble, so the array moves
-    every time while the carrot does not move at all.
+    Keyed on the carrot, not the waypoint array: MLS re-solves the array on every ~1 Hz republish.
     """
     if planned is None:
         return True
@@ -156,40 +142,23 @@ class LocalPlannerConfig(ModuleConfig):
         "dimos.navigation.local_planner.search.target:make_py", validate_default=True
     )
     embodiment: Embodiment = GO2
-    # How aggressive the search may be: a gap has to be `box_width + 2 *
-    # precision` wide before a route through it exists. `body_dilate_m` grows
-    # (negative: shrinks) every planning box per side. The boxes are measured
-    # on the swinging legs, so a negative value plans tighter than the legs
-    # measured. The hard margin on top stays the embodiment's precision floor:
-    # one knob both twins carry.
+    # Grows (negative: shrinks) every planning box per side; the hard margin stays the embodiment's precision floor.
     body_dilate_m: float = 0.0
-    # Price multiplier per metre over a lattice cell the cloud saw no floor
-    # under: the search skirts unexplored terrain rather than crossing it, and
-    # still crosses it when nothing else reaches the goal. <= 1 turns it off.
+    # Price multiplier per metre over lattice cells the cloud saw no floor under; <= 1 turns it off.
     unseen_cost: float = 5.0
-    # Plan when an input changed (a new local map, or a carrot that moved by
-    # `replan_carrot_m`) rather than on every tick (`replan_due`). The follower
-    # tracks the published path as the robot moves. False replans every tick.
+    # Replan only when the map or the carrot (by replan_carrot_m) changed; False replans every tick.
     replan_on_change: bool = True
     replan_carrot_m: float = REPLAN_CARROT_M
-    # A carrot that jumped this far is a different task, and the episode's warm
-    # start and hysteresis are about the old one. Republish noise moves it ~0 m;
-    # a real reroute moves it metres.
+    # A carrot jump this far is a new task: the episode's warm start and hysteresis are reset.
     reset_carrot_m: float = RESET_CARROT_M
-    # The pose is the `world_frame -> base_frame` edge on tf, read each tick
-    # (GO2Zenoh publishes it off odometry at odometry rate). Ticks wait until
-    # it resolves, and hold once its stamp stops advancing for max_map_age_s.
+    # The pose is the `world_frame -> base_frame` edge on tf, read each tick.
     world_frame: str = "odom"
     base_frame: str = "base_link"
     replan_hz: float = 5.0
     goal_lookahead_m: float = 5.0  # carrot arc along the global path
-    # What counts as an obstacle (motion/obstacles.py). "body_band" reads the
-    # cloud against the surface the feet stand on, which the embodiment knows
-    # the base's height above.
+    # What counts as an obstacle (obstacles.py); "body_band" reads the cloud against the surface the feet stand on.
     obstacle_model: str = "body_band"
-    # Hold once the local map is this old. The mapper can live across a link,
-    # and a dropped link must not leave us replanning on a frozen world at
-    # cruise speed — an old map is survivable, an unbounded one is not.
+    # Hold once the local map is this old: a dropped link must not leave us replanning on a frozen world.
     max_map_age_s: float = 5.0
 
 
@@ -210,16 +179,12 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
         self._cloud: PointCloud2 | None = None
         self._cloud_at: float | None = None
         self._stale = False
-        # The cloud arrival counter, and the (cloud, carrot) the published plan
-        # was made from.
         self._cloud_seq = 0
+        # (cloud_seq, carrot) the published plan was made from
         self._planned: tuple[int, tuple[float, float]] | None = None
-        # ...and the plan itself. The search prefers the route it already
-        # published unless a fresh one earns the switch, and this module is
-        # where that memory lives: the shell owns it, the planner judges it.
+        # the published route; the search prefers it unless a fresh one earns the switch
         self._incumbent: Path | None = None
-        # Whether a path is out there for the follower to act on. A route
-        # that vanishes clears it once, and this is what makes it once.
+        # so a route that vanishes is cleared once
         self._published = False
         # Built in start(): the tf buffer needs the port's transport.
         self._pose_src: TfPose | None = None
@@ -251,13 +216,11 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
         with self._lock:
             self._cloud = msg
             self._cloud_seq += 1
-            # arrival, not msg.ts: the mapper's clock may not be ours, and
-            # what this guards is "how long since the mapper was heard from"
+            # arrival, not msg.ts: this measures how long since the mapper was heard from
             self._cloud_at = time.monotonic()
 
     def _on_planner_path(self, msg: Path) -> None:
-        # MLS emits an empty path when it finds no route: no carrot, hold the
-        # last local plan rather than chase a stale one.
+        # an empty path is MLS finding no route: no carrot, hold the last local plan
         xy = np.array([[p.position.x, p.position.y] for p in msg.poses]).reshape(-1, 2)
         with self._lock:
             self._global_xy = xy if len(xy) else None
@@ -272,17 +235,13 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
 
     def tick(self) -> None:
         """One replan tick: plan, hold, or say what is missing."""
-        # the pose is read here, on the tick thread, straight off tf
         pose = None if self._pose_src is None else self._pose_src.get(self.config.world_frame)
         with self._lock:
             cloud, global_xy = self._cloud, self._global_xy
             cloud_at, cloud_seq = self._cloud_at, self._cloud_seq
         age = None if cloud_at is None else time.monotonic() - cloud_at
         if pose is not None and age is not None and age > self.config.max_map_age_s:
-            # A hold is not gated: it is a statement about the clock, and
-            # nothing arriving is exactly the case it fires on. Forget the plan
-            # so the first live tick plans again, and what was published with
-            # it: a route held across a dead link is unvalidated.
+            # forget the plan and the incumbent: a route held across a dead link is unvalidated
             self._planned = None
             self._incumbent = None
             self.hold(pose, age)
@@ -292,17 +251,14 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
             if self._stale:
                 self._stale = False
                 logger.info("local_map is live again, resuming planning")
-            # the carrot is the whole of the route the plan consumes, so it
-            # is computed every tick and the gate reads it, not the array
+            # the gate reads the carrot, not the array (replan_due)
             goal = carrot_along(global_xy, (pose.x, pose.y), self.config.goal_lookahead_m)
             if self.due(cloud_seq, goal):
                 if self.retask(goal):
-                    # a new task: warm starts, hysteresis and the route
-                    # being held are all about the old one
+                    # a new task: warm start, hysteresis and the incumbent are about the old one
                     self._episode.reset()
                     self._incumbent = None
-                # the surface under the robot, off the body: the base rides
-                # emb.base_height above it
+                # the base rides emb.base_height above the surface
                 ground_z = pose.position.z - self._emb.base_height
                 if self.plan_once(cloud, pose, goal, ground_z):
                     self._planned = (cloud_seq, goal)
@@ -318,11 +274,7 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
         return retask_due(self._planned, carrot, self.config.reset_carrot_m)
 
     def clear(self) -> None:
-        """The global route is gone (MLS found none, or the goal was cancelled).
-
-        Say so once (an empty path, which the follower reads as stop) and
-        forget the plan: the next route is a new task.
-        """
+        """The global route is gone: publish one empty path (the follower's stop) and forget the plan."""
         if not self._published:
             return
         self._published = False
@@ -333,9 +285,8 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
         self.path.publish(Path(ts=time.time(), frame_id=self.config.world_frame, poses=[]))
 
     def hold(self, pose: PoseStamped, age: float) -> None:
-        """Refuse the way the planner does — a single-pose stub reads as "stop"."""
-        # edge-triggered: the loop runs at replan_hz, and a dead link would
-        # otherwise warn five times a second for as long as it stays dead
+        """Refuse the way the planner does: a single-pose stub reads as "stop"."""
+        # edge-triggered, or a dead link warns at replan_hz
         if not self._stale:
             self._stale = True
             logger.warning(
@@ -362,11 +313,7 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
         ground_z: float,
     ) -> bool:
         """Plan and publish. False when the search raised and nothing went out."""
-        # The search gets the obstacles, as xy: which returns are obstacles was
-        # decided here, by the model, and the search has no z to decide it again
-        # with. The follower's room hint is measured off the very same points,
-        # so the governor and the stamped profile cannot be pricing different
-        # worlds.
+        # the model decides the obstacles here; the follower's room hint is measured off the same points
         raw = cloud.points_f32()
         pts = hard_points(self._model, raw, ground_z)
         try:

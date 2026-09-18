@@ -12,23 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""What the plan looks like on the robot: the body poses it expects to occupy.
+"""The plan drawn as the body poses it expects to occupy, over the live stack.
 
-The local plan already draws as a line, and a line cannot show the thing that
-decides whether a plan fits — the BODY at each pose, at its planned heading.
-This draws the body over the live stack, so a plan that looks fine as a line
-and is actually threading the robot's corner through a wall looks wrong.
-
-Colour is the required-precision profile, and it costs no extra channel: the
-planner stamps that profile into the path's own per-waypoint timestamps
-(``control/profile.py``), so :func:`render_body` decodes it back out of
-the message it is already being handed. Green = room to spare, amber = inside
-the governor's ramp, red = at or under the embodiment's precision floor, which
-is where a few centimetres of tracking error becomes contact.
-
-Both are drawn off the one ``path`` topic: :func:`render_plan` puts the line
-on the entity and the boxes on a child of it, so the planner publishes nothing
-it does not itself need.
+Colour is the precision profile decoded from the path's own per-waypoint stamps
+(``control/profile.py``): green = room, amber = on the governor's ramp, red = at the floor.
 """
 
 from __future__ import annotations
@@ -67,12 +54,8 @@ def _body_centre(pose: PoseStamped, center_off: float) -> tuple[float, float]:
 
 
 def plan_clearance(msg: Path, emb: Embodiment) -> NDArray[np.float64] | None:
-    """Per-waypoint room (m) recovered from the plan's stamps, or None.
-
-    A path from a producer that does not speak the precision dialect decodes to
-    nothing, and an undecorated plan should draw as one flat colour rather than
-    as a confident lie about clearance.
-    """
+    """Per-waypoint room (m) from the plan's stamps; None when the producer does not speak the
+    dialect."""
     ceilings = decode_ceilings(msg, emb.min_speed, emb.max_speed)
     return None if ceilings is None else ceilings_to_clearance(ceilings, emb)
 
@@ -83,27 +66,19 @@ def render_body(
     stride_m: float = 0.35,
     line_radius: float = 0.012,
 ) -> Archetype | None:
-    """The plan's expected body poses as oriented boxes, coloured by room.
-
-    The box is the embodiment's straight-drift row (see motion_visual_override),
-    offset ``center_off`` along the pose's +x. Room colours follow the governor:
-    red at or under the precision floor, amber on the ramp, green past
-    ``speed_clearance``. ``stride_m`` subsamples along arc so the boxes do not
-    wall over the geometry; ``line_radius`` is the wireframe thickness in metres.
-    """
-    import rerun as rr  # heavy, optional: only the viewer process pays for it
+    """The plan's expected body poses as oriented boxes, coloured by room; ``stride_m``
+    subsamples along arc."""
+    import rerun as rr  # only the viewer process pays for the import
 
     length, width, center_off, _ = emb.box(0.0)
     height = emb.height
 
     n = len(msg.poses)
     if n == 0:
-        # the planner emits an empty path when it finds no route; blanking the
-        # last good picture on that is worse than holding it
+        # an empty path is "no route"; hold the last good picture
         return None
     if n == 1:
-        # a single-pose stub is the planner's veto ("no safe route, hold").
-        # Draw it in red: an empty viewport looks like a dead module.
+        # a single-pose stub is the planner's veto; red, so it does not look like a dead module
         p = msg.poses[0]
         cx, cy = _body_centre(p, center_off)
         return rr.Boxes3D(
@@ -157,18 +132,13 @@ def render_plan(
     stride_m: float = 0.35,
     line_radius: float = 0.012,
 ) -> RerunMulti | None:
-    """The plan as its line on ``entity`` and its body boxes on ``entity/body``.
-
-    An empty path is the planner's "no route"; blanking the last good picture
-    on that is worse than holding it, so it draws nothing.
-    """
-    import rerun as rr  # heavy, optional: only the viewer process pays for it
+    """The line on ``entity`` and body boxes on ``entity/body``; an empty path draws nothing."""
+    import rerun as rr  # only the viewer process pays for the import
 
     if not msg.poses:
         return None
     out: RerunMulti = [
-        # the bridge only pins single-archetype entities to their tf frame;
-        # the line itself is not drawn, the body boxes are the plan
+        # the bridge only pins single-archetype entities to their tf frame; the boxes are the plan
         (entity, rr.Transform3D(parent_frame=f"tf#/{msg.frame_id}")),
     ]
     boxes = render_body(msg, emb, stride_m, line_radius)
@@ -183,16 +153,10 @@ def motion_visual_override(
     body_dilate_m: float = 0.0,
     entity: str = "world/path",
 ) -> dict[str, Any]:
-    """rerun override drawing the local plan's line and body boxes off ``path``.
+    """rerun override drawing the local plan's body boxes off ``path``.
 
-    Pass the same ``embodiment`` and ``body_dilate_m`` given to
-    ``LocalPlanner.blueprint(...)``: a picture drawn from a body the planner
-    did not plan with is a picture of the wrong question.
-
-    The box is the STRAIGHT-DRIFT row, not the all-gait union. The union is what
-    a turn-in-place is tested against and is ~0.18 m wider than the box a
-    forward edge actually has to fit; drawing it everywhere makes every corridor
-    look impassable and hides the margin the plan really has.
+    Pass the same ``embodiment`` and ``body_dilate_m`` as ``LocalPlanner.blueprint(...)``.
+    The box is the straight-drift row, not the all-gait union, which would make every corridor look impassable.
     """
     emb = embodiment.dilated(by=body_dilate_m)
     return {entity: partial(render_plan, entity=entity, emb=emb, line_radius=line_radius)}

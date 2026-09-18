@@ -12,29 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The room hint: how much space each waypoint has, from a set of obstacles.
-//!
-//! Shared facility, not a law. The planner stamps the profile it computes
-//! here into the path (`stamps::encode_precision`), and the follower reads it
-//! back out of the stamps (`stamps::decode_ceilings`) rather than measuring
-//! the map again.
-//!
-//! The python side is `motion/obstacles.py:path_clearance`, which is the
-//! specification.
-//!
-//! The input is an obstacle model's hard set (`obstacles.rs`): every point
-//! handed in is something the body can hit, and z rides along unread. No band
-//! here: the planner searches the same set.
-//!
-//! A hint, not a safety contract: the nearest thing that could touch the body,
-//! minus the body. Nothing here decides whether a robot collides.
+//! Per-waypoint room from the obstacle model's hard set; the planner stamps
+//! it into the path (`stamps::encode_precision`). A hint, not a safety
+//! contract. Spec: `obstacles.py::path_clearance`.
 
 use std::collections::HashMap;
 
-/// Grid cell size (m). Only a performance knob: the query below is exact at
-/// any cell size, because it keeps expanding rings until the ring itself is
-/// farther than the best point found. Sized so a voxel map at typical
-/// resolution resolves most queries in the first ring or two.
+/// Grid cell size (m); a performance knob only, the query is exact at any size.
 const CELL: f64 = 0.5;
 
 type Cell = (i32, i32);
@@ -42,7 +26,7 @@ type Cell = (i32, i32);
 /// Band points bucketed by cell, for nearest-neighbour queries.
 struct Grid {
     cells: HashMap<Cell, Vec<[f64; 2]>>,
-    /// Occupied cell bounds, so the ring walk has somewhere to stop.
+    /// Occupied cell bounds, where the ring walk stops.
     min: Cell,
     max: Cell,
 }
@@ -61,18 +45,13 @@ impl Grid {
     }
 
     /// Exact distance to the nearest band point, or infinity if there are none.
-    ///
-    /// Rings are searched outwards from the query's own cell. Nothing unseen
-    /// at ring `k` can be closer than `(k-1) * CELL` (a ring-`k` cell reaches
-    /// back to within one cell of the query), so once `best` is under that
-    /// bound the early stop is exact.
+    /// Nothing unseen at ring `k` is closer than `(k-1) * CELL`, so the early stop is exact.
     fn nearest(&self, q: [f64; 2]) -> f64 {
         if self.cells.is_empty() {
             return f64::INFINITY;
         }
         let (cx, cy) = cell_of(q);
-        // Past this the ring cannot intersect an occupied cell, so a query far
-        // outside a sparse grid still terminates.
+        // past this no ring meets an occupied cell, so a far query still terminates
         let last = [
             (cx - self.min.0).abs(),
             (cx - self.max.0).abs(),
@@ -125,13 +104,8 @@ fn ring(cx: i32, cy: i32, k: i32) -> Vec<Cell> {
     out
 }
 
-/// Per-waypoint room (m): nearest obstacle minus the body half-width.
-///
-/// A port of the two python `path_clearance` twins. `points` is the obstacle
-/// model's hard set (xyz, f32): every row counts, and the widening to f64
-/// happens here. No obstacles or an empty path is infinite room, as in the
-/// python. Only the distance is returned, never the point, so a different
-/// search structure from the python's `cKDTree` still agrees bit for bit.
+/// Per-waypoint room (m): nearest obstacle minus the body half-width; infinite
+/// with no obstacles. Every row of `points` (xyz, f32) counts.
 pub fn path_clearance(xy: &[[f64; 2]], points: &[[f32; 3]], half_width: f64) -> Vec<f64> {
     if xy.is_empty() {
         return Vec::new();

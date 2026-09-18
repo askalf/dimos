@@ -12,22 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The follower's law: follow the path the gait can actually walk.
-//!
-//! Three mechanisms over the seed, in order of what they are worth:
-//!
-//! 1. `walk_command`, the gait slip inverse. The twist is a REQUEST to a
-//!    learned policy that under-delivers it, and the governor's creep rung sat
-//!    inside the gait's dead-stall band.
-//! 2. Constant time headway: the carrot distance scales with commanded speed
-//!    instead of staying fixed, so the pursuit chord shrinks where the plan is
-//!    tight.
-//! 3. The stamped precision profile as the governor's input: the follower
-//!    holds no map of its own, so the room the planner priced arrives in the
-//!    path's own timestamps (`stamps::decode_ceilings`).
-//!
-//! (1) and (2) are held here rather than in `geom` deliberately: `seed` is the
-//! frozen baseline, and sharing a mechanism with it would move it.
+//! The follower's law: the seed plus gait slip inverse, constant time headway,
+//! and the stamped precision profile as the governor's input. Kept out of
+//! `geom` so the frozen `seed` baseline cannot move.
 
 use crate::geom::{
     arcs_of, body_error, carrot_lerp, clearance_governor, fan_target, progress_index, yaw_command,
@@ -35,23 +22,18 @@ use crate::geom::{
 };
 use crate::stamps::{ceiling_ahead, decode_ceilings};
 
-/// `Params` plus the gait calibration this law feeds forward through: the
-/// embodiment's `walk_gain`/`walk_slip`/`walk_slip_ramp`, properties of the
-/// gait blob and not of the law. Re-probe them on a different gait before it
-/// drives hardware.
+/// `Params` plus the embodiment's gait calibration (`walk_gain`/`walk_slip`/
+/// `walk_slip_ramp`); re-probe on a different gait before it drives hardware.
 pub struct HintedParams {
     pub base: Params,
     pub walk_gain: f64,
     pub walk_slip: f64,
-    /// Intended speeds below this get a proportionally smaller share of the
-    /// correction, reaching zero with it. A stop request has to remain a stop.
+    /// Below this the slip correction fades to zero, so a stop stays a stop.
     pub slip_ramp: f64,
 }
 
-/// The command that asks the gait for a ground speed of `want` m/s: the
-/// inverse of `ground ~= gain * cmd - slip`, so the intended ground speed
-/// stays the one the governor chose (`laws/hinted.py::walk_command`).
-/// Identity at `want = 0`; the full inverse once `want >= ramp`.
+/// The command for a ground speed of `want`: inverse of `ground ~= gain * cmd - slip`
+/// (`laws/hinted.py::walk_command`). Identity at 0, full inverse from `ramp` up.
 #[inline]
 pub fn walk_command(want: f64, gain: f64, slip: f64, ramp: f64) -> f64 {
     if want <= 0.0 {
@@ -61,10 +43,8 @@ pub fn walk_command(want: f64, gain: f64, slip: f64, ramp: f64) -> f64 {
     want + correction * (want / ramp).min(1.0)
 }
 
-/// One controller tick. `clearance` is the optional per-waypoint room
-/// annotation and `ts` the optional per-waypoint timestamp, which carries the
-/// same information in the dialect the planner speaks (see
-/// `stamps::decode_ceilings`). Returns `(vx, vy, wz)` in the body frame.
+/// One controller tick; `(vx, vy, wz)` in the body frame. `clearance` and `ts`
+/// carry the same room hint (`stamps::decode_ceilings`), either is optional.
 pub fn update(
     pose: (f64, f64, f64),
     path: &[[f64; 3]],
@@ -73,8 +53,7 @@ pub fn update(
     cfg: &HintedParams,
 ) -> (f64, f64, f64) {
     if path.len() < 2 {
-        // empty path or a single-pose veto stub: there is nothing to
-        // follow: hold position (the planner is saying "stop")
+        // empty path or single-pose stub: the planner is saying "stop"
         return (0.0, 0.0, 0.0);
     }
     let base = &cfg.base;
@@ -82,15 +61,8 @@ pub fn update(
     let arcs = arcs_of(path);
     let i = progress_index(path, &arcs, px, py, pyaw);
 
-    // Speed governor, hoisted above target selection because the lookahead
-    // distance is now derived from it (constant time headway, below).
-    //
-    // THE SAME GOVERNOR, OFF THE STAMPS when no clearance array arrives: the
-    // room ahead has not been withheld, only re-encoded, since the planner
-    // stamps the required-precision profile into the path's own timestamps on
-    // every replan. Decoding it puts a speed ceiling back
-    // under this law at exactly the point the clearance branch occupies, so
-    // the two channels are alternatives rather than layers.
+    // Governor first, since the lookahead derives from it. Without a clearance
+    // array the same ceiling is decoded off the stamps: alternatives, not layers.
     let vmax = clearance_governor(&arcs, i, clearance, base)
         .or_else(|| {
             let ceilings = decode_ceilings(ts?, path, base)?;
@@ -98,27 +70,20 @@ pub fn update(
         })
         .unwrap_or(base.max_speed);
 
-    // Constant time headway: look cfg.lookahead / cfg.max_speed seconds ahead
-    // instead of the seed's fixed 0.35 m. A fixed carrot chords the plan's
-    // curvature to the inside of the turn, toward the obstacle the planner
-    // curved around; a time headway shortens the carrot where the plan has no
-    // room. The floor keeps min(k_pos * L, vmax) saturating at vmax, so this
-    // costs no speed.
+    // Constant time headway: a fixed carrot chords turns toward the obstacle.
+    // The floor keeps min(k_pos * L, vmax) saturating at vmax, so no speed is lost.
     let headway = base.lookahead / base.max_speed.max(1e-6);
     let look = (vmax * headway).max(vmax / base.k_pos.abs().max(1e-6));
 
     let (target_xy, target_yaw) =
         fan_target(path, &arcs, i, pyaw, base).unwrap_or_else(|| carrot_lerp(path, &arcs, i, look));
 
-    // body-frame error -> velocity
     let (bx, by) = body_error(px, py, pyaw, target_xy);
     let (mut vx, mut vy) = (base.k_pos * bx, base.k_pos * by);
     let speed = vx.hypot(vy);
     if speed > 1e-12 {
-        // `want` is the intended ground speed: the pursuit gain, capped by
-        // the governor. Unchanged from the seed.
+        // `want` is the intended ground speed; `cmd` is what the gait must be asked for
         let want = speed.min(vmax);
-        // ...and this is what the gait has to be asked for to deliver it.
         let cmd = walk_command(want, cfg.walk_gain, cfg.walk_slip, cfg.slip_ramp);
         vx = vx / speed * cmd;
         vy = vy / speed * cmd;

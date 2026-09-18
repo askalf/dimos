@@ -14,7 +14,7 @@
 
 """The controller seam: pose + Path in, body-frame Twist out.
 
-The protocol is the deployment seam — on the robot the same object consumes
+The protocol is the deployment seam: on the robot the same object consumes
 the pose off the odometry message and the planner topic; here the episode
 runner feeds it the simulated equivalents. There is no tf lookup on either
 side. The laws themselves live in

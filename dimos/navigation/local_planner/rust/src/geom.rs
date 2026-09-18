@@ -12,20 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The pieces every pursuit law is built from: arc length, progress along the
-//! plan, fan detection, carrot selection, the clearance governor, and the
-//! body-frame error terms.
-//!
-//! This module is SHARED across laws and is deliberately conservative --
-//! each function reproduces one statement of `control/laws/seed.py` and the
-//! laws in `laws/` compose them in their own order. A research branch that
-//! wants different geometry adds a function here rather than editing one, so
-//! that folding in a generation cannot silently move the baseline.
-//!
-//! NUMERICS. Parity with the python is per-operation, not per-formula: the
-//! operation ORDER and the exact tie-breaks are preserved (`argmin` takes the
-//! first minimum, `searchsorted` is side='left'), and angle wrapping is IEEE
-//! remainder like `math.remainder`, never `%` or `rem_euclid`.
+//! Pursuit-law building blocks shared across `laws/`; each reproduces one
+//! statement of `laws/seed.py`. Parity is per operation: numpy's tie-breaks
+//! and `math.remainder` wrapping are preserved, so add functions, do not edit.
 
 /// The numbers a law reads: the body's tuning plus its plant, driving inside
 /// one band; `emb::base_params` builds it from an `Emb`.
@@ -46,10 +35,8 @@ pub struct Params {
 
 pub const TAU: f64 = std::f64::consts::TAU;
 
-/// IEEE-754 remainder, i.e. `math.remainder`: the quotient rounds half to
-/// EVEN, which is what puts the result in [-y/2, y/2] and what makes
-/// `remainder(pi, tau)` come out `+pi` rather than `-pi`. Neither `%`
-/// (truncated) nor `rem_euclid` (always non-negative) is this function.
+/// `math.remainder`: quotient rounds half to even, so `remainder(pi, tau)` is
+/// `+pi`. Neither `%` nor `rem_euclid` is this function.
 #[inline]
 pub fn ieee_remainder(x: f64, y: f64) -> f64 {
     x - (x / y).round_ties_even() * y
@@ -61,10 +48,7 @@ pub fn angle_diff(a: f64, b: f64) -> f64 {
     ieee_remainder(a - b, TAU)
 }
 
-/// Cumulative arc length along the plan.
-///
-/// `concatenate([[0.0], cumsum(norm(diff(xy, axis=0), axis=1))])`; cumsum
-/// accumulates left to right, so the running sum stays sequential.
+/// Cumulative arc length along the plan, summed left to right like `cumsum`.
 pub fn arcs_of(path: &[[f64; 3]]) -> Vec<f64> {
     let n = path.len();
     let mut arcs = vec![0.0f64; n];
@@ -75,17 +59,14 @@ pub fn arcs_of(path: &[[f64; 3]]) -> Vec<f64> {
     arcs
 }
 
-/// Progress along the plan: the closest waypoint, advanced through a fan.
-///
-/// Inside a fan the waypoints are coincident, so the closest-point test
-/// cannot separate them; advance by yaw progress instead, or the law
-/// re-rotates from the fan's first pose every tick.
+/// Closest waypoint, advanced through a fan by yaw progress (fan waypoints
+/// are coincident, so distance cannot separate them).
 pub fn progress_index(path: &[[f64; 3]], arcs: &[f64], px: f64, py: f64, pyaw: f64) -> usize {
     let n = path.len();
     let mut i = 0usize;
     let mut best = f64::INFINITY;
     for (k, p) in path.iter().enumerate() {
-        // strict `<`: np.argmin keeps the FIRST minimum on a tie
+        // strict `<`: np.argmin keeps the first minimum on a tie
         let d = ((p[0] - px) * (p[0] - px) + (p[1] - py) * (p[1] - py)).sqrt();
         if d < best {
             best = d;
@@ -101,11 +82,8 @@ pub fn progress_index(path: &[[f64; 3]], arcs: &[f64], px: f64, py: f64, pyaw: f
     i
 }
 
-/// The fan target at `i`, or `None` when this is not a fan to execute.
-///
-/// Yaw stepping with (near-)zero displacement means the planner commands a
-/// rotation here; hold the fan waypoint and rotate until the yaw error drops
-/// under `fan_yaw_done`.
+/// The fan target at `i` (hold position, rotate until under `fan_yaw_done`),
+/// or `None` when this is not a fan to execute.
 pub fn fan_target(
     path: &[[f64; 3]],
     arcs: &[f64],
@@ -125,11 +103,7 @@ pub fn fan_target(
     }
 }
 
-/// First waypoint at or past `arcs[i] + look`, the seed's carrot.
-///
-/// `np.searchsorted(arcs, s)` with the default side='left': the first index
-/// whose arc is >= s, which on sorted data is the count of strictly smaller
-/// entries.
+/// First waypoint at or past `arcs[i] + look` (`searchsorted` side='left'), the seed's carrot.
 pub fn carrot_snap(path: &[[f64; 3]], arcs: &[f64], i: usize, look: f64) -> ([f64; 2], f64) {
     let n = path.len();
     let s = arcs[i] + look;
@@ -137,12 +111,8 @@ pub fn carrot_snap(path: &[[f64; 3]], arcs: &[f64], i: usize, look: f64) -> ([f6
     ([path[k][0], path[k][1]], path[k][2])
 }
 
-/// The point at exactly `arcs[i] + look`, interpolated within its segment.
-///
-/// The plan is discretised at 0.1 m. That is fine noise against a 0.35 m
-/// carrot but 70% of a 0.14 m one, so any law that shortens its lookahead
-/// needs this: snapping to the next waypoint would make the carrot distance,
-/// and so the commanded heading, chatter waypoint to waypoint.
+/// The point at exactly `arcs[i] + look`, interpolated within its segment;
+/// a short lookahead snapped to 0.1 m waypoints would chatter the heading.
 pub fn carrot_lerp(path: &[[f64; 3]], arcs: &[f64], i: usize, look: f64) -> ([f64; 2], f64) {
     let n = path.len();
     let s = arcs[i] + look;
@@ -160,18 +130,13 @@ pub fn carrot_lerp(path: &[[f64; 3]], arcs: &[f64], i: usize, look: f64) -> ([f6
     let u = ((s - a0) / d).clamp(0.0, 1.0);
     let x = path[k - 1][0] + u * (path[k][0] - path[k - 1][0]);
     let y = path[k - 1][1] + u * (path[k][1] - path[k - 1][1]);
-    // interpolate yaw the short way round, not linearly in the raw angle, so
-    // a wrap across +-pi does not spin the carrot
+    // yaw the short way round, so a wrap across +-pi does not spin the carrot
     let yw = path[k - 1][2] + u * angle_diff(path[k][2], path[k - 1][2]);
     ([x, y], yw)
 }
 
-/// Speed ceiling from the room ahead, or `None` when the annotation is absent
-/// or the wrong length (ignored, exactly as in the python).
-///
-/// Cruise at `max_speed` with `speed_clearance` of room, creep at `min_speed`
-/// at the precision floor, linear between; judged over the next
-/// `speed_lookahead` metres of plan.
+/// Speed ceiling from the room over the next `speed_lookahead` m, linear from
+/// `min_speed` to `max_speed`; `None` when the annotation is absent or the wrong length.
 pub fn clearance_governor(
     arcs: &[f64],
     i: usize,
@@ -182,9 +147,8 @@ pub fn clearance_governor(
     if clr.len() != arcs.len() {
         return None;
     }
-    // the mask (arcs >= arcs[i]) & (arcs <= arcs[i] + speed_lookahead) is not
-    // a contiguous slice (coincident fan waypoints before `i` share its arc),
-    // so scan the whole array like numpy does
+    // not a contiguous slice: fan waypoints before `i` share its arc, so scan
+    // the whole array like the numpy mask does
     let hi = arcs[i] + cfg.speed_lookahead;
     let mut room: Option<f64> = None;
     for (k, &a) in arcs.iter().enumerate() {
@@ -192,8 +156,7 @@ pub fn clearance_governor(
             room = Some(clr[k]);
         }
     }
-    // arcs[i] always passes its own mask, so the window is never empty; the
-    // fallback is here because the python spells it out
+    // never empty (arcs[i] passes its own mask); the fallback mirrors the python
     let room = room.unwrap_or(clr[i]);
     let frac = (room - cfg.speed_floor_clearance)
         / (cfg.speed_clearance - cfg.speed_floor_clearance).max(1e-6);
@@ -208,10 +171,8 @@ pub fn body_error(px: f64, py: f64, pyaw: f64, target_xy: [f64; 2]) -> (f64, f64
     (c * ex - s_ * ey, s_ * ex + c * ey)
 }
 
-/// Yaw rate toward `target_yaw`, clamped into the configured envelope.
-///
-/// `np.clip` = minimum(maximum(v, lo), hi); spelled out rather than `clamp`,
-/// which panics when a config sets a negative max_yaw_rate.
+/// Yaw rate toward `target_yaw`, clipped like `np.clip`; `clamp` would panic
+/// on a negative `max_yaw_rate`.
 #[inline]
 pub fn yaw_command(target_yaw: f64, pyaw: f64, cfg: &Params) -> f64 {
     (cfg.k_yaw * angle_diff(target_yaw, pyaw))

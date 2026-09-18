@@ -12,19 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The SE(2) local planner crate.
-//!
-//! RULES. Deterministic: same inputs -> bit-identical output (parallel float
-//! reductions are order-dependent, so threads buy risk), and the deployment
-//! budget is one core on a shared RK3588. Keep dependencies to pyo3/numpy.
-//! Rewrite the ALGORITHM in planner.rs; the python-facing surface in
-//! python.rs stays stable.
-//!
-//! COUPLING NOTE. planner.rs's yaw publication (densify + the two-tier yaw
-//! gate) is derived from the station constants it declares (`YAW_STEP`,
-//! `MAX_STATION_YAW`, `SCORE_STRIDE_M`). If those change, the publication
-//! cadence must be re-derived from `resolution` — the gate's soundness
-//! argument rests on them.
+//! The SE(2) local planner crate. Deterministic (same inputs, bit-identical output,
+//! no threads), budgeted for one core on a shared RK3588, deps limited to pyo3/numpy.
+//! The algorithm is planner.rs; python.rs is the stable python-facing surface.
 
 pub mod clearance;
 pub mod emb;
@@ -32,8 +22,7 @@ pub mod geom;
 pub mod planner;
 pub mod stamps;
 
-/// The native module: the planner as a process on the robot. Behind a feature so
-/// the python extension build never links the module runtime.
+/// Feature-gated so the python extension build never links the module runtime.
 #[cfg(feature = "module")]
 pub mod module;
 

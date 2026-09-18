@@ -12,25 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Which returns are obstacles: the rust twin of `motion/obstacles.py`,
-//! which is the specification.
-//!
-//! The band is a property of the BODY, not of the scene: the base rides
-//! `base_height` above the surface its feet stand on, so a cloud referenced to
-//! that surface says directly what the body can hit. Nothing is estimated off
-//! the scene, so nothing can be estimated wrong.
-//!
-//! A model is z-only and says nothing about xy. The frame is the caller's --
-//! [`hard_points`] is where the two meet.
+//! Which returns are obstacles: the rust twin of `motion/obstacles.py`, which is the specification.
+//! A model is z-only over a cloud referenced to the surface the feet stand on; [`hard_points`] joins it to the caller's frame.
 
 use crate::planner::Emb;
 
-/// Ground exclusion for the body-referenced band. TWO voxel layers, not one: a
-/// floor whose true height sits near a voxel boundary quantises into both
-/// layers either side of it, and one layer leaves the upper one standing as a
-/// carpet the search cannot cross.
-/// Three voxel layers: the floor reads a layer high at range under the pitched
-/// lidar, and its noise reaches the next (see obstacles.py).
+/// Ground exclusion (m): three voxel layers, since the floor reads a layer high at range (see obstacles.py).
 pub const LOW: f64 = 0.24;
 
 /// The model names a config may carry, for the validation error message.
@@ -85,17 +72,13 @@ pub fn load(name: &str, emb: &Emb) -> Option<Box<dyn ObstacleModel>> {
     }
 }
 
-/// The cloud in the frame a model reads: z off the support surface. f32
-/// throughout, as the python does; widening first would disagree in the last
-/// bits.
+/// z off the support surface; f32 throughout, as the python does.
 pub fn referenced(points: &[[f32; 3]], ground_z: f64) -> Vec<[f32; 3]> {
     let ground = ground_z as f32;
     points.iter().map(|p| [p[0], p[1], p[2] - ground]).collect()
 }
 
-/// The floor the cloud saw, as xy: returns at or under the band. Where the
-/// planner's lattice has none of these it is planning across terrain nobody
-/// has looked at, and prices it so (`Config::unseen_cost`).
+/// The floor the cloud saw, as xy; lattice cells with none are priced as unseen (`Config::unseen_cost`).
 pub fn ground_points(points: &[[f32; 3]], ground_z: f64) -> Vec<[f64; 2]> {
     let ground = ground_z as f32;
     points
@@ -124,10 +107,7 @@ mod tests {
         Emb::fixture()
     }
 
-    /// A ground slab 0..0.12 m thick under an obstacle just above LOW, lifted to `base_z`.
-    ///
-    /// The recording's geometry: the map's z origin is base height, so absolute
-    /// z says nothing until it is referenced to the surface the feet stand on.
+    /// A ground slab under an obstacle just above LOW, lifted to `ground_z`.
     fn room(ground_z: f32) -> Vec<[f32; 3]> {
         let mut pts = Vec::new();
         for x in [-1.0f32, 0.0, 1.0] {

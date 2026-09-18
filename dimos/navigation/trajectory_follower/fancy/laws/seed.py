@@ -14,9 +14,7 @@
 
 """The reference pursuit law: holonomic, clearance-governed, fixed lookahead.
 
-The permanent baseline. Every track's A/B is against this law and every
-later law starts from it, so it does NOT absorb their results — a
-moving baseline is not a baseline. Fold those into the track's own law.
+The permanent A/B baseline: later laws start from it and never fold their results back in.
 """
 
 from __future__ import annotations
@@ -52,10 +50,7 @@ def make_rust(emb: Embodiment = GO2) -> RustPursuitController:
 class PursuitController:
     """Holonomic pursuit: project, look ahead, P-law in the body frame.
 
-    The Go2 can crab, so position error maps straight to (vx, vy) — no
-    car-style steering. Yaw tracks the path's own yaw (the planner encodes
-    side-stepping and fans there), and fan segments become rotate-in-place:
-    position holds the fan waypoint while yaw converges.
+    Position error maps straight to (vx, vy); yaw tracks the path's own yaw, and fan segments rotate in place.
     """
 
     config: ControllerConfig
@@ -73,8 +68,7 @@ class PursuitController:
     ) -> Twist:
         cfg, emb = self.config, self.emb
         if len(path) < 2:
-            # empty path or a single-pose veto stub: there is nothing to
-            # follow: hold position (the planner is saying "stop")
+            # empty path or a single-pose veto stub: hold
             return Twist(Vector3(0, 0, 0), Vector3(0, 0, 0))
         xy = np.array([[p.position.x, p.position.y] for p in path.poses])
         yaws = np.array([p.yaw for p in path.poses])
@@ -83,9 +77,7 @@ class PursuitController:
         seg = np.linalg.norm(np.diff(xy, axis=0), axis=1) if len(xy) > 1 else np.zeros(1)
         arcs = np.concatenate([[0.0], np.cumsum(seg)])
 
-        # closest waypoint = progress along the path; inside a fan the
-        # waypoints are coincident, so advance by yaw progress instead of
-        # re-rotating from the fan's first pose
+        # inside a fan the waypoints coincide, so advance by yaw progress
         i = int(np.argmin(np.linalg.norm(xy - (px, py), axis=1)))
         while (
             i + 1 < len(xy)
@@ -94,8 +86,7 @@ class PursuitController:
         ):
             i += 1
 
-        # fan detection at the current position: yaw stepping with (near-)zero
-        # displacement means the planner commands a rotation here
+        # fan: yaw stepping with near-zero displacement is a rotation here
         j = min(i + 1, len(xy) - 1)
         ds = float(arcs[j] - arcs[i])
         dyaw = abs(angle_diff(float(yaws[j]), float(yaws[i])))
@@ -117,15 +108,11 @@ class PursuitController:
             frac = (room - emb.precision) / max(emb.speed_clearance - emb.precision, 1e-6)
             vmax = emb.min_speed + (emb.max_speed - emb.min_speed) * min(max(frac, 0.0), 1.0)
 
-        # body-frame error -> velocity
         ex, ey = target_xy[0] - px, target_xy[1] - py
         c, s_ = math.cos(-pyaw), math.sin(-pyaw)
         bx, by = c * ex - s_ * ey, s_ * ex + c * ey
         vx, vy = cfg.k_pos * bx, cfg.k_pos * by
-        # math.hypot is CPython's correctly-rounded one; rust's f64::hypot is
-        # libm and differs by an ulp on some inputs. test_rust_parity is
-        # bit-exact on this, so the baseline keeps it. A new law should use
-        # np.hypot, as laws/hinted.py does.
+        # math.hypot, not np.hypot: rust's libm hypot differs by an ulp and test_rust_parity is bit-exact on this
         speed = math.hypot(vx, vy)
         if speed > vmax:
             vx, vy = vx / speed * vmax, vy / speed * vmax
