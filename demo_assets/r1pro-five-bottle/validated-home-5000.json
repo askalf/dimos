@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "packing_success": true,
+  "delivery_success": true,
+  "navigation_seconds": 19.66800000009391,
+  "observations": 696,
+  "max_speed": 0.6003573689102881,
+  "max_tilt_degrees": 6.992191710082904,
+  "all_cargo_upright_and_inside": true,
+  "continuous_bimanual_grasp": true,
+  "obstacle_samples": 0,
+  "base_arrival_error_m": 0.005597122163938224,
+  "tray_placement_error_m": 0.00422097217261069,
+  "map_points": 293064,
+  "transport": "zenoh"
+}

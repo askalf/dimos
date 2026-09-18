@@ -1,0 +1,196 @@
+{
+    "dataset": {
+        "repo_id": "local/r1pro-bottle-packing",
+        "root": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/dataset-packing-full-conditioned",
+        "episodes": null,
+        "image_transforms": {
+            "enable": true,
+            "max_num_transforms": 2,
+            "random_order": false,
+            "tfs": {
+                "affine": {
+                    "weight": 2.0,
+                    "type": "RandomAffine",
+                    "kwargs": {
+                        "degrees": [
+                            -2.0,
+                            2.0
+                        ],
+                        "translate": [
+                            0.02,
+                            0.02
+                        ]
+                    }
+                },
+                "brightness": {
+                    "weight": 1.0,
+                    "type": "ColorJitter",
+                    "kwargs": {
+                        "brightness": [
+                            0.95,
+                            1.05
+                        ]
+                    }
+                },
+                "contrast": {
+                    "weight": 1.0,
+                    "type": "ColorJitter",
+                    "kwargs": {
+                        "contrast": [
+                            0.95,
+                            1.05
+                        ]
+                    }
+                }
+            }
+        },
+        "revision": null,
+        "use_imagenet_stats": true,
+        "video_backend": "pyav",
+        "return_uint8": false,
+        "depth_output_unit": "mm",
+        "streaming": false,
+        "eval_split": 0.0769
+    },
+    "env": null,
+    "policy": {
+        "type": "act",
+        "n_obs_steps": 1,
+        "input_features": {
+            "observation.state": {
+                "type": "STATE",
+                "shape": [
+                    20
+                ]
+            },
+            "observation.images.head": {
+                "type": "VISUAL",
+                "shape": [
+                    3,
+                    160,
+                    160
+                ]
+            },
+            "observation.images.right_wrist": {
+                "type": "VISUAL",
+                "shape": [
+                    3,
+                    160,
+                    160
+                ]
+            },
+            "observation.environment_state": {
+                "type": "ENV",
+                "shape": [
+                    8
+                ]
+            }
+        },
+        "output_features": {
+            "action": {
+                "type": "ACTION",
+                "shape": [
+                    20
+                ]
+            }
+        },
+        "device": "cuda",
+        "use_amp": false,
+        "use_peft": false,
+        "push_to_hub": false,
+        "repo_id": null,
+        "private": null,
+        "tags": null,
+        "license": null,
+        "pretrained_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy-packing-full-conditioned",
+        "pretrained_revision": null,
+        "chunk_size": 30,
+        "n_action_steps": 30,
+        "normalization_mapping": {
+            "VISUAL": "MEAN_STD",
+            "STATE": "MEAN_STD",
+            "ACTION": "MEAN_STD",
+            "ENV": "MEAN_STD"
+        },
+        "vision_backbone": "resnet18",
+        "pretrained_backbone_weights": null,
+        "replace_final_stride_with_dilation": 0,
+        "pre_norm": false,
+        "dim_model": 256,
+        "n_heads": 8,
+        "dim_feedforward": 1024,
+        "feedforward_activation": "relu",
+        "n_encoder_layers": 2,
+        "n_decoder_layers": 1,
+        "use_vae": true,
+        "latent_dim": 32,
+        "n_vae_encoder_layers": 2,
+        "temporal_ensemble_coeff": null,
+        "dropout": 0.1,
+        "kl_weight": 10.0,
+        "optimizer_lr": 3e-05,
+        "optimizer_weight_decay": 0.0001,
+        "optimizer_lr_backbone": 6e-06
+    },
+    "reward_model": null,
+    "output_dir": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/train-packing-augmented",
+    "job_name": "act",
+    "resume": false,
+    "seed": 1000,
+    "cudnn_deterministic": false,
+    "num_workers": 8,
+    "batch_size": 32,
+    "prefetch_factor": 4,
+    "persistent_workers": true,
+    "steps": 5000,
+    "env_eval_freq": 0,
+    "log_freq": 200,
+    "eval_steps": 2500,
+    "max_eval_samples": 512,
+    "tolerance_s": 0.0001,
+    "save_checkpoint": true,
+    "save_freq": 2500,
+    "use_policy_training_preset": true,
+    "optimizer": {
+        "type": "adamw",
+        "lr": 3e-05,
+        "weight_decay": 0.0001,
+        "grad_clip_norm": 10.0,
+        "betas": [
+            0.9,
+            0.999
+        ],
+        "eps": 1e-08
+    },
+    "scheduler": null,
+    "eval": {
+        "n_episodes": 50,
+        "batch_size": 22,
+        "use_async_envs": true,
+        "recording": false,
+        "recording_repo_id": null,
+        "recording_private": false
+    },
+    "wandb": {
+        "enable": false,
+        "disable_artifact": false,
+        "project": "lerobot",
+        "entity": null,
+        "notes": null,
+        "run_id": null,
+        "mode": null,
+        "add_tags": true
+    },
+    "peft": null,
+    "job": {
+        "target": null,
+        "image": "huggingface/lerobot-gpu:latest",
+        "timeout": "2d",
+        "detach": false,
+        "tags": []
+    },
+    "save_checkpoint_to_hub": false,
+    "sample_weighting": null,
+    "rename_map": {},
+    "checkpoint_path": null
+}

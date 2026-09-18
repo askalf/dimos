@@ -1,0 +1,9 @@
+{
+  "source_checkpoint": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/train-packing-augmented/checkpoints/005000/pretrained_model",
+  "weights_modified": false,
+  "weights_sha256": "b12206836634a7b8857f9863c8ccb1b17b856c6bf2a09ff5d4cb15943d79c5d2",
+  "override": {
+    "n_action_steps": 30
+  },
+  "profile": "r1pro-sim-bottle-packing-v1"
+}

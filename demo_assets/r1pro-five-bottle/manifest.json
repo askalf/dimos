@@ -1,0 +1,48 @@
+{
+  "description": "Five-bottle ACT demo portable assets; ordinary Git blobs, no asset LFS download required.",
+  "robot_source": "https://github.com/userguide-galaxea/URDF",
+  "robot_revision": "2e5d31e1784481a34d178006c0d0e18e0a84a82a",
+  "robot_cache_key": "f15d4276801dd90e",
+  "files": {
+    "recordings/r1pro-act-task/policy-packing-augmented/config.json": {
+      "bytes": 1635,
+      "sha256": "e6c860856a6974cf9ff1377a0e5c67b433ae2201bdee3ea25e080b5430a21d03"
+    },
+    "recordings/r1pro-act-task/policy-packing-augmented/deployment.json": {
+      "bytes": 359,
+      "sha256": "ce72952f509a05c5d7b21e56494ba16cf59e3f6930ea5891d3ec6fbd902dc445"
+    },
+    "recordings/r1pro-act-task/policy-packing-augmented/model.safetensors": {
+      "bytes": 62403184,
+      "sha256": "b12206836634a7b8857f9863c8ccb1b17b856c6bf2a09ff5d4cb15943d79c5d2"
+    },
+    "recordings/r1pro-act-task/policy-packing-augmented/policy_postprocessor.json": {
+      "bytes": 690,
+      "sha256": "0d37c699f09a292cf36cb57cd4adbc492f2ba9b60c89c5b0a969cc1424e142df"
+    },
+    "recordings/r1pro-act-task/policy-packing-augmented/policy_postprocessor_step_0_unnormalizer_processor.safetensors": {
+      "bytes": 7732,
+      "sha256": "e0c207902682b8ff581328ff584b8b63dccce8b6f40fc96001d9227604001177"
+    },
+    "recordings/r1pro-act-task/policy-packing-augmented/policy_preprocessor.json": {
+      "bytes": 1502,
+      "sha256": "be7511077bf30f87eb5de6d3bd3e66530d1abe8697bb52b24ae15b18c4ec1dd8"
+    },
+    "recordings/r1pro-act-task/policy-packing-augmented/policy_preprocessor_step_3_normalizer_processor.safetensors": {
+      "bytes": 7740,
+      "sha256": "a6775e03b17e4d7d527b71a1a550c3be3dcf782fdf696392365f9d4fcbc8e89e"
+    },
+    "recordings/r1pro-act-task/policy-packing-augmented/train_config.json": {
+      "bytes": 5500,
+      "sha256": "c17d3e858fab6872bb083ac67ea2901b079a20ac0e1c701c9da5c808d7e04a84"
+    },
+    "demo_assets/r1pro-five-bottle/robot-description.tar.gz": {
+      "bytes": 19468882,
+      "sha256": "460da1484fa047984ccc720f15eab0c60fea4dd675005f798b25893f870fadc0"
+    },
+    "demo_assets/r1pro-five-bottle/scene-package.tar.gz": {
+      "bytes": 64175998,
+      "sha256": "d98bfde6d3e46882e4283cadebf85d5dadac1af767395674fad722f6aedf0e3b"
+    }
+  }
+}

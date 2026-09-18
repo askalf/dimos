@@ -1,5 +1,8 @@
 # R1Pro home demo
 
+For another laptop, use the bundled assets and setup instructions in
+[the portable demo](../../../../demo_assets/r1pro-five-bottle/README.md).
+
 ```bash
 dimos run r1pro-home-sim
 ```
