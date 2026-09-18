@@ -66,6 +66,7 @@ def _state(**kw):  # type: ignore[no-untyped-def]
         "detections_3d": None,
         "detections_2d": None,
         "lidar": None,
+        "goal_xy": None,
         "image_size": (1280, 720),
         "lidar_band": (-0.2, 0.8, 5.0),
     }
@@ -119,3 +120,16 @@ def test_room_sectors_in_robot_frame() -> None:
     assert room["right"] == {"clear_m": 2.0, "state": "clear"}
     assert (room["behind"]["clear_m"], room["left"]["clear_m"]) == (3.0, 5.0)
     assert "room" not in _state()
+
+
+def test_goal_point_relative_to_pose() -> None:
+    gp = _state(pose=pose(0, 0, 90), goal_xy=(-2.0, 0.0))["goal_point"]
+    assert gp == {
+        "x": -2.0,
+        "y": 0.0,
+        "bearing": "left",
+        "bearing_deg": 90.0,
+        "distance": "mid",
+        "distance_m": 2.0,
+    }
+    assert "goal_point" not in _state()

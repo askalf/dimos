@@ -64,7 +64,11 @@ def noul(instructions: Text, criteria: Mapping[str, Text]) -> NoulQuestion:
 
 
 AXES = (("x", "forward", "backward"), ("y", "left", "right"), ("yaw", "turn_left", "turn_right"))
-_CONTEXT = "Read `goal`, `robot`, `objects` (each has `bearing` and `distance`) and `room` (each sector has `state`)."
+_CONTEXT = (
+    "Read `goal`, `robot`, `objects` (each has `bearing` and `distance`), `goal_point` (where the target "
+    "was last seen, with `bearing` and `distance`; use it when the target is not in `objects`) and `room` "
+    "(each sector has `state`)."
+)
 
 
 def _q(question: str) -> Text:
@@ -144,8 +148,8 @@ def questions(labels: tuple[str, ...]) -> dict[str, Question]:
         "stop": noul(
             _q("Should the robot stop moving right now?"),
             {
-                "true": "the target named in `goal` has `distance` touching, or `goal` asks to stop, or the target is not in `objects`, or `room.ahead.state` is blocked while moving forward",
-                "false": "the target is in `objects` with `distance` near, mid or far and there is a clear direction to move; being near is not a reason to stop",
+                "true": "the target named in `goal` (or `goal_point`) has `distance` touching, or `goal` asks to stop, or neither the target in `objects` nor `goal_point` exists, or `room.ahead.state` is blocked while moving forward",
+                "false": "the target is in `objects` or `goal_point` exists, with `distance` near, mid or far, and there is a clear direction to move; being near is not a reason to stop",
             },
         ),
     }

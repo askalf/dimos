@@ -41,6 +41,7 @@ from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
+from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.nav_msgs.Odometry import Odometry
@@ -110,6 +111,7 @@ class TypeSafeAgent(Module):
     human_input: In[str]
 
     cmd_vel: Out[Twist]
+    goal: Out[PointStamped]  # world-frame XY the goal text resolved to
     agent: Out[BaseMessage]
     agent_idle: Out[bool]
 
@@ -123,6 +125,7 @@ class TypeSafeAgent(Module):
         self._session = requests.Session()
         self._lock = threading.Lock()
         self._goal: str | None = None
+        self._goal_xy: tuple[float, float] | None = None
         self._motion = "idle"
         self._target: Vec3 = ZERO
         self._current: Vec3 = ZERO
@@ -166,6 +169,7 @@ class TypeSafeAgent(Module):
         goal = (goal or "").strip() or None
         with self._lock:
             self._goal = goal
+            self._goal_xy = None
             self._target = self._current = ZERO
             self._zero_since = None
             self._motion = "idle"
@@ -176,7 +180,7 @@ class TypeSafeAgent(Module):
         self.agent_idle.publish(goal is None)
 
     @rpc
-    def goal(self) -> str | None:
+    def current_goal(self) -> str | None:
         return self._goal
 
     def _post(self, state: WorldState, qs: dict[str, Question]) -> Answers:
@@ -220,7 +224,7 @@ class TypeSafeAgent(Module):
             return
         stale = self.config.stale_s
         pose, det3d, det2d = self._pose.get(stale), self._det3d.get(stale), self._det2d.get(stale)
-        if pose is None or (det3d is None and det2d is None):
+        if pose is None or (det3d is None and det2d is None and self._goal_xy is None):
             self._set_target(ZERO)
             self._say("holding: no odom" if pose is None else "holding: no detections")
             return
@@ -231,6 +235,7 @@ class TypeSafeAgent(Module):
             detections_3d=det3d,
             detections_2d=det2d,
             lidar=self._lidar.get(stale),
+            goal_xy=self._goal_xy,
             image_size=self.config.image_size,
             lidar_band=self.config.lidar_band,
         )
@@ -245,11 +250,17 @@ class TypeSafeAgent(Module):
         self._steer(state, drive)
 
     def _steer(self, state: WorldState, drive: Drive) -> None:
-        """The model picked directions; geometry to the chosen target sets the magnitudes."""
-        lin, ang = self.config.linear_speed, self.config.angular_speed
+        """The model picked directions; geometry to the goal point sets the magnitudes."""
         target = next((o for o in state["objects"] if o["label"] == drive.target), None)
-        if target is not None and "distance_m" in target:
-            dist, err = target["distance_m"], abs(target.get("bearing_deg", 0.0))
+        if target is not None and "position" in target:
+            self._resolve_goal(target["position"]["x"], target["position"]["y"])
+            dist, err = target.get("distance_m", 0.0), abs(target.get("bearing_deg", 0.0))
+        elif "goal_point" in state:
+            dist, err = state["goal_point"]["distance_m"], abs(state["goal_point"]["bearing_deg"])
+        else:
+            dist, err = None, 0.0
+        lin, ang = self.config.linear_speed, self.config.angular_speed
+        if dist is not None:
             if dist <= self.config.reached_m:
                 drive = Drive(0.0, 0.0, 0.0, True, drive.confidence, drive.labels, drive.target)
             lin *= min(1.0, max(0.3, dist / SLOW_WITHIN_M))
@@ -267,6 +278,14 @@ class TypeSafeAgent(Module):
         if gave_up:
             self.set_goal(None)
             self._say("goal reached or unreachable; stopped")
+
+    def _resolve_goal(self, x: float, y: float) -> None:
+        """Latch the target's world XY; publish it when it moves more than 10 cm."""
+        with self._lock:
+            prev = self._goal_xy
+            self._goal_xy = (x, y)
+        if prev is None or abs(prev[0] - x) > 0.1 or abs(prev[1] - y) > 0.1:
+            self.goal.publish(PointStamped(x, y, 0.0, frame_id="world"))
 
     def _set_target(self, target: Vec3, *, immediate: bool = False) -> None:
         now = time.monotonic()

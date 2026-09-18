@@ -53,10 +53,22 @@ class RobotState(PoseJson):
     motion: str
 
 
+class GoalPoint(TypedDict):
+    """World-frame XY the goal resolved to, with the same words objects carry."""
+
+    x: float
+    y: float
+    bearing: str
+    bearing_deg: float
+    distance: str
+    distance_m: float
+
+
 class WorldState(TypedDict):
     goal: str
     robot: RobotState
     objects: list[ObjectState]
+    goal_point: NotRequired[GoalPoint]
     room: NotRequired[dict[str, SectorJson]]
 
 
@@ -69,20 +81,27 @@ def distance_word(d: float) -> str:
     return next(word for limit, word in _DISTANCE if d < limit)
 
 
+def relative(pose: PoseStamped, x: float, y: float) -> tuple[str, float, str, float]:
+    """(bearing word, bearing deg, distance word, distance m) of a world XY from the pose."""
+    dx, dy = x - pose.x, y - pose.y
+    dist, rel = math.hypot(dx, dy), math.atan2(dy, dx) - pose.yaw
+    deg = round(math.degrees(math.atan2(math.sin(rel), math.cos(rel))), 1)
+    return bearing_word(rel), deg, distance_word(dist), round(dist, 2)
+
+
 def _objects_3d(dets: Detection3DArray, pose: PoseStamped) -> list[ObjectState]:
     out: list[ObjectState] = []
     for d in dets.to_json():
-        dx, dy = d["position"]["x"] - pose.x, d["position"]["y"] - pose.y
-        dist, rel = math.hypot(dx, dy), math.atan2(dy, dx) - pose.yaw
+        bearing, deg, distance, dist = relative(pose, d["position"]["x"], d["position"]["y"])
         out.append(
             {
                 "label": d["label"],
                 "score": d["score"],
                 "position": d["position"],
-                "bearing": bearing_word(rel),
-                "bearing_deg": round(math.degrees(math.atan2(math.sin(rel), math.cos(rel))), 1),
-                "distance": distance_word(dist),
-                "distance_m": round(dist, 2),
+                "bearing": bearing,
+                "bearing_deg": deg,
+                "distance": distance,
+                "distance_m": dist,
             }
         )
     return sorted(out, key=lambda o: o["distance_m"])[:MAX_OBJECTS]
@@ -114,6 +133,7 @@ def build_world_state(
     detections_3d: Detection3DArray | None,
     detections_2d: Detection2DArray | None,
     lidar: PointCloud2 | None,
+    goal_xy: tuple[float, float] | None,
     image_size: tuple[int, int],
     lidar_band: tuple[float, float, float],
 ) -> WorldState:
@@ -128,6 +148,16 @@ def build_world_state(
         "robot": {**pose.to_json(), "motion": motion},
         "objects": objects,
     }
+    if goal_xy is not None:
+        bearing, deg, distance, dist = relative(pose, *goal_xy)
+        state["goal_point"] = {
+            "x": round(goal_xy[0], 2),
+            "y": round(goal_xy[1], 2),
+            "bearing": bearing,
+            "bearing_deg": deg,
+            "distance": distance,
+            "distance_m": dist,
+        }
     if lidar is not None:
         z_min, z_max, max_range = lidar_band
         state["room"] = lidar.to_json(pose, z_min=z_min, z_max=z_max, max_range=max_range)

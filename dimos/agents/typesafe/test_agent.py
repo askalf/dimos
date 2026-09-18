@@ -22,6 +22,7 @@ from dimos.agents.typesafe.drive import Answers, Question
 from dimos.agents.typesafe.test_drive import answers
 from dimos.agents.typesafe.test_world_state import det3d
 from dimos.core.transport import LCMTransport, pLCMTransport
+from dimos.msgs.geometry_msgs.PointStamped import PointStamped
 from dimos.msgs.geometry_msgs.Pose import Pose
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
@@ -55,6 +56,7 @@ def rig(monkeypatch: pytest.MonkeyPatch) -> Iterator[Rig]:
     )
     a.odom.transport = LCMTransport("/test_typesafe/odom", PoseStamped)
     a.cmd_vel.transport = LCMTransport("/test_typesafe/cmd_vel", Twist)
+    a.goal.transport = LCMTransport("/test_typesafe/goal", PointStamped)
     for name in (
         "odometry",
         "detections_3d",
@@ -116,7 +118,7 @@ def test_drives_then_stops_and_clears(rig: Rig) -> None:
     a.set_goal("go to the chair")
     assert until(lambda: moving(twists))
     fake.answers = answers(stop=0.95)
-    assert until(lambda: a.goal() is None)
+    assert until(lambda: a.current_goal() is None)
     assert twists[-1].is_zero()
 
 
@@ -125,7 +127,7 @@ def test_arrival_by_distance(rig: Rig) -> None:
     fake.answers = answers(x="forward")
     scene(a, robot_x=2.8)  # 0.2 m from the chair
     a.set_goal("go to the chair")
-    assert until(lambda: a.goal() is None)
+    assert until(lambda: a.current_goal() is None)
     assert not moving(twists)
 
 
@@ -138,7 +140,7 @@ def test_odometry_feeds_pose(rig: Rig) -> None:
     )
     time.sleep(0.1)
     a.set_goal("go to the chair")
-    assert until(lambda: a.goal() is None)
+    assert until(lambda: a.current_goal() is None)
     assert not moving(twists)
 
 
@@ -162,3 +164,23 @@ def test_deadman_zeroes_when_inference_stalls(rig: Rig) -> None:
     fake.gate.clear()
     assert until(lambda: twists[-1].is_zero(), timeout=3.0)
     fake.gate.set()
+
+
+def test_goal_point_published_and_used_when_target_leaves_view(rig: Rig) -> None:
+    a, fake, twists = rig
+    goals: list[PointStamped] = []
+    unsub = a.goal.transport.subscribe(goals.append)
+    fake.answers = answers(x="forward")
+    scene(a)
+    a.set_goal("go to the chair")
+    assert until(lambda: moving(twists) and bool(goals))
+    assert (goals[0].x, goals[0].y, goals[0].frame_id) == (3.0, 0.0, "world")
+    # detections go stale, odom keeps coming: the latched goal point keeps it driving
+    a.config.stale_s = 0.2
+    calls = fake.calls
+    for _ in range(6):
+        a.odom.transport.publish(PoseStamped(position=(0.5, 0, 0.4), frame_id="world"))
+        time.sleep(0.15)
+    assert fake.calls > calls
+    assert a.current_goal() == "go to the chair" and twists[-1].linear.x > 0.4
+    unsub()
