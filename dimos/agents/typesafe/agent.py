@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -319,7 +320,7 @@ class TypeSafeAgent(Module):
     def _apply(self, drive: Drive, scales: tuple[float, float] = (1.0, 1.0)) -> None:
         lin, ang = self.config.linear_speed * scales[0], self.config.angular_speed * scales[1]
         if scales == (0.0, 0.0):
-            drive = Drive(0.0, 0.0, 0.0, True, drive.confidence, drive.labels, drive.target)
+            drive = replace(drive, x=0.0, y=0.0, yaw=0.0, stop=True)
         labels = (*drive.labels, "stop" if drive.stop else "go")
         with self._lock:
             self._target = (drive.x * lin, drive.y * lin, drive.yaw * ang)
@@ -358,6 +359,7 @@ class TypeSafeAgent(Module):
                 )
             )
         if drive.finished:
+            logger.info("finished at the target", target=drive.target)
             self.finished.publish(Bool(True))
             self._clear_goal("finished: at the target")
         elif streak >= self.config.stops_to_clear_goal:

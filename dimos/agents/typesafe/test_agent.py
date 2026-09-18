@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Any
 
+from dimos_lcm.std_msgs import Bool
 from dimos_lcm.vision_msgs import (
     BoundingBox3D,
     Detection3D,
@@ -45,9 +46,10 @@ def _choice(label: str, options: tuple[str, ...]) -> dict[str, Any]:
 
 
 def _answers(
-    x: str = "none", y: str = "none", yaw: str = "none", stop: float = 0.0
+    x: str = "none", y: str = "none", yaw: str = "none", stop: float = 0.0, finished: float = 0.0
 ) -> dict[str, Any]:
     return {
+        "finished": {"type": "noul", "noul": finished},
         "target": _choice("chair", ("chair", "none")),
         "drive.x": _choice(x, ("forward", "none", "backward")),
         "drive.y": _choice(y, ("left", "none", "right")),
@@ -82,6 +84,7 @@ def agent(
     )
     a.odom.transport = LCMTransport("/test_typesafe/odom", PoseStamped)
     a.cmd_vel.transport = LCMTransport("/test_typesafe/cmd_vel", Twist)
+    a.finished.transport = LCMTransport("/test_typesafe/finished", Bool)
     for name in (
         "detections_3d",
         "detections_2d",
@@ -203,6 +206,21 @@ def test_holds_without_odom_or_detections(
     a.odom.transport.publish(PoseStamped(position=(0, 0, 0.4), frame_id="world"))
     time.sleep(0.4)
     assert fake.states == []  # odom alone is not enough: nothing to drive toward
+
+
+def test_finished_answer_publishes_and_clears(
+    agent: tuple[TypeSafeAgent, FakeClient, list[Twist]],
+) -> None:
+    a, fake, _ = agent
+    done: list[Any] = []
+    a.finished.transport.subscribe(lambda m, *_: done.append(m))
+    fake.answers = _answers(x="forward", finished=0.9)
+    _scene(a)
+    a.odom.transport.publish(PoseStamped(position=(2.8, 0, 0.4), frame_id="world"))  # arrived
+    time.sleep(0.1)
+    a.set_goal("go to the chair")
+    assert _wait(lambda: a.goal() is None)
+    assert _wait(lambda: bool(done)) and done[0].data is True
 
 
 def test_arrival_by_distance_stops_and_clears(
