@@ -22,6 +22,7 @@ import threading
 import time
 from typing import Any
 
+from dimos_lcm.std_msgs import Bool
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.base import BaseMessage
 from reactivex.disposable import Disposable
@@ -49,6 +50,15 @@ logger = setup_logger()
 
 _STOP_WORDS = {"stop", "halt", "stop.", "halt."}
 
+TASK = (
+    "You are a mobile robot in a room. Each tick you receive this JSON: `goal` (what to do), "
+    "`robot` (your position, heading and last motion), `objects` (things in the room with their "
+    "world position, size, `distance` from you to their nearest edge, and `bearing`), and "
+    "`room.sectors` (the nearest obstacle in each direction around you). Drive toward the object "
+    "named in `goal`, around obstacles. The task is finished when that object's `distance` is "
+    "touching: then stop and report finished."
+)
+
 
 def typesafe_api_key() -> str | None:
     if os.environ.get(API_KEY_ENV):
@@ -72,6 +82,7 @@ class TypeSafeAgentConfig(ModuleConfig):
     angular_accel: float = 1.6
     min_confidence: float = 0.5
     stop_threshold: float = 0.7
+    finished_threshold: float = 0.7
     blend: bool = False
     stops_to_clear_goal: int = 10
     reached_m: float = 0.5
@@ -99,6 +110,7 @@ class TypeSafeAgent(Module):
     agent: Out[BaseMessage]
     agent_idle: Out[bool]
     world_state: Out[str]
+    finished: Out[Bool]
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -251,6 +263,7 @@ class TypeSafeAgent(Module):
         state = build_world_state(
             goal=goal,
             pose=pose,
+            task=TASK,
             detections_3d=detections_3d,
             detections_2d=detections_2d,
             lidar=self._fresh("lidar"),
@@ -275,6 +288,7 @@ class TypeSafeAgent(Module):
             min_confidence=self.config.min_confidence,
             blend=self.config.blend,
             stop_threshold=self.config.stop_threshold,
+            finished_threshold=self.config.finished_threshold,
         )
         self._apply(drive, self._scales(drive, state))
 
@@ -343,7 +357,10 @@ class TypeSafeAgent(Module):
                     },
                 )
             )
-        if streak >= self.config.stops_to_clear_goal:
+        if drive.finished:
+            self.finished.publish(Bool(True))
+            self._clear_goal("finished: at the target")
+        elif streak >= self.config.stops_to_clear_goal:
             self._clear_goal("goal reached or unreachable; stopped")
 
     def _publish_loop(self) -> None:

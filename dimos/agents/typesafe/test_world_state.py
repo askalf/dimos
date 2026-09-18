@@ -87,7 +87,7 @@ def test_objects_3d_relative_to_pose() -> None:
     assert obj["label"] == "chair"
     assert obj["bearing"] == "left"
     assert obj["distance"] == "mid"
-    assert obj["distance_m"] == 2.0
+    assert obj["distance_m"] == 1.75  # to the 0.5 m box's edge
     assert "objects" not in state.get("unavailable", [])
 
 

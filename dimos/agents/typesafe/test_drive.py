@@ -18,7 +18,7 @@ def _choice(label: str, probs: dict[str, float], confidence: float) -> dict:
     return {"type": "choice", "choice": label, "probabilities": probs, "confidence": confidence}
 
 
-def _answers(x="none", y="none", yaw="none", conf=0.9, stop=0.0) -> dict:
+def _answers(x="none", y="none", yaw="none", conf=0.9, stop=0.0, finished=0.0) -> dict:
     return {
         "drive.x": _choice(
             x,
@@ -48,12 +48,13 @@ def _answers(x="none", y="none", yaw="none", conf=0.9, stop=0.0) -> dict:
             conf,
         ),
         "stop": {"type": "noul", "noul": stop},
+        "finished": {"type": "noul", "noul": finished},
     }
 
 
 def test_questions_are_one_choice_per_axis_plus_stop() -> None:
     q = drive_questions()
-    assert set(q) == {"drive.x", "drive.y", "drive.yaw", "stop"}
+    assert set(q) == {"drive.x", "drive.y", "drive.yaw", "stop", "finished"}
     assert set(q["drive.x"]["criteria"]) == {"forward", "none", "backward"}
     assert q["stop"]["type"] == "noul"
 
@@ -73,6 +74,12 @@ def test_low_confidence_axis_is_zero() -> None:
 def test_stop_overrides_axes() -> None:
     d = decode_drive(_answers(x="forward", yaw="turn_right", stop=0.9))
     assert d.stop and d.is_zero and (d.x, d.y, d.yaw) == (0.0, 0.0, 0.0)
+
+
+def test_finished_stops_and_flags() -> None:
+    d = decode_drive(_answers(x="forward", finished=0.9))
+    assert d.finished and d.stop and d.is_zero
+    assert not decode_drive(_answers(x="forward", finished=0.5)).finished
 
 
 def test_blend_uses_probability_difference() -> None:

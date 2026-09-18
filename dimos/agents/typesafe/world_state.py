@@ -51,7 +51,12 @@ def _objects_3d(
     if pose is not None:
         for o in out:
             dx, dy = o["position"]["x"] - pose.x, o["position"]["y"] - pose.y
-            d = math.hypot(dx, dy)
+            size = o.get("size") or {}
+            # To the box's nearest edge: the centre of a large object is never reachable.
+            d = math.hypot(
+                max(0.0, abs(dx) - size.get("x", 0.0) / 2),
+                max(0.0, abs(dy) - size.get("y", 0.0) / 2),
+            )
             o["distance_m"] = round(d, 2)
             o["distance"] = distance_word(d)
             rel = math.atan2(dy, dx) - pose.yaw
@@ -87,6 +92,7 @@ def build_world_state(
     *,
     goal: str | None,
     pose: PoseStamped | None,
+    task: str | None = None,
     detections_3d: Detection3DArray | None = None,
     detections_2d: Detection2DArray | None = None,
     lidar: PointCloud2 | None = None,
@@ -98,6 +104,8 @@ def build_world_state(
 ) -> dict[str, Any]:
     unavailable: list[str] = []
     state: dict[str, Any] = {"goal": goal or ""}
+    if task:
+        state = {"task": task, **state}
 
     robot_section: dict[str, Any] = dict(robot or {})
     if pose is not None:

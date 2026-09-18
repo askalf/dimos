@@ -119,6 +119,16 @@ def _axis_questions() -> dict[str, dict[str, Any]]:
                 "false": "the target is in `objects` with `distance` near, mid or far, and there is a clear direction to move; being near is not a reason to stop",
             },
         ),
+        "finished": noul(
+            {
+                "question": "Is the task in `goal` complete: has the robot arrived at the target object?",
+                "context": "Read `task`, `goal` and `objects`. `distance` is measured to the object's nearest edge.",
+            },
+            {
+                "true": "the target named in `goal` is in `objects` with `distance` touching: the robot is at the object and the task is done",
+                "false": "the target's `distance` is near, mid or far, or the target is not in `objects`",
+            },
+        ),
     }
 
 
@@ -131,6 +141,7 @@ class Drive:
     confidence: float
     labels: tuple[str, str, str]
     target: str | None = None
+    finished: bool = False
 
     @property
     def is_zero(self) -> bool:
@@ -156,8 +167,10 @@ def decode_drive(
     min_confidence: float = 0.5,
     blend: bool = False,
     stop_threshold: float = 0.7,
+    finished_threshold: float = 0.7,
 ) -> Drive:
-    stop = float(answers.get("stop", {}).get("noul", 0.0)) >= stop_threshold
+    finished = float(answers.get("finished", {}).get("noul", 0.0)) >= finished_threshold
+    stop = finished or float(answers.get("stop", {}).get("noul", 0.0)) >= stop_threshold
     vals: dict[str, float] = {}
     labels: list[str] = []
     confs: list[float] = []
@@ -181,4 +194,5 @@ def decode_drive(
         min(confs) if confs else 0.0,
         (labels[0], labels[1], labels[2]),
         target,
+        finished,
     )
