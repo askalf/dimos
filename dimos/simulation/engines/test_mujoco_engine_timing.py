@@ -225,6 +225,67 @@ def test_slow_viewer_keeps_physics_stepping_between_display_updates(camera_engin
     assert np.all(np.diff(frame_times) >= 0.03 + 1 / fps - 1e-9)
 
 
+def test_blocked_snapshot_viewer_does_not_stop_physics_or_commands(camera_engine, mocker):
+    rendering = Event()
+    release_viewer = Event()
+    physics_advanced = Event()
+    camera_engine._headless = False
+    camera_engine._background_viewer_rendering = True
+    handle = mocker.MagicMock()
+    handle.__enter__.return_value = handle
+    handle.is_running.return_value = True
+    initial_time = []
+
+    def publish(state, camera):
+        initial_time.append(camera_engine.data.time)
+        rendering.set()
+        assert release_viewer.wait(5)
+        return True
+
+    def stepped(engine):
+        if rendering.is_set() and engine.data.time >= initial_time[0] + 0.05:
+            physics_advanced.set()
+
+    handle.publish.side_effect = publish
+    mocker.patch("dimos.simulation.engines.mujoco_engine.SnapshotViewer", return_value=handle)
+    camera_engine.set_step_hooks(after=stepped)
+    try:
+        assert camera_engine.connect()
+        assert rendering.wait(5)
+        assert physics_advanced.wait(5)
+        assert camera_engine._lock.acquire(timeout=1)
+        try:
+            camera_engine.set_position_target(0, 0.2)
+            assert camera_engine.connected
+        finally:
+            camera_engine._lock.release()
+        # A hung native window must retain ownership and prevent a second viewer.
+        render_thread = camera_engine._viewer_thread
+        mocker.patch("dimos.simulation.engines.mujoco_engine.DEFAULT_THREAD_JOIN_TIMEOUT", 0.05)
+        assert not camera_engine.disconnect()
+        assert camera_engine._viewer_thread is render_thread
+        assert not camera_engine.connect()
+    finally:
+        camera_engine._stop_event.set()
+        release_viewer.set()
+        camera_engine.disconnect()
+
+
+def test_closing_snapshot_viewer_stops_physics(camera_engine, mocker):
+    camera_engine._headless = False
+    camera_engine._background_viewer_rendering = True
+    handle = mocker.MagicMock()
+    handle.__enter__.return_value = handle
+    handle.publish.return_value = False
+    mocker.patch("dimos.simulation.engines.mujoco_engine.SnapshotViewer", return_value=handle)
+
+    assert camera_engine.connect()
+    assert camera_engine._stop_event.wait(5)
+    assert camera_engine.disconnect()
+    assert not camera_engine.connected
+    assert handle.publish.call_count == 1
+
+
 @pytest.mark.parametrize("fps", [0, -1, float("inf"), float("nan")])
 def test_invalid_viewer_rate_is_rejected(camera_engine, fps):
     with pytest.raises(ValueError, match="viewer_fps must be finite and positive"):

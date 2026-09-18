@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import math
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import threading
 import time
 from typing import TYPE_CHECKING, cast
@@ -31,6 +32,7 @@ from numpy.typing import NDArray
 
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.simulation.engines.base import SimulationEngine
+from dimos.simulation.engines.mujoco_viewer import SnapshotViewer, ViewerConfig
 from dimos.simulation.engines.robot_sim_binding import (
     RobotSimBinding,
     RobotSimSpec,
@@ -229,6 +231,7 @@ class MujocoEngine(SimulationEngine):
         viewer_elevation: float | None = None,
         background_camera_rendering: bool = False,
         viewer_fps: float = 60.0,
+        background_viewer_rendering: bool = False,
     ) -> None:
         super().__init__(config_path=config_path, headless=headless)
         self._on_before_step: StepHook | None = on_before_step
@@ -244,6 +247,7 @@ class MujocoEngine(SimulationEngine):
         self._viewer_azimuth = viewer_azimuth
         self._viewer_elevation = viewer_elevation
         self._background_camera_rendering = background_camera_rendering
+        self._background_viewer_rendering = background_viewer_rendering
         if not math.isfinite(viewer_fps) or viewer_fps <= 0:
             raise ValueError("viewer_fps must be finite and positive")
         self._viewer_fps = viewer_fps
@@ -298,6 +302,7 @@ class MujocoEngine(SimulationEngine):
         self._stop_event = threading.Event()
         self._sim_thread: threading.Thread | None = None
         self._camera_thread: threading.Thread | None = None
+        self._viewer_thread: threading.Thread | None = None
 
         self._joint_positions = [0.0] * self._num_joints
         self._joint_velocities = [0.0] * self._num_joints
@@ -426,7 +431,7 @@ class MujocoEngine(SimulationEngine):
             with self._lock:
                 if any(
                     thread is not None and thread.is_alive()
-                    for thread in (self._sim_thread, self._camera_thread)
+                    for thread in (self._sim_thread, self._camera_thread, self._viewer_thread)
                 ):
                     if self._stop_event.is_set():
                         logger.error("Cannot reconnect while simulation threads are stopping")
@@ -453,17 +458,18 @@ class MujocoEngine(SimulationEngine):
             self._stop_event.set()
             with self._lock:
                 self._connected = False
-            for thread in (self._sim_thread, self._camera_thread):
+            for thread in (self._sim_thread, self._camera_thread, self._viewer_thread):
                 if thread is not None and thread is not threading.current_thread():
                     thread.join(timeout=2 * DEFAULT_THREAD_JOIN_TIMEOUT)
             if any(
                 thread is not None and thread.is_alive()
-                for thread in (self._sim_thread, self._camera_thread)
+                for thread in (self._sim_thread, self._camera_thread, self._viewer_thread)
             ):
                 logger.error("Simulation threads have not stopped; retaining ownership")
                 return False
             self._sim_thread = None
             self._camera_thread = None
+            self._viewer_thread = None
             return True
         except Exception as e:
             logger.error("disconnect() failed", cls=self.__class__.__name__, error=str(e))
@@ -792,6 +798,55 @@ class MujocoEngine(SimulationEngine):
                 self._data.qvel[mapping.dof_adr] = 0.0
         mujoco.mj_forward(self._model, self._data)
 
+    def _configure_viewer(self, handle: viewer.Handle) -> None:
+        with handle.lock():
+            if self._viewer_track_body is not None:
+                handle.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                handle.cam.trackbodyid = self._model.body(self._viewer_track_body).id
+            if self._viewer_lookat is not None:
+                handle.cam.lookat[:] = self._viewer_lookat
+            if self._viewer_distance is not None:
+                handle.cam.distance = self._viewer_distance
+            if self._viewer_azimuth is not None:
+                handle.cam.azimuth = self._viewer_azimuth
+            if self._viewer_elevation is not None:
+                handle.cam.elevation = self._viewer_elevation
+
+    def _viewer_loop(self) -> None:
+        """Publish snapshots without sharing physics locks or the GUI interpreter."""
+        try:
+            spec = mujoco.mjtState.mjSTATE_INTEGRATION
+            state = np.empty(mujoco.mj_stateSize(self._model, spec))
+            config = ViewerConfig(
+                fps=self._viewer_fps,
+                track_body=self._viewer_track_body,
+                lookat=self._viewer_lookat,
+                distance=self._viewer_distance,
+                azimuth=self._viewer_azimuth,
+                elevation=self._viewer_elevation,
+            )
+            with TemporaryDirectory(prefix="dimos-viewer-") as directory:
+                model_path = Path(directory) / "scene.mjb"
+                with self._lock:
+                    mujoco.mj_saveModel(self._model, str(model_path), None)
+                with SnapshotViewer(model_path, config) as display:
+                    while not self._stop_event.is_set():
+                        started = time.monotonic()
+                        with self._lock:
+                            mujoco.mj_getState(self._model, self._data, state, spec)
+                            camera_request = self._viewer_camera_request
+                            self._viewer_camera_request = None
+                        if not display.publish(state, camera_request):
+                            break
+                        self._stop_event.wait(
+                            max(0.0, 1.0 / self._viewer_fps - (time.monotonic() - started))
+                        )
+        except Exception:
+            logger.exception("Viewer snapshot rendering failed")
+        finally:
+            # Closing the window still closes the simulation, as in inline mode.
+            self._stop_event.set()
+
     def _sim_loop(self) -> None:
         logger.info("sim loop started", cls=self.__class__.__name__)
         cam_renderers: dict[str, _CameraRendererState] = {}
@@ -820,6 +875,11 @@ class MujocoEngine(SimulationEngine):
                 if self._stop_event.is_set():
                     return
             lidar_states = self._init_raycast_lidars()
+            if not self._headless and self._background_viewer_rendering:
+                self._viewer_thread = threading.Thread(
+                    target=self._viewer_loop, name="mujoco-viewer", daemon=True
+                )
+                self._viewer_thread.start()
 
             next_step = time.monotonic()
             next_viewer_sync = 0.0
@@ -879,24 +939,14 @@ class MujocoEngine(SimulationEngine):
                     self._raycast_lidars(stamp, lidar_states)
                 self._stop_event.wait(max(0.0, next_step - time.monotonic()))
 
-            if self._headless:
+            if self._headless or self._background_viewer_rendering:
                 while not self._stop_event.is_set():
                     _step_once(sync_viewer=False)
             else:
                 with viewer.launch_passive(
                     self._model, self._data, show_left_ui=False, show_right_ui=False
                 ) as m_viewer:
-                    if self._viewer_track_body is not None:
-                        m_viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-                        m_viewer.cam.trackbodyid = self._model.body(self._viewer_track_body).id
-                    if self._viewer_lookat is not None:
-                        m_viewer.cam.lookat[:] = self._viewer_lookat
-                    if self._viewer_distance is not None:
-                        m_viewer.cam.distance = self._viewer_distance
-                    if self._viewer_azimuth is not None:
-                        m_viewer.cam.azimuth = self._viewer_azimuth
-                    if self._viewer_elevation is not None:
-                        m_viewer.cam.elevation = self._viewer_elevation
+                    self._configure_viewer(m_viewer)
                     next_step = time.monotonic()
                     while m_viewer.is_running() and not self._stop_event.is_set():
                         _step_once(sync_viewer=True)
@@ -906,6 +956,10 @@ class MujocoEngine(SimulationEngine):
                 self._camera_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
                 if self._camera_thread.is_alive():
                     logger.error("Camera render thread has not stopped; retaining ownership")
+            if self._viewer_thread is not None:
+                self._viewer_thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+                if self._viewer_thread.is_alive():
+                    logger.error("Viewer render thread has not stopped; retaining ownership")
             self._close_cam_renderers(cam_renderers)
             with self._lock:
                 self._connected = False

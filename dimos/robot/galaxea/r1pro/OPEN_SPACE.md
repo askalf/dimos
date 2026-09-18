@@ -54,11 +54,19 @@ Evidence is saved locally in `recordings/r1pro-classical-open-space/seed-5000/va
 
 ## Simulation speed
 
-The desktop viewer receives state updates at 15 Hz; physics retains its 2 ms timestep (500 steps per simulated second), and camera streaming remains on a separate thread at 10 Hz. The shared simulator exposes `viewer_fps` separately from camera `fps`.
+The desktop viewer receives state updates at 30 Hz; physics retains its 2 ms timestep (500 steps per simulated second), and camera streaming remains on a separate thread at 10 Hz. The shared simulator exposes `viewer_fps` separately from camera `fps`. The classical demo now sends bounded snapshots to a separate viewer process. Slow viewer synchronization drops display frames instead of holding the physics lock. Camera orbit and zoom remain available; use DimOS commands to modify robot state, since native viewer physics edits affect only the display copy. The native UI may redraw faster than the 30 Hz state updates.
 
-The cup's walls now sit on its own bottom disk. Previously the disk and all 24 wall segments touched the table, producing 101 cup/table contacts at rest. The corrected geometry produces five, while preserving the hollow cavity, physical grasp surfaces, outer dimensions and total mass. On the saved slow-run scene this reduced raw physics cost from 2.93 ms to 0.34 ms per step. This is a physics benchmark, not an end-to-end action latency guarantee: GraspGenX and reachability planning still take time.
+The object labeled `cup` is a narrow, hollow, handleless cylinder, not a detailed mug asset. In the profiled open-space run (seed735730399), it was the orange `object_5` on `display_table`; IDs and positions change across seeds. Its walls now sit on its own bottom disk. Previously the disk and all 24 wall segments touched the table, producing 101 cup/table contacts at rest. The corrected geometry produces five, while preserving the hollow cavity, physical grasp surfaces, outer dimensions and total mass. On the saved slow-run scene this reduced raw physics cost from 2.93 ms to 0.34 ms per step. This is a physics benchmark, not an end-to-end action latency guarantee: GraspGenX and reachability planning still take time.
 
 Restart the blueprint to generate the corrected scene; `reset_scene` reuses the existing model. No new environment exports are needed.
+
+### Current performance investigation
+
+The September 17 desktop run exposed a 12.4-second viewer synchronization stall while holding the live physics lock. The snapshot viewer removes that coupling. Its 37 focused simulation/IPC tests pass, and full-window startup and process cleanup have been checked. A real 12-second suspension of only the viewer left physics running at approximately real time. A complete delivery acceptance run with this change is still pending.
+
+The investigation is paused for a host reboot at the user's request. The latest measurement showed a busy worker using approximately one full core while that active core read about 200 MHz; other active cores also read about 200 MHz. This followed reported temperatures near 90°C even at low overall CPU usage. Earlier 400–800 MHz readings on idle cores were inconclusive, but the later active-core sample confirms a severely reduced clock during the slow run. Check host temperature and clocks after reboot before comparing runtime performance. No host power settings or simulation safety thresholds were changed.
+
+The latest full-window run did not complete delivery: one thin-object grasp failed, and a subsequent run crashed inside Python's traceback-reporting code while temporary diagnostic stack dumping was enabled. A repeat without that instrumentation was stopped for the reboot. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-open-space.md) for evidence and remaining checks.
 
 ## Local regression
 
