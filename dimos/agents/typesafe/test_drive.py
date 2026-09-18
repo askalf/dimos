@@ -79,7 +79,7 @@ def test_stop_overrides_axes() -> None:
 def test_finished_stops_and_flags() -> None:
     d = _decode(_answers(x="forward", task="finished"))
     assert d.finished and d.stop and d.is_zero
-    assert not _decode(_answers(x="forward", task="finished", conf=0.3)).finished
+    assert _decode(_answers(x="forward", task="finished", conf=0.1)).finished  # the pick counts
     assert not _decode(_answers(x="forward")).finished
 
 

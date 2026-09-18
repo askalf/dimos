@@ -159,9 +159,8 @@ def _noul(answers: Answers, key: str, threshold: float) -> bool:
 
 def decode(answers: Answers, *, min_confidence: float, stop_threshold: float) -> Drive:
     task = _choice(answers, "task")
-    finished = (
-        task is not None and task["choice"] == "finished" and task["confidence"] >= min_confidence
-    )
+    # The pick, not its confidence: a two-way answer at the target hovers near even.
+    finished = task is not None and task["choice"] == "finished"
     stop = finished or _noul(answers, "stop", stop_threshold)
     vals: list[float] = []
     labels: list[str] = []
