@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from pathlib import Path
@@ -156,50 +157,39 @@ def test_observe_merges_static_scene_with_live_pose(scene_json: Path) -> None:
 
 
 # --- controller ------------------------------------------------------------------
+# The pick is the command. Nothing about heading is computed in code.
 
 
-def test_aligned_step_drives_forward(scene_json: Path) -> None:
-    """Facing +x and told +x: drive, no turn. linear.y is never used —
-    DimSim's ground model ignores it."""
+def test_forward_and_backward_scale_linear_x(scene_json: Path) -> None:
     policy = TypeSafePolicy(scene_json=scene_json)
-    twist = policy.twist(_choice("1,0"), _pose(0.0))
-    assert twist.linear.x == pytest.approx(0.2)
-    assert twist.linear.y == 0.0
-    assert twist.angular.z == pytest.approx(0.0, abs=1e-9)
+    fwd, back = policy.twist(_choice("1,0")), policy.twist(_choice("-1,0"))
+    assert (fwd.linear.x, fwd.angular.z) == pytest.approx((0.2, 0.0))
+    assert (back.linear.x, back.angular.z) == pytest.approx((-0.2, 0.0))
+    assert fwd.linear.y == 0.0  # DimSim ignores it anyway
 
 
-@pytest.mark.parametrize(
-    ("key", "yaw_deg", "sign"),
-    [("0,1", 0.0, +1), ("0,-1", 0.0, -1), ("-1,0", 90.0, +1), ("1,0", 90.0, -1)],
-)
-def test_misaligned_step_turns_in_place(
-    scene_json: Path, key: str, yaw_deg: float, sign: int
-) -> None:
-    """Off by 90 degrees: rotate toward the target, no forward motion."""
+def test_turns_scale_angular_z_with_the_ros_sign(scene_json: Path) -> None:
+    """+angular.z is counter-clockwise (left) in ROS and in DimSim's physics."""
     policy = TypeSafePolicy(scene_json=scene_json)
-    twist = policy.twist(_choice(key), _pose(math.radians(yaw_deg)))
-    assert twist.linear.x == 0.0
-    assert twist.angular.z == pytest.approx(sign * 0.5)
+    left, right = policy.twist(_choice("0,1")), policy.twist(_choice("0,-1"))
+    assert (left.linear.x, left.angular.z) == pytest.approx((0.0, 0.5))
+    assert (right.linear.x, right.angular.z) == pytest.approx((0.0, -0.5))
 
 
-def test_heading_error_wraps_across_pi(scene_json: Path) -> None:
-    """Facing -170 deg and told -x (+180): that is a 10 deg error, not 350."""
-    policy = TypeSafePolicy(scene_json=scene_json)
-    twist = policy.twist(_choice("-1,0"), _pose(math.radians(-170.0)))
-    assert twist.linear.x == pytest.approx(0.2)  # aligned enough to drive
-    assert twist.angular.z == pytest.approx(-math.radians(10.0))  # small right correction
-
-
-def test_hold_step_is_zero_regardless_of_heading(scene_json: Path) -> None:
-    policy = TypeSafePolicy(scene_json=scene_json)
-    twist = policy.twist(_choice("0,0"), _pose(math.radians(37.0)))
+def test_stop_is_zero(scene_json: Path) -> None:
+    twist = TypeSafePolicy(scene_json=scene_json).twist(_choice("0,0"))
     assert (twist.linear.x, twist.linear.y, twist.angular.z) == (0.0, 0.0, 0.0)
+
+
+def test_twist_takes_no_pose(scene_json: Path) -> None:
+    """Guards the contract: the command must not depend on the robot's heading."""
+    assert list(inspect.signature(TypeSafePolicy.twist).parameters) == ["self", "step"]
 
 
 def test_low_confidence_holds_still(scene_json: Path) -> None:
     policy = TypeSafePolicy(scene_json=scene_json, min_confidence=0.5)
-    twist = policy.twist(_choice("0,1", confidence=0.2), _pose(0.0))
-    assert (twist.linear.x, twist.linear.y) == (0.0, 0.0)
+    twist = policy.twist(_choice("1,0", confidence=0.2))
+    assert (twist.linear.x, twist.angular.z) == (0.0, 0.0)
 
 
 # --- preflight -------------------------------------------------------------------
