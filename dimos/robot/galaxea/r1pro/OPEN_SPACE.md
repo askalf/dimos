@@ -82,7 +82,9 @@ The non-agent blueprint is `r1pro-classical-open-space-sim`. A reproducible test
   --viewer --stay-open
 ```
 
-Tray actions use `tray_pick::` and `tray_place::<platform>`; the arm field stays empty. A full tray sequence is `pick:right:object_4 place:right:tray tray_pick:: go::tall_table tray_place::tall_table`.
+Tray actions use `tray_pick::` and `tray_place::<platform>`; the arm field stays empty. A full tray sequence is `pick:right:object_4 place:right:tray tray_pick:: go::display_table tray_place::display_table`.
+
+`--agent --say "Pick the carton with your right hand." "Put it in the tray."` runs the language agent instead and sends each sentence the way HumanCLI does, waiting for the agent to go idle and the action to finish. Pass `--model` to use a provider with working credentials. The launching shell must hold that provider's API key; the agent reports `Agent request failed` with the HTTP status otherwise.
 
 Use a fresh output directory and unused ports for each test. The harness saves physical state and per-action outcomes. Interactive launches do not automatically execute this sequence.
 
