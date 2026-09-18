@@ -111,13 +111,13 @@ def questions(labels: tuple[str, ...]) -> dict[str, Question]:
             },
             {
                 "finished": _opt(
-                    "the target named in `goal` is in `objects` with `distance` touching: the robot is at the object and the task is done",
-                    "the target is near, mid or far, or not in `objects`",
-                    ["chair ahead, touching"],
+                    "the target named in `goal` is in `objects` with `distance` touching, or near while `robot.motion` is stopped: the robot is at the object and the task is done; the coordinates in `goal` are not a place to stand",
+                    "the target is mid or far, or near while still driving, or not in `objects`",
+                    ["chair ahead, touching", "table ahead, near, robot stopped"],
                 ),
                 "continue": _opt(
-                    "the target's `distance` is near, mid or far, or the target is not yet in `objects`",
-                    "the robot is already touching the target",
+                    "the target's `distance` is mid or far, or near while the robot is still driving, or the target is not yet in `objects`",
+                    "the robot is touching the target, or stopped near it",
                     ["chair ahead_left, mid"],
                 ),
             },

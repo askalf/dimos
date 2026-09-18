@@ -57,8 +57,10 @@ TASK = (
     "`robot` (your position, heading and last motion), `objects` (things in the room with their "
     "world position, size, `distance` from you to their nearest edge, and `bearing`), and "
     "`room.sectors` (the nearest obstacle in each direction around you). Drive toward the object "
-    "named in `goal`, around obstacles. The task is finished when that object's `distance` is "
-    "touching: then stop and report finished."
+    "named in `goal`, around obstacles. Coordinates in `goal` only say which object is meant; "
+    "you cannot stand on an object's centre, so never compare them with your own position. The "
+    "task is finished when that object's `distance` is touching, or near with the robot stopped "
+    "as close as it can get: then report finished."
 )
 
 
