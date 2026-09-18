@@ -58,13 +58,20 @@ WANT = (
     "chair", "bed", "couch", "sofa", "table", "toilet", "tv", "refrigerator", "fridge", "sink",
     "desk", "cabinet", "bathtub", "washer", "stool", "plant", "shelves", "dresser",
     "nightstand", "piano", "fireplace", "oven", "stove", "bench", "counter", "shower",
+    "chest_of_drawers", "wardrobe", "trashcan", "microwave", "dishwasher", "tv_stand", "bookcase",
+    "vanity", "dog bed", "lamp", "armchair", "ottoman",
 )  # fmt: skip
-MAX_CASES = 6
-MIN_GEODESIC_M, MAX_GEODESIC_M = 3.0, 12.0
+MAX_CASES = 8
+PER_LABEL = 2  # distinct objects of one label a scene may contribute
+# Difficulty from the ground truth and the navmesh: how boxed in the target is, how far,
+# and how much the shortest path detours from the straight line (doorways, corridors).
+EASY = dict(min_gap=0.4, max_geodesic=8.0, max_detour=1.4)
+HARD = dict(max_gap=0.15, min_geodesic=10.0, min_detour=1.8)
+MIN_GEODESIC_M, MAX_GEODESIC_M = 3.0, 16.0
 # Furniture-sized: something an agent can be sent to and would see in a 20-object list.
 MIN_FOOTPRINT_M, MIN_HEIGHT_M = 0.4, 0.2
 END_STANDOFF_M = 0.6  # ring radius beyond the box's half diagonal (tour stop only)
-MIN_GAP_M = 0.6  # clear floor between the target's box and any other furniture box
+MIN_GAP_M = 0.0  # boxed-in targets are the hard cases; difficulty is classified below
 # Not floor obstacles for the gap: in walls, flat, or hanging.
 NOT_OBSTACLES = (
     "window",
@@ -78,7 +85,8 @@ NOT_OBSTACLES = (
     "lamp",
     "light",
 )
-END_CLEARANCE_M = 0.25  # from the nearest navmesh edge
+END_CLEARANCE_M = 0.15  # from the nearest navmesh edge
+END_SNAP_M = 1.0  # how far the ring point may move to reach the navmesh
 SPAWN_CLEARANCE_M = 0.5
 TOUR_STEP_M = 0.5
 
@@ -119,7 +127,7 @@ def main(ground_truth: Path, dataset: Path, out: Path) -> None:
             ros = np.array([cx + r * math.cos(a), cy + r * math.sin(a), cz - sz / 2])
             hab = frames.position_to_habitat(ros).astype(np.float32)
             snapped = pf.snap_point(hab)
-            if not np.isfinite(snapped).all() or np.linalg.norm(snapped - hab) > 0.5:
+            if not np.isfinite(snapped).all() or np.linalg.norm(snapped - hab) > END_SNAP_M:
                 continue
             clear = pf.distance_to_closest_obstacle(snapped, 2.0)
             if clear >= END_CLEARANCE_M and (best is None or clear > best[0]):
@@ -153,11 +161,47 @@ def main(ground_truth: Path, dataset: Path, out: Path) -> None:
             key=gap,
             reverse=True,
         )
+        taken = 0
         for d in cands:
             e = end_point(d)
             if e is not None:
                 targets.append((d, e))
-                break
+                taken += 1
+                if taken == PER_LABEL:
+                    break
+
+    def classify(d, spawn, geodesic):
+        """(difficulty, detour): easy is open and direct, hard is boxed in, far or roundabout."""
+        straight = float(
+            np.linalg.norm(frames.position_to_ros(spawn)[:2] - np.array(d["center_xyz"][:2]))
+        )
+        detour = geodesic / max(straight, 0.1)
+        g = gap(d)
+        if (
+            g >= EASY["min_gap"]
+            and geodesic <= EASY["max_geodesic"]
+            and detour <= EASY["max_detour"]
+        ):
+            return "easy", detour
+        if g <= HARD["max_gap"] or geodesic >= HARD["min_geodesic"] or detour >= HARD["min_detour"]:
+            return "hard", detour
+        return "medium", detour
+
+    def choose(spawn):
+        """Up to MAX_CASES for this spawn: half easy, half hard, medium fills."""
+        rated = []
+        for d, e in targets:
+            geodesic = shortest(spawn, e)[0]
+            if MIN_GEODESIC_M <= geodesic <= MAX_GEODESIC_M:
+                level, detour = classify(d, spawn, geodesic)
+                rated.append((d, e, geodesic, level, detour))
+        by = {k: [r for r in rated if r[3] == k] for k in ("easy", "hard", "medium")}
+        half = MAX_CASES // 2
+        chosen = by["easy"][:half] + by["hard"][:half]
+        chosen += [
+            r for r in by["medium"] + by["easy"][half:] + by["hard"][half:] if r not in chosen
+        ][: MAX_CASES - len(chosen)]
+        return chosen
 
     best = None
     for seed in range(60):
@@ -165,16 +209,21 @@ def main(ground_truth: Path, dataset: Path, out: Path) -> None:
         spawn = pf.get_random_navigable_point()
         if pf.distance_to_closest_obstacle(spawn, 2.0) < SPAWN_CLEARANCE_M:
             continue
-        picked = [(d, e, shortest(spawn, e)[0]) for d, e in targets]
-        picked = [t for t in picked if MIN_GEODESIC_M <= t[2] <= MAX_GEODESIC_M]
-        if best is None or len(picked) > len(best[1]):
-            best = (spawn, picked)
-    if best is None or not best[1]:
+        picked = choose(spawn)
+        # Prefer spawns that give both kinds, then more cases.
+        score = (
+            min(sum(1 for r in picked if r[3] == "easy"), 2)
+            + min(sum(1 for r in picked if r[3] == "hard"), 2),
+            len(picked),
+        )
+        if best is None or score > best[0]:
+            best = (score, spawn, picked)
+    if best is None or not best[2]:
         raise SystemExit(f"no cases for {scene_id}: {len(targets)} targets")
-    spawn, picked = best[0], best[1][:MAX_CASES]
+    spawn, picked = best[1], best[2]
     spawn_ros = frames.position_to_ros(spawn).round(3).tolist()
 
-    stops = [spawn] + [e for _, e, _ in picked] + [spawn]
+    stops = [spawn] + [e for _, e, _, _, _ in picked] + [spawn]
     tour = []
     for i in range(len(stops) - 1):
         pts = shortest(stops[i], stops[i + 1])[1]
@@ -199,8 +248,10 @@ def main(ground_truth: Path, dataset: Path, out: Path) -> None:
                 "end_xy": [round(float(v), 2) for v in d["center_xyz"][:2]],  # on the object
                 "gap_m": round(gap(d), 2),
                 "geodesic_m": round(float(g), 2),
+                "detour": round(float(detour), 2),
+                "difficulty": level,
             }
-            for d, e, g in picked
+            for d, e, g, level, detour in picked
         ],
         "tour": tour,
     }

@@ -53,6 +53,12 @@ from dimos.evals.nav_metrics import (
 )
 from dimos.evals.types import EvalCase, Outcome, Suite, recording
 
+TASK_BRIEF = (
+    "You control a mobile robot in a furnished indoor scene. You know the robot's pose and the "
+    "world-frame positions of the objects in the scene. Navigate the robot to the target object "
+    "named below, driving around obstacles, and declare finished as soon as the robot is beside "
+    "it. The last line is the goal; its coordinates are the target's centre in the world frame."
+)
 SCENES = Path(__file__).parent / "scenes" / "habitat"
 BLUEPRINT = ["habitat-nav", "mcp-server", "demo-objects", "nav-skills"]
 TIMEOUT_S = float(os.environ.get("DIMOS_EVAL_TIMEOUT_S", 1800))
@@ -99,7 +105,7 @@ def cases_for(scene_file: Path) -> list[EvalCase]:
         out.append(
             EvalCase(
                 id=f"{scene['scene_id']}_{re.sub(r'[^A-Za-z0-9]+', '_', label).strip('_').lower()}",
-                inputs=f"go to the {label} at ({x:.2f}, {y:.2f})",
+                inputs=f"{TASK_BRIEF}\n\ngo to the {label} at ({x:.2f}, {y:.2f})",
                 environment=HabitatEnvironment(
                     blueprint=BLUEPRINT,
                     scene_id=scene["scene_id"],
@@ -115,7 +121,9 @@ def cases_for(scene_file: Path) -> list[EvalCase]:
                 grade=grade_nav((x, y), boxes[c["object_id"]]),
                 timeout_s=TIMEOUT_S,
                 threshold=0.5,  # passed == reached
-                tags=frozenset({"habitat", "nav", scene["scene_id"], label}),
+                tags=frozenset(
+                    {"habitat", "nav", scene["scene_id"], label, c.get("difficulty", "")} - {""}
+                ),
             )
         )
     return out

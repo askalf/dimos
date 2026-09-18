@@ -21,6 +21,7 @@ from collections.abc import Iterable
 import importlib
 import inspect
 import json
+from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -123,10 +124,16 @@ def run(
     parallel: int = typer.Option(1, min=1, help="Cases at once, one dimos each; needs --container"),
     container: str = typer.Option("", help="Docker image that runs each case (docker/eval)"),
     repeat: int = typer.Option(1, min=1, help="Trials per case"),
+    video: bool = typer.Option(False, "--video", help="Capture the viewer as viewer.mp4 per case"),
 ) -> None:
     from dimos.evals.runner import EvalRunner, summarize
 
     cases = [c for c in importlib.import_module(suite).SUITE if not case or c.id in case]
+    if video:
+        for c in cases:
+            if hasattr(c.environment.config, "video"):
+                c.environment.config.video = True
+        set_ = [*set_, "video=true"] if parallel > 1 or container or repeat > 1 else set_
     kwargs = agent_kwargs(set_)
     if allow is not None:
         if "allowed_tools" in kwargs:
@@ -169,6 +176,26 @@ def run(
         f"\n{s.n} cases | mean {s.mean_score:.2f} | pass {s.pass_rate:.0%} "
         f"| errors {s.errors} | {s.duration_s:.0f}s | {run_dir}"
     )
+
+
+@app.command("media")
+def media(
+    runs: list[str] = typer.Argument(help="Run directories with <case>/viewer.mp4"),
+    out: str = typer.Option("media", help="Output directory"),
+    grid: bool = typer.Option(False, "--grid", help="Also tile every case's videos, one per run"),
+) -> None:
+    """Caption each case video with its arm, case and score; optionally tile arms side by side."""
+    from dimos.evals.media import caption_runs, tile
+
+    captioned = caption_runs([Path(r) for r in runs], Path(out))
+    for path in captioned.values():
+        typer.echo(path)
+    if grid:
+        by_case: dict[str, list[Path]] = {}
+        for (case_id, _), path in captioned.items():
+            by_case.setdefault(case_id, []).append(path)
+        for case_id, paths in by_case.items():
+            typer.echo(tile(paths, Path(out) / f"{case_id}-grid.mp4"))
 
 
 @app.command("list")

@@ -209,6 +209,7 @@ class TypeSafeAgent(Module):
     def _on_human_input(self, text: str) -> None:
         text = (text or "").strip()
         self.agent.publish(HumanMessage(content=text))
+        text = text.splitlines()[-1].strip() if text else text  # a briefing may precede the goal
         if not text or text.lower() in _STOP_WORDS:
             self._clear_goal("stopped by operator" if text else "goal cleared")
             return
