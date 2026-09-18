@@ -14,11 +14,13 @@
 
 """Go to a named object in a Habitat scene; graded on arrival, time, facing, bumps, path.
 
-One scene file per scene under ``scenes/habitat/``: the ground-truth boxes
-(``detections``, the ``detection3d_array_to_dict`` layout, ROS world frame) and the
-``cases`` (label, spawn, end point beside the object, geodesic distance). Every arm
-gets ``go to the <label> at (x, y)``; the boxes are published by ``demo-objects``
-so text-only agents see them in ``world_state``.
+One scene file per scene under ``scenes/habitat/``: the ground-truth boxes, either
+inline as ``detections`` (the ``detection3d_array_to_dict`` layout, ROS world frame)
+or by path as ``ground_truth`` (``misc/habitat/ground_truth/...``), the optional
+``scene_dataset_config``, the ``cases`` (label, spawn, end point beside the object,
+geodesic distance) and the mapping ``tour``; ``misc/habitat/nav_cases.py`` writes
+one from a ground-truth file. Every arm gets ``go to the <label> at (x, y)``; the
+boxes are published by ``demo-objects`` so text-only agents see them in ``world_state``.
 
     # the planner alone, the end point straight to /goal
     dimos evals run dimos.evals.suites.habitat_nav --agent dimos.evals.agents.topic \\
@@ -37,7 +39,9 @@ from collections.abc import Callable
 import json
 import os
 from pathlib import Path
+import re
 
+from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.evals.environments.habitat import HabitatEnvironment
 from dimos.evals.nav_metrics import (
     box_of,
@@ -77,25 +81,33 @@ def grade_nav(
 
 def cases_for(scene_file: Path) -> list[EvalCase]:
     scene = json.loads(scene_file.read_text())
-    boxes = {d["id"]: box_of(d["center_xyz"], d["size_xyz"]) for d in scene["detections"]}
+    objects = scene_file
+    if "ground_truth" in scene:
+        objects = DIMOS_PROJECT_ROOT / scene["ground_truth"]
+        if not objects.is_file():  # ground truth ships separately (misc/habitat, PR #4211)
+            return []
+    detections = json.loads(objects.read_text())["detections"]
+    boxes = {d["id"]: box_of(d["center_xyz"], d["size_xyz"]) for d in detections}
+    dataset = scene.get("scene_dataset_config")
     out = []
     for c in scene["cases"]:
         x, y = c["end_xy"]
         label = c["label"]
         out.append(
             EvalCase(
-                id=f"{scene['scene_id']}_{label.replace(' ', '_')}",
+                id=f"{scene['scene_id']}_{re.sub(r'[^A-Za-z0-9]+', '_', label).strip('_').lower()}",
                 inputs=f"go to the {label} at ({x:.2f}, {y:.2f})",
                 environment=HabitatEnvironment(
                     blueprint=BLUEPRINT,
                     scene_id=scene["scene_id"],
+                    scene_dataset_config=str(DIMOS_PROJECT_ROOT / dataset) if dataset else None,
                     start_position_ros_override=tuple(c["spawn_xyz"]),
                     start_yaw_deg=c["spawn_yaw_deg"],
                     raw_bridge=True,  # inert unless an agent connects; identical launches per arm
                     raw_topics=("world_state", "cmd_vel", "finished"),
                     record_topics=RECORD_TOPICS,
                     tour=tuple((float(x), float(y)) for x, y in scene.get("tour", ())),
-                    extra_env={"DEMOOBJECTS__SCENE_JSON": str(scene_file), **MODULE_ENV},
+                    extra_env={"DEMOOBJECTS__SCENE_JSON": str(objects), **MODULE_ENV},
                 ),
                 grade=grade_nav((x, y), boxes[c["object_id"]]),
                 timeout_s=TIMEOUT_S,

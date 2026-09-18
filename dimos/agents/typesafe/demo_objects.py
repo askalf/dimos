@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Any
@@ -49,6 +50,7 @@ class DemoObjectsConfig(ModuleConfig):
         default_factory=lambda: [("chair", 1.2, 2.0, 0.4)]
     )
     scene_json: Path | None = None
+    exclude: str = "^wall"  # labels matching this regex are not published (walls crowd the list)
     size: tuple[float, float, float] = (0.5, 0.5, 0.9)  # for ``objects``, which carry none
     rate_hz: float = 2.0
 
@@ -56,11 +58,13 @@ class DemoObjectsConfig(ModuleConfig):
 Object = tuple[str, tuple[float, float, float], tuple[float, float, float]]  # label, center, size
 
 
-def load_scene_objects(path: Path) -> list[Object]:
+def load_scene_objects(path: Path, exclude: str = "") -> list[Object]:
     raw = json.loads(Path(path).expanduser().read_text())
+    skip = re.compile(exclude) if exclude else None
     return [
         (str(d["label"]), tuple(map(float, d["center_xyz"])), tuple(map(float, d["size_xyz"])))  # type: ignore[misc]
         for d in raw["detections"]
+        if skip is None or not skip.search(str(d["label"]))
     ]
 
 
@@ -78,7 +82,7 @@ class DemoObjects(Module):
     def start(self) -> None:
         super().start()
         self._objects = (
-            load_scene_objects(self.config.scene_json)
+            load_scene_objects(self.config.scene_json, self.config.exclude)
             if self.config.scene_json is not None
             else [(label, (x, y, z), self.config.size) for label, x, y, z in self.config.objects]
         )
