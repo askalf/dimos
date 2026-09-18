@@ -21,8 +21,12 @@ from collections.abc import Iterable
 import importlib
 import inspect
 import json
+import os
 from pathlib import Path
 import re
+import secrets
+import subprocess
+import time
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -125,7 +129,17 @@ def run(
     container: str = typer.Option("", help="Docker image that runs each case (docker/eval)"),
     repeat: int = typer.Option(1, min=1, help="Trials per case"),
     video: bool = typer.Option(False, "--video", help="Capture the viewer as viewer.mp4 per case"),
+    docker: bool = typer.Option(
+        False,
+        "--docker",
+        help="Run this eval in a fresh, detached worker container (docker/evals/compose.yaml) "
+        "and return at once; one container per invocation, gone when the eval ends",
+    ),
 ) -> None:
+    if docker:
+        _run_in_docker(suite, agent, set_, allow, exclude, tags, limit, case, repeat)
+        return
+
     from dimos.evals.runner import EvalRunner, summarize
 
     cases = [c for c in importlib.import_module(suite).SUITE if not case or c.id in case]
@@ -196,6 +210,59 @@ def media(
             by_case.setdefault(case_id, []).append(path)
         for case_id, paths in by_case.items():
             typer.echo(tile(paths, Path(out) / f"{case_id}-grid.mp4"))
+
+
+def _run_in_docker(
+    suite: str,
+    agent: str,
+    set_: list[str],
+    allow: str | None,
+    exclude: str | None,
+    tags: str,
+    limit: int,
+    case: list[str],
+    repeat: int,
+) -> None:
+    """The same ``dimos evals run`` in a one-off worker of docker/evals/compose.yaml.
+
+    The container has its own network namespace, so any number of these run
+    side by side on one host without sharing a port or a multicast bus. It is
+    detached: this returns as soon as it is started, and it removes itself when
+    the eval ends. Results, recordings and Rerun files land under the runs
+    directory the compose file mounts on ``/state``.
+    """
+    from dimos.constants import DIMOS_PROJECT_ROOT
+
+    argv = [suite, "--agent", agent]
+    for item in set_:
+        argv += ["--set", item]
+    if allow is not None:
+        argv += ["--allow", allow]
+    if exclude is not None:
+        argv += ["--exclude", exclude]
+    if tags:
+        argv += ["--tags", tags]
+    if limit:
+        argv += ["--limit", str(limit)]
+    for case_id in case:
+        argv += ["--case", case_id]
+    if repeat > 1:
+        argv += ["--repeat", str(repeat)]
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = f"evals-{stamp}-{suite.rsplit('.', 1)[-1]}-{secrets.token_hex(2)}"
+    # COMPOSE_FILE set in the environment (e.g. to add compose.gpu.yaml) wins.
+    compose = DIMOS_PROJECT_ROOT / "docker" / "evals" / "compose.yaml"
+    files = [] if os.environ.get("COMPOSE_FILE") else ["-f", str(compose)]
+    command = ["docker", "compose", *files, "run", "--rm", "-d", "--name", name, "worker"]
+    command += ["dimos", "evals", "run", *argv]
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
+    runs = os.environ.get("EVAL_RUNS_DIR") or str(compose.parent / "eval-runs")
+    typer.echo(f"{name}: started (detached)")
+    typer.echo(f"  follow:   docker logs -f {name}")
+    typer.echo(
+        f"  results:  {runs}/dimos/evals/   recordings + rerun.rrd: {runs}/dimos/recordings/"
+    )
 
 
 @app.command("list")
