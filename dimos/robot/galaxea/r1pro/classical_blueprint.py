@@ -129,7 +129,7 @@ def build_classical_apartment(
                 width=320,
                 height=240,
                 fps=10,
-                viewer_fps=30,
+                viewer_fps=20,
                 background_viewer_rendering=True,
                 extra_cameras=[],
             )
