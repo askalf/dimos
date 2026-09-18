@@ -54,7 +54,9 @@ def _objects_3d(
             d = math.hypot(dx, dy)
             o["distance_m"] = round(d, 2)
             o["distance"] = distance_word(d)
-            o["bearing"] = bearing_word(math.atan2(dy, dx) - pose.yaw)
+            rel = math.atan2(dy, dx) - pose.yaw
+            o["bearing"] = bearing_word(rel)
+            o["bearing_deg"] = round(math.degrees(math.atan2(math.sin(rel), math.cos(rel))), 1)
         out.sort(key=lambda o: o["distance_m"])
     return out[:max_objects]
 

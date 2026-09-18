@@ -48,6 +48,7 @@ def _answers(
     x: str = "none", y: str = "none", yaw: str = "none", stop: float = 0.0
 ) -> dict[str, Any]:
     return {
+        "target": _choice("chair", ("chair", "none")),
         "drive.x": _choice(x, ("forward", "none", "backward")),
         "drive.y": _choice(y, ("left", "none", "right")),
         "drive.yaw": _choice(yaw, ("turn_left", "none", "turn_right")),
@@ -202,3 +203,19 @@ def test_holds_without_odom_or_detections(
     a.odom.transport.publish(PoseStamped(position=(0, 0, 0.4), frame_id="world"))
     time.sleep(0.4)
     assert fake.states == []  # odom alone is not enough: nothing to drive toward
+
+
+def test_arrival_by_distance_stops_and_clears(
+    agent: tuple[TypeSafeAgent, FakeClient, list[Twist]],
+) -> None:
+    a, fake, twists = agent
+    a.config.stops_to_clear_goal = 2
+    fake.answers = _answers(x="forward")
+    _scene(a)
+    a.odom.transport.publish(
+        PoseStamped(position=(2.8, 0, 0.4), frame_id="world")
+    )  # 0.2 m from the chair
+    time.sleep(0.1)
+    a.set_goal("go to the chair")
+    assert _wait(lambda: a.goal() is None)
+    assert not any(t.linear.x > 0.1 for t in twists)

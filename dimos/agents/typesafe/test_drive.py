@@ -80,3 +80,17 @@ def test_blend_uses_probability_difference() -> None:
     a["drive.x"] = _choice("forward", {"forward": 0.6, "none": 0.1, "backward": 0.3}, 0.4)
     d = decode_drive(a, blend=True)
     assert abs(d.x - 0.3) < 1e-9
+
+
+def test_target_question_lists_object_labels() -> None:
+    q = drive_questions(("chair", "person"))
+    assert set(q["target"]["criteria"]) == {"chair", "person", "none"}
+    assert "target" not in drive_questions()
+
+
+def test_target_decoded_and_none_dropped() -> None:
+    a = _answers(x="forward")
+    a["target"] = _choice("chair", {"chair": 0.9, "none": 0.1}, 0.8)
+    assert decode_drive(a).target == "chair"
+    a["target"] = _choice("none", {"chair": 0.1, "none": 0.9}, 0.8)
+    assert decode_drive(a).target is None

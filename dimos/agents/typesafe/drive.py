@@ -33,7 +33,17 @@ def _opt(what: str, not_for: str, examples: list[str]) -> dict[str, Any]:
     return {"what": what, "not_for": not_for, "examples": examples}
 
 
-def drive_questions() -> dict[str, dict[str, Any]]:
+def drive_questions(labels: tuple[str, ...] = ()) -> dict[str, dict[str, Any]]:
+    questions = _axis_questions()
+    if labels:
+        questions["target"] = choice(
+            "Which entry of `objects` is the thing `goal` asks to go to? Match by `label`.",
+            {**dict.fromkeys(labels), "none": "`goal` names nothing that is in `objects`"},
+        )
+    return questions
+
+
+def _axis_questions() -> dict[str, dict[str, Any]]:
     return {
         "drive.x": choice(
             {
@@ -105,8 +115,8 @@ def drive_questions() -> dict[str, dict[str, Any]]:
         "stop": noul(
             {"question": "Should the robot stop moving right now?", "context": _CONTEXT},
             {
-                "true": "the target named in `goal` is touching or near and ahead, or `goal` asks to stop, or the target is not in `objects`, or a collision is imminent",
-                "false": "the target is visible in `objects`, not yet reached, and there is a clear direction to move",
+                "true": "the target named in `goal` has `distance` touching, or `goal` asks to stop, or the target is not in `objects`, or `room.sectors.ahead.state` is blocked while moving forward",
+                "false": "the target is in `objects` with `distance` near, mid or far, and there is a clear direction to move; being near is not a reason to stop",
             },
         ),
     }
@@ -120,6 +130,7 @@ class Drive:
     stop: bool
     confidence: float
     labels: tuple[str, str, str]
+    target: str | None = None
 
     @property
     def is_zero(self) -> bool:
@@ -157,6 +168,11 @@ def decode_drive(
         confs.append(conf)
     if stop:
         vals = dict.fromkeys(vals, 0.0)
+    target = answers.get("target", {}).get("choice")
+    if target == "none" or (
+        target is not None and float(answers["target"].get("confidence", 0.0)) < min_confidence
+    ):
+        target = None
     return Drive(
         vals["x"],
         vals["y"],
@@ -164,4 +180,5 @@ def decode_drive(
         stop,
         min(confs) if confs else 0.0,
         (labels[0], labels[1], labels[2]),
+        target,
     )

@@ -74,6 +74,9 @@ class TypeSafeAgentConfig(ModuleConfig):
     stop_threshold: float = 0.7
     blend: bool = False
     stops_to_clear_goal: int = 10
+    reached_m: float = 0.5
+    slow_within_m: float = 1.5
+    turn_full_at_deg: float = 45.0
     max_objects: int = 20
     image_width: int = 1280
     image_height: int = 720
@@ -103,7 +106,6 @@ class TypeSafeAgent(Module):
         self._latest: dict[str, tuple[float, Any]] = {}
         self._goal: str | None = None
         self._robot: dict[str, Any] = {"motion": "idle"}
-        self._questions = drive_questions()
         self._client: SystemOneClient | None = None
         self._target = (0.0, 0.0, 0.0)
         self._current = (0.0, 0.0, 0.0)
@@ -256,16 +258,29 @@ class TypeSafeAgent(Module):
             },
         )
         self.world_state.publish(json.dumps(state))
-        answers = self._client.system_one(state, self._questions)
-        self._trace(state, answers)
-        self._apply(
-            decode_drive(
-                answers,
-                min_confidence=self.config.min_confidence,
-                blend=self.config.blend,
-                stop_threshold=self.config.stop_threshold,
-            )
+        labels = tuple(dict.fromkeys(o["label"] for o in state["objects"] if o.get("label")))
+        questions = drive_questions(labels)
+        answers = self._client.system_one(state, questions)
+        self._trace(state, questions, answers)
+        drive = decode_drive(
+            answers,
+            min_confidence=self.config.min_confidence,
+            blend=self.config.blend,
+            stop_threshold=self.config.stop_threshold,
         )
+        self._apply(drive, self._scales(drive, state))
+
+    def _scales(self, drive: Drive, state: dict[str, Any]) -> tuple[float, float]:
+        """(linear, angular) multipliers from the target's geometry; the model picks direction only."""
+        target = next((o for o in state["objects"] if o.get("label") == drive.target), None)
+        if target is None or "distance_m" not in target:
+            return 1.0, 1.0
+        dist, err = float(target["distance_m"]), abs(float(target.get("bearing_deg", 0.0)))
+        if dist <= self.config.reached_m:
+            return 0.0, 0.0
+        lin = min(1.0, max(0.3, dist / self.config.slow_within_m))
+        ang = min(1.0, max(0.25, err / self.config.turn_full_at_deg))
+        return lin, ang
 
     def _hold(self, reason: str | None) -> None:
         """Zero the target without a model call; the model cannot steer blind."""
@@ -279,8 +294,10 @@ class TypeSafeAgent(Module):
             logger.warning("TypeSafeAgent holding", reason=reason)
             self.agent.publish(AIMessage(content=f"holding: {reason}"))
 
-    def _apply(self, drive: Drive) -> None:
-        lin, ang = self.config.linear_speed, self.config.angular_speed
+    def _apply(self, drive: Drive, scales: tuple[float, float] = (1.0, 1.0)) -> None:
+        lin, ang = self.config.linear_speed * scales[0], self.config.angular_speed * scales[1]
+        if scales == (0.0, 0.0):
+            drive = Drive(0.0, 0.0, 0.0, True, drive.confidence, drive.labels, drive.target)
         labels = (*drive.labels, "stop" if drive.stop else "go")
         with self._lock:
             self._target = (drive.x * lin, drive.y * lin, drive.yaw * ang)
@@ -295,14 +312,15 @@ class TypeSafeAgent(Module):
             self._last_labels = labels
             if drive.stop:
                 self._current = (0.0, 0.0, 0.0)
-                self._stop_streak += 1
-            else:
-                self._stop_streak = 0
+            # Stop votes and all-axes-none both count: a stuck robot must give up too.
+            self._stop_streak = self._stop_streak + 1 if drive.is_zero else 0
             streak = self._stop_streak
         if drive.stop:
             self.cmd_vel.publish(Twist.zero())
         if changed:
-            logger.info("drive", labels=labels, confidence=round(drive.confidence, 2))
+            logger.info(
+                "drive", labels=labels, target=drive.target, confidence=round(drive.confidence, 2)
+            )
             self.agent.publish(
                 AIMessage(
                     content=f"drive x={drive.labels[0]} y={drive.labels[1]} yaw={drive.labels[2]} stop={drive.stop} confidence={drive.confidence:.2f}",
@@ -343,13 +361,15 @@ class TypeSafeAgent(Module):
                 )
             self._stop_event.wait(dt)
 
-    def _trace(self, state: dict[str, Any], answers: dict[str, Any]) -> None:
+    def _trace(
+        self, state: dict[str, Any], questions: dict[str, Any], answers: dict[str, Any]
+    ) -> None:
         if self.config.trace_dir is None:
             return
         d = Path(self.config.trace_dir)
         d.mkdir(parents=True, exist_ok=True)
         self._seq += 1
         (d / f"{self._seq}-request.json").write_text(
-            json.dumps({"body": {"state": state, "questions": self._questions}})
+            json.dumps({"body": {"state": state, "questions": questions}})
         )
         (d / f"{self._seq}-response.json").write_text(json.dumps({"body": {"answers": answers}}))
