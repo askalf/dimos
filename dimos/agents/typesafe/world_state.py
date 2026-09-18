@@ -156,8 +156,10 @@ def build_world_state(
         state = {"task": task, **state}
     if lidar is not None:
         z_min, z_max, max_range = lidar_band
+        # A scan in the robot's own frame (habitat `lidar`, base_link) needs no transform.
+        origin = pose if lidar.frame_id == pose.frame_id else None
         state["room"] = {
-            "sectors": lidar.to_json(pose, z_min=z_min, z_max=z_max, max_range=max_range)
+            "sectors": lidar.to_json(origin, z_min=z_min, z_max=z_max, max_range=max_range)
         }
     else:
         state["unavailable"] = ["room"]

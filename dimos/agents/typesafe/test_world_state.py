@@ -159,3 +159,19 @@ def test_goal_coordinates_pick_one_of_several_same_label_objects() -> None:
         ("table", 2.75),
         ("chair", 39.75),
     ]
+
+
+def test_body_frame_scan_is_not_transformed() -> None:
+    # Robot far from the world origin; a body-frame point 0.3 m ahead must still block ahead.
+    pts = np.array([[0.3, 0.0, 0.5], [0.0, -2.0, 0.5]])
+    state = build_world_state(
+        "go to the chair",
+        _pose(12.0, -7.0, 90),
+        detections_3d=None,
+        detections_2d=None,
+        lidar=PointCloud2.from_numpy(pts, frame_id="base_link"),
+        robot={},
+    )
+    s = state["room"]["sectors"]
+    assert s["ahead"] == {"clear_m": 0.3, "state": "blocked"}
+    assert s["right"]["clear_m"] == 2.0 and s["left"]["clear_m"] == 5.0
