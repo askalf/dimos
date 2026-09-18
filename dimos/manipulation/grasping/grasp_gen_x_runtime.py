@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 import numpy as np
 
 from dimos.manipulation.grasping.grasp_gen_x import (
@@ -29,16 +30,23 @@ from dimos.manipulation.grasping.grasp_gen_x import (
     GraspGenXConfig,
 )
 
-_snapshot_root = Path(
-    snapshot_download(
-        repo_id=GRASPGENX_MODEL_REPO,
-        revision=GRASPGENX_MODEL_REVISION,
-        allow_patterns=[
-            f"{GRASPGENX_MODEL_VERSION}/gen/*",
-            f"{GRASPGENX_MODEL_VERSION}/dis/*",
-        ],
-    )
-).resolve()
+
+def _snapshot(*, local_files_only: bool) -> Path:
+    return Path(
+        snapshot_download(
+            repo_id=GRASPGENX_MODEL_REPO,
+            revision=GRASPGENX_MODEL_REVISION,
+            allow_patterns=[f"{GRASPGENX_MODEL_VERSION}/gen/*", f"{GRASPGENX_MODEL_VERSION}/dis/*"],
+            local_files_only=local_files_only,
+        )
+    ).resolve()
+
+
+try:
+    # A cached pinned revision must not wait on the hub; a half-open route can hang for minutes.
+    _snapshot_root = _snapshot(local_files_only=True)
+except LocalEntryNotFoundError:
+    _snapshot_root = _snapshot(local_files_only=False)
 _checkpoint_root = _snapshot_root / GRASPGENX_MODEL_VERSION
 _gen_dir = _checkpoint_root / "gen"
 _dis_dir = _checkpoint_root / "dis"
