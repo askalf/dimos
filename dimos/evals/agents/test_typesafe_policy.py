@@ -237,3 +237,45 @@ def test_load_scene_rejects_an_empty_goal(scene_json: Path) -> None:
 
 def test_preflight_without_goal_label_only_checks_the_file(scene_json: Path) -> None:
     TypeSafePolicy(scene_json=scene_json).preflight(None)  # type: ignore[arg-type]
+
+
+def test_wiring_follows_the_environment(scene_json: Path) -> None:
+    from dimos.evals.agents.typesafe_policy import DIMSIM_WIRING, HABITAT_WIRING, Wiring
+    from dimos.evals.environments.dimsim import DimSimEnvironment
+    from dimos.evals.environments.habitat import HabitatEnvironment
+
+    dimsim = DimSimEnvironment(blueprint=["unitree-go2", "mcp-server"])
+    habitat = HabitatEnvironment(blueprint=["habitat-teleop", "mcp-server"])
+    agent = TypeSafePolicy(scene_json=scene_json)
+    agent.preflight(dimsim)
+    assert agent._wiring == DIMSIM_WIRING
+    agent.preflight(habitat)
+    assert agent._wiring == HABITAT_WIRING
+
+    explicit = TypeSafePolicy(scene_json=scene_json, cmd_topic="/twist", speed_scale=1.0)
+    explicit.preflight(habitat)
+    assert explicit._wiring == Wiring("/odometry", "Odometry", "/twist", 1.0)
+
+
+def test_odometry_becomes_the_pose(scene_json: Path) -> None:
+    from dimos.msgs.geometry_msgs.Pose import Pose
+    from dimos.msgs.nav_msgs.Odometry import Odometry
+
+    agent = TypeSafePolicy(scene_json=scene_json)
+    odom = Odometry(ts=5.0, frame_id="world", pose=Pose(position=(1.0, 2.0, 0.0)))
+    agent._on_odometry(odom)
+    assert agent._pose_seen.is_set()
+    assert agent._pose is not None
+    assert tuple(agent._pose.position) == (1.0, 2.0, 0.0)
+    assert (agent._pose.frame_id, agent._pose.ts) == ("world", 5.0)
+
+
+def test_habitat_scales_commands_to_match_dimsim(scene_json: Path) -> None:
+    from dimos.evals.agents.typesafe_policy import HABITAT_WIRING
+
+    agent = TypeSafePolicy(scene_json=scene_json)
+    agent._wiring = HABITAT_WIRING
+    forward = agent.twist(_choice("1,0"))
+    left = agent.twist(_choice("0,1"))
+    assert forward.linear.x == pytest.approx(3.0 * agent.config.speed)
+    assert left.angular.z == pytest.approx(3.0 * agent.config.turn_rate)

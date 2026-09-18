@@ -17,8 +17,9 @@
 The model calls no skill. Each tick: code assembles the world state, Jev picks
 one body-frame command (forward, backward, turn left, turn right, stop), code
 scales it into a Twist and republishes it for the tick. The scene (obstacles,
-walls, goal) is a static DimSim ground-truth snapshot; the robot pose comes
-live off ``/odom``.
+walls, goal) is a static ground-truth snapshot of the simulated house (a DimSim
+detections export, or a Habitat scene file in the same layout); the robot pose
+comes live off the simulator's odometry topic.
 
 Two contracts are meant to be edited: :class:`WorldState` (what Jev sees) and
 :data:`STEP_CRITERIA` / :func:`build_questions` (what Jev answers). Everything
@@ -35,7 +36,7 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from dimos.evals.agents.base import Agent, AgentConfig
 from dimos.evals.agents.lib.trajectory_builder import TrajectoryBuilder
@@ -295,11 +296,46 @@ class TypeSafePolicyConfig(AgentConfig):
     # Republish interval inside a tick; must beat the sim's 500 ms cmd_vel deadman.
     control_dt: float = 0.1
     reached_noul: float = 0.8
-    odom_topic: str = "/odom"
     # The environment should already have waited for the sim; this is a backstop.
     pose_wait_s: float = 60.0
-    # MovementManager owns /cmd_vel in the go2 stack; publish upstream of it.
-    cmd_topic: str = "/nav_cmd_vel"
+    # Where the pose comes from and where commands go. Unset, preflight takes the
+    # simulator's conventions (see ``Wiring``): DimSim's go2 stack publishes a
+    # PoseStamped on /odom and MovementManager owns /cmd_vel, so commands go
+    # upstream of it on /nav_cmd_vel; Habitat publishes nav_msgs Odometry on
+    # /odometry and takes Twist straight on /cmd_vel.
+    odom_topic: str | None = None
+    odom_msg: Literal["PoseStamped", "Odometry"] | None = None
+    cmd_topic: str | None = None
+    # DimSim scales commands 3x in-sim (see ``speed``); Habitat integrates them
+    # as given, so it gets the same factor here for the same motion per tick.
+    speed_scale: float | None = None
+
+
+@dataclass(frozen=True)
+class Wiring:
+    """How the policy plugs into one simulator's stack."""
+
+    odom_topic: str
+    odom_msg: Literal["PoseStamped", "Odometry"]
+    cmd_topic: str
+    speed_scale: float
+
+
+DIMSIM_WIRING = Wiring("/odom", "PoseStamped", "/nav_cmd_vel", 1.0)
+HABITAT_WIRING = Wiring("/odometry", "Odometry", "/cmd_vel", 3.0)
+
+
+def wiring_for(environment: Environment, config: TypeSafePolicyConfig) -> Wiring:
+    """The simulator's conventions, with any explicit config field on top."""
+    from dimos.evals.environments.habitat import HabitatEnvironment
+
+    base = HABITAT_WIRING if isinstance(environment, HabitatEnvironment) else DIMSIM_WIRING
+    return Wiring(
+        odom_topic=config.odom_topic or base.odom_topic,
+        odom_msg=config.odom_msg or base.odom_msg,
+        cmd_topic=config.cmd_topic or base.cmd_topic,
+        speed_scale=base.speed_scale if config.speed_scale is None else config.speed_scale,
+    )
 
 
 class TypeSafePolicy(Agent):
@@ -311,10 +347,12 @@ class TypeSafePolicy(Agent):
         super().__init__(**kwargs)
         self._pose: PoseStamped | None = None
         self._pose_seen = threading.Event()
+        self._wiring = DIMSIM_WIRING
 
     def preflight(self, environment: Environment) -> None:
         if self.config.modules:
             raise ValueError("TypeSafePolicy calls no tools; leave modules empty")
+        self._wiring = wiring_for(environment, self.config)
         if not self.config.scene_json.is_file():
             raise FileNotFoundError(f"scene_json not found: {self.config.scene_json}")
         scene_labels(self.config.scene_json)  # fail before anything starts
@@ -340,17 +378,24 @@ class TypeSafePolicy(Agent):
         client = TypeSafeClient(model=self.config.model, timeout=self.config.request_timeout_s)
         questions = build_questions()
 
-        odom = make_transport(self.config.odom_topic, PoseStamped)
-        cmd = make_transport(self.config.cmd_topic, Twist)
+        wiring = self._wiring
+        odom: Any
+        if wiring.odom_msg == "Odometry":
+            from dimos.msgs.nav_msgs.Odometry import Odometry
+
+            odom = make_transport(wiring.odom_topic, Odometry)
+        else:
+            odom = make_transport(wiring.odom_topic, PoseStamped)
+        cmd = make_transport(wiring.cmd_topic, Twist)
         for transport in (odom, cmd):
             transport.start()
-        odom.subscribe(self._on_odom)
+        odom.subscribe(self._on_odometry if wiring.odom_msg == "Odometry" else self._on_odom)
 
         deadline = time.monotonic() + timeout_s
         ended: EndedBy = "max_steps"
         try:
             if not self._pose_seen.wait(min(self.config.pose_wait_s, timeout_s)):
-                raise TimeoutError(f"no pose on {self.config.odom_topic}")
+                raise TimeoutError(f"no pose on {wiring.odom_topic}")
             for tick in range(self.config.max_ticks):
                 if time.monotonic() >= deadline:
                     ended = "timeout"
@@ -382,6 +427,17 @@ class TypeSafePolicy(Agent):
         self._pose = pose
         self._pose_seen.set()
 
+    def _on_odometry(self, odom: Any) -> None:
+        """nav_msgs Odometry carries the same pose; keep its frame and stamp."""
+        self._on_odom(
+            PoseStamped(
+                ts=odom.ts,
+                frame_id=odom.frame_id,
+                position=odom.position,
+                orientation=odom.orientation,
+            )
+        )
+
     def observe(self, scene: Scene, tick: int) -> tuple[PoseStamped, WorldState]:
         """Static scene + live pose -> the state Jev sees."""
         pose = self._pose
@@ -409,9 +465,10 @@ class TypeSafePolicy(Agent):
         is. Only a "0,0" pick (or the episode ending) stops the robot.
         """
         x, w = STEPS[str(step.choice)]
+        scale = self._wiring.speed_scale
         return Twist(
-            linear=(self.config.speed * x, 0.0, 0.0),
-            angular=(0.0, 0.0, self.config.turn_rate * w),
+            linear=(scale * self.config.speed * x, 0.0, 0.0),
+            angular=(0.0, 0.0, scale * self.config.turn_rate * w),
         )
 
     def _trace(

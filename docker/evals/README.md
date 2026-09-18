@@ -63,6 +63,30 @@ unless the lock file moved. API keys come from the host environment
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`); export them
 before running.
 
+## TypeSafe policy on Habitat
+
+`dimos.evals.suites.typesafe_habitat_hm3d` and `typesafe_habitat_hssd` are
+the DimSim TypeSafe suite's rubric on Habitat houses: two goals each ("go to
+the couch", "navigate to the toilet"), the policy driving `cmd_vel` straight
+into the simulator. The policy reads Habitat's odometry and topic names on its
+own; nothing changes on the command line except the scene file, which is the
+same ground-truth layout the DimSim run takes. One container per suite:
+
+```bash
+export TYPESAFE_API_KEY=... DIMOS_TRANSPORT=zenoh
+dimos evals run --docker dimos.evals.suites.typesafe_habitat_hm3d \
+    --agent dimos.evals.agents.typesafe_policy \
+    --set scene_json=dimos/evals/suites/scenes/habitat/00861-GLAQ4DNUx5U.json
+dimos evals run --docker dimos.evals.suites.typesafe_habitat_hssd \
+    --agent dimos.evals.agents.typesafe_policy \
+    --set scene_json=dimos/evals/suites/scenes/habitat/102344193.json
+```
+
+The HM3D house ships with the image; the HSSD scene needs the dataset below.
+`DIMOS_TRANSPORT=zenoh` is required for every Habitat run: the environment
+launches its dimos on zenoh, and the policy runs in the eval process, which
+takes the container-wide transport.
+
 ## Habitat
 
 The image also carries Habitat: habitat-sim's own python 3.9 conda environment

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from dimos.evals.agents.typesafe_policy import Box2D, load_scene
 from dimos.evals.environments.dimsim import DimSimEnvironment
@@ -57,9 +58,9 @@ CASES: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def goal_box(goal_label: str) -> Box2D:
+def goal_box(goal_label: str, scene: Path = SCENE) -> Box2D:
     """The goal's real footprint (minx, miny, maxx, maxy) from the scene file."""
-    return load_scene(SCENE, goal_label).goal_box
+    return load_scene(scene, goal_label).goal_box
 
 
 def distance_to_box(x: float, y: float, box: Box2D) -> float:
@@ -69,7 +70,16 @@ def distance_to_box(x: float, y: float, box: Box2D) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
-def reached(goal_label: str) -> Callable[[Outcome], float]:
+def positions(store: Any) -> list[Any]:
+    """The recorded robot positions: DimSim records PoseStamped on ``odom``,
+    Habitat nav_msgs Odometry on ``odometry``; both carry ``position``."""
+    for name in ("odom", "odometry"):
+        if name in store.streams:
+            return [entry.data.position for entry in getattr(store.streams, name)]
+    return []
+
+
+def reached(goal_label: str, scene: Path = SCENE) -> Callable[[Outcome], float]:
     """Where it stopped (70%) and how directly it got there (30%).
 
     Arrival is measured to the goal's box edge: the centre is inside the object
@@ -77,9 +87,9 @@ def reached(goal_label: str) -> Callable[[Outcome], float]:
     """
 
     def grade(outcome: Outcome) -> float:
-        box = goal_box(goal_label)
+        box = goal_box(goal_label, scene)
         with recording(outcome) as store:
-            poses = [entry.data.position for entry in store.streams.odom]
+            poses = positions(store)
         if not poses:
             raise LookupError("no odometry recorded")
         start, end = poses[0], poses[-1]
