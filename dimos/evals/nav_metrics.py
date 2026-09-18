@@ -51,7 +51,7 @@ CmdSample = tuple[float, float, float, float]  # ts, vx, vy, wz
 
 @dataclass(frozen=True, kw_only=True)
 class NavParams:
-    success_radius_m: float = NAV_SUCCESS_RADIUS_M  # around the case's end point
+    success_radius_m: float = NAV_SUCCESS_RADIUS_M  # around the end point, or the object's box edge
     facing_tol_deg: float = NAV_FACING_TOL_DEG  # toward the object's centre
     min_cmd_mps: float = NAV_MIN_CMD_MPS
     bump_ratio: float = NAV_BUMP_RATIO
@@ -100,6 +100,13 @@ def box_of(center: Sequence[float], size: Sequence[float]) -> Box2D:
         center[0] + size[0] / 2,
         center[1] + size[1] / 2,
     )
+
+
+def distance_to_box(x: float, y: float, box: Box2D) -> float:
+    """Euclidean distance from a point to an axis-aligned box; 0 inside."""
+    dx = max(box[0] - x, 0.0, x - box[2])
+    dy = max(box[1] - y, 0.0, y - box[3])
+    return math.hypot(dx, dy)
 
 
 def _wrap(a: float) -> float:
@@ -171,7 +178,10 @@ def score_navigation(
     if not poses:
         raise LookupError("no poses recorded")
     t_start = poses[0][0]
-    dist = [math.hypot(x - end_xy[0], y - end_xy[1]) for _, x, y, _ in poses]
+    if distance_to_box(end_xy[0], end_xy[1], target) == 0.0:  # the point is on the object
+        dist = [distance_to_box(x, y, target) for _, x, y, _ in poses]
+    else:
+        dist = [math.hypot(x - end_xy[0], y - end_xy[1]) for _, x, y, _ in poses]
     entered = next(
         (p[0] for p, d in zip(poses, dist, strict=True) if d <= params.success_radius_m), None
     )

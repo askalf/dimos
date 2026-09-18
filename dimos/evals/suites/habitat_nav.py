@@ -74,6 +74,9 @@ def grade_nav(
         write_metrics(
             m, o.artifacts["recording"].parent / "nav_metrics.json", end_xy=end_xy, box=box
         )
+        traced = [s.extra.request for s in o.trajectory.steps if s.extra]
+        if traced:  # beside the trajectory too: <run>/<case>/raw/N-request.json
+            write_metrics(m, traced[-1].parent.parent / "nav_metrics.json", end_xy=end_xy, box=box)
         return m.score()
 
     return grade

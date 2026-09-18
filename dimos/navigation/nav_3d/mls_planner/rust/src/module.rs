@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -79,8 +80,10 @@ pub struct MlsPlanner {
     config: Config,
 
     // Held on the handle loop until stamps match, then handed off paired.
-    pending_local: Option<PointCloud2>,
-    pending_bounds: Option<PoseStamped>,
+    // The last few of each, paired by stamp: the cloud is large and often lands a
+    // tick after its bounds, so "latest of each" alone can miss every pair.
+    pending_local: VecDeque<PointCloud2>,
+    pending_bounds: VecDeque<PoseStamped>,
 
     // Written by the handle loop, read by the worker, so the loop never blocks
     // on map processing.
@@ -118,22 +121,27 @@ impl MlsPlanner {
     }
 
     async fn on_local_map(&mut self, msg: PointCloud2) {
-        self.pending_local = Some(msg);
+        push_recent(&mut self.pending_local, msg);
         self.try_pair();
     }
 
     async fn on_region_bounds(&mut self, msg: PoseStamped) {
-        self.pending_bounds = Some(msg);
+        push_recent(&mut self.pending_bounds, msg);
         self.try_pair();
     }
 
-    /// Hand off the local map and bounds once their stamps match.
+    /// Hand off the newest local map and bounds that share a stamp, dropping older ones.
     fn try_pair(&mut self) {
-        if !stamps_paired(self.pending_bounds.as_ref(), self.pending_local.as_ref()) {
+        let Some((bi, ci)) = find_pair(&self.pending_bounds, &self.pending_local) else {
             return;
-        }
-        let bounds = self.pending_bounds.take().expect("checked above");
-        let cloud = self.pending_local.take().expect("checked above");
+        };
+        let bounds = self
+            .pending_bounds
+            .remove(bi)
+            .expect("index from find_pair");
+        let cloud = self.pending_local.remove(ci).expect("index from find_pair");
+        self.pending_bounds.drain(..bi);
+        self.pending_local.drain(..ci);
         self.hand_off(MapUpdate::Region { cloud, bounds });
     }
 
@@ -149,12 +157,29 @@ impl MlsPlanner {
     }
 }
 
-/// True when bounds and a local cloud are both present with matching stamps.
-fn stamps_paired(bounds: Option<&PoseStamped>, cloud: Option<&PointCloud2>) -> bool {
-    match (bounds, cloud) {
-        (Some(b), Some(c)) => same_stamp(&b.header.stamp, &c.header.stamp),
-        _ => false,
+/// How many recent messages per stream are kept for pairing.
+const PENDING_KEEP: usize = 4;
+
+fn push_recent<T>(queue: &mut VecDeque<T>, msg: T) {
+    if queue.len() == PENDING_KEEP {
+        queue.pop_front();
     }
+    queue.push_back(msg);
+}
+
+/// Indices of the newest bounds and cloud with the same stamp, if any.
+fn find_pair(
+    bounds: &VecDeque<PoseStamped>,
+    clouds: &VecDeque<PointCloud2>,
+) -> Option<(usize, usize)> {
+    for (bi, b) in bounds.iter().enumerate().rev() {
+        for (ci, c) in clouds.iter().enumerate().rev() {
+            if same_stamp(&b.header.stamp, &c.header.stamp) {
+                return Some((bi, ci));
+            }
+        }
+    }
+    None
 }
 
 /// The goal position, or None when any coordinate is non-finite, which is the
@@ -627,19 +652,39 @@ mod tests {
         }
     }
 
+    fn t(nsec: u32) -> Time {
+        Time {
+            sec: 2,
+            nsec: nsec as i32,
+        }
+    }
+
     #[test]
-    fn stamps_paired_only_when_both_present_and_stamps_match() {
-        let s = Time { sec: 2, nsec: 3 };
-        let b = bounds_at(s.clone());
-        let c = cloud_at(s);
-        assert!(stamps_paired(Some(&b), Some(&c)));
+    fn pairs_by_stamp_across_recent_messages() {
+        let mut bounds = VecDeque::new();
+        let mut clouds = VecDeque::new();
+        assert_eq!(find_pair(&bounds, &clouds), None);
+        push_recent(&mut bounds, bounds_at(t(3)));
+        push_recent(&mut clouds, cloud_at(t(4)));
+        assert_eq!(find_pair(&bounds, &clouds), None);
 
-        let other = cloud_at(Time { sec: 2, nsec: 4 });
-        assert!(!stamps_paired(Some(&b), Some(&other)));
+        // The cloud lags its bounds by one tick: latest-of-each never matches,
+        // the recent queues do.
+        push_recent(&mut bounds, bounds_at(t(4)));
+        assert_eq!(find_pair(&bounds, &clouds), Some((1, 0)));
+        push_recent(&mut clouds, cloud_at(t(3)));
+        push_recent(&mut bounds, bounds_at(t(5)));
+        push_recent(&mut clouds, cloud_at(t(5)));
+        assert_eq!(
+            find_pair(&bounds, &clouds),
+            Some((2, 2)),
+            "newest pair wins"
+        );
 
-        assert!(!stamps_paired(Some(&b), None));
-        assert!(!stamps_paired(None, Some(&c)));
-        assert!(!stamps_paired(None, None));
+        for n in 10..20 {
+            push_recent(&mut bounds, bounds_at(t(n)));
+        }
+        assert_eq!(bounds.len(), PENDING_KEEP);
     }
 
     fn point(x: f64, y: f64, z: f64) -> Point {

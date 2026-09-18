@@ -63,7 +63,21 @@ MAX_CASES = 6
 MIN_GEODESIC_M, MAX_GEODESIC_M = 3.0, 12.0
 # Furniture-sized: something an agent can be sent to and would see in a 20-object list.
 MIN_FOOTPRINT_M, MIN_HEIGHT_M = 0.4, 0.2
-END_STANDOFF_M = 0.6  # ring radius beyond the box's half diagonal
+END_STANDOFF_M = 0.6  # ring radius beyond the box's half diagonal (tour stop only)
+MIN_GAP_M = 0.6  # clear floor between the target's box and any other furniture box
+# Not floor obstacles for the gap: in walls, flat, or hanging.
+NOT_OBSTACLES = (
+    "window",
+    "door",
+    "carpet",
+    "rug",
+    "curtain",
+    "blind",
+    "picture",
+    "mirror",
+    "lamp",
+    "light",
+)
 END_CLEARANCE_M = 0.25  # from the nearest navmesh edge
 SPAWN_CLEARANCE_M = 0.5
 TOUR_STEP_M = 0.5
@@ -117,9 +131,29 @@ def main(ground_truth: Path, dataset: Path, out: Path) -> None:
         if not d["label"].startswith("wall")
         and max(d["size_xyz"][:2]) >= MIN_FOOTPRINT_M and d["size_xyz"][2] >= MIN_HEIGHT_M
     ]  # fmt: skip
+
+    def gap(d: dict[str, Any]) -> float:
+        """Smallest 2D box-to-box distance from *d* to any other furniture."""
+        (cx, cy, _), (sx, sy, _) = d["center_xyz"], d["size_xyz"]
+        best = math.inf
+        for o in furniture:
+            if o is d or any(w in o["label"].lower() for w in NOT_OBSTACLES):
+                continue
+            (ox, oy, _), (osx, osy, _) = o["center_xyz"], o["size_xyz"]
+            dx = max(0.0, abs(cx - ox) - (sx + osx) / 2)
+            dy = max(0.0, abs(cy - oy) - (sy + osy) / 2)
+            best = min(best, math.hypot(dx, dy))
+        return best
+
+    # Isolated targets only, the most isolated per label: simple to reach, unambiguous to grade.
     targets = []
     for label in WANT:
-        for d in (d for d in furniture if label in d["label"].lower()):
+        cands = sorted(
+            (d for d in furniture if label in d["label"].lower() and gap(d) >= MIN_GAP_M),
+            key=gap,
+            reverse=True,
+        )
+        for d in cands:
             e = end_point(d)
             if e is not None:
                 targets.append((d, e))
@@ -162,7 +196,8 @@ def main(ground_truth: Path, dataset: Path, out: Path) -> None:
                 "object_id": d["id"],
                 "spawn_xyz": spawn_ros,
                 "spawn_yaw_deg": 0.0,
-                "end_xy": frames.position_to_ros(e).round(2).tolist()[:2],
+                "end_xy": [round(float(v), 2) for v in d["center_xyz"][:2]],  # on the object
+                "gap_m": round(gap(d), 2),
                 "geodesic_m": round(float(g), 2),
             }
             for d, e, g in picked
@@ -171,7 +206,12 @@ def main(ground_truth: Path, dataset: Path, out: Path) -> None:
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(scene, indent=2) + "\n")
-    print(scene_id, [(c["label"], c["geodesic_m"]) for c in scene["cases"]], "tour", len(tour))
+    print(
+        scene_id,
+        [(c["label"], c["geodesic_m"], c["gap_m"]) for c in scene["cases"]],
+        "tour",
+        len(tour),
+    )
 
 
 if __name__ == "__main__":

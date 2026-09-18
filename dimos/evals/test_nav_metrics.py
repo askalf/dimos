@@ -74,6 +74,13 @@ def test_turn_reversals_need_hysteresis() -> None:
     assert turn_reversals(steady, hysteresis_deg=5.0)[0] == 0
 
 
+def test_end_point_on_the_object_measures_to_its_edge() -> None:
+    poses = _straight(76)  # ends at x = 3.8, 0.7 m from the box edge, 1.2 m from its centre
+    m = score_navigation(poses, [], (5.0, 0.0), BOX)
+    assert m.reached and m.final_distance_m == pytest.approx(0.7)
+    assert m.straight_line_m == pytest.approx(4.5)
+
+
 def test_facing_away_loses_facing_credit() -> None:
     m = score_navigation([(0.0, 4.0, 0.0, math.pi)], [], END, BOX)
     assert m.reached and not m.facing and m.facing_error_deg == pytest.approx(180.0)
