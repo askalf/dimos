@@ -31,6 +31,7 @@ import sys
 import time
 from typing import Any
 
+from dimos_lcm.geometry_msgs.Pose import Pose as LCMPose
 from dimos_lcm.geometry_msgs.Quaternion import Quaternion
 from dimos_lcm.geometry_msgs.Transform import Transform
 from dimos_lcm.geometry_msgs.TransformStamped import TransformStamped
@@ -43,6 +44,11 @@ from dimos_lcm.sensor_msgs.PointCloud2 import PointCloud2 as LCMPointCloud2
 from dimos_lcm.sensor_msgs.PointField import PointField
 from dimos_lcm.std_msgs.Header import Header
 from dimos_lcm.tf2_msgs.TFMessage import TFMessage as LCMTFMessage
+from dimos_lcm.vision_msgs.BoundingBox3D import BoundingBox3D
+from dimos_lcm.vision_msgs.Detection3D import Detection3D
+from dimos_lcm.vision_msgs.Detection3DArray import Detection3DArray as LCMDetection3DArray
+from dimos_lcm.vision_msgs.ObjectHypothesis import ObjectHypothesis
+from dimos_lcm.vision_msgs.ObjectHypothesisWithPose import ObjectHypothesisWithPose
 import numpy as np
 import zenoh
 
@@ -206,20 +212,86 @@ def tf_msg(links: list[tuple[str, str, Any, Any]], ts: float) -> bytes:
     return bytes(m.lcm_encode())
 
 
-def unproject(
-    depth: np.ndarray, rgb: np.ndarray, k: dict[str, float], trunc: float, stride: int
+def _pixels(
+    depth: np.ndarray, k: dict[str, float], trunc: float, stride: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Depth + colour to points in the camera optical frame (x right, y down, z fwd)."""
+    """Valid depth pixels as points in the camera optical frame, plus the mask that picked them."""
     d = depth[::stride, ::stride]
-    c = rgb[::stride, ::stride]
     fx, fy = k["fx"] / stride, k["fy"] / stride
     cx, cy = k["cx"] / stride, k["cy"] / stride
     h, w = d.shape
     u, v = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
     valid = np.isfinite(d) & (d > 0.0) & (d < trunc)
     z = d[valid]
-    pts = np.stack([(u[valid] - cx) * z / fx, (v[valid] - cy) * z / fy, z], axis=1)
-    return pts.astype(np.float32), c[valid].astype(np.uint8)
+    return np.stack([(u[valid] - cx) * z / fx, (v[valid] - cy) * z / fy, z], axis=1), valid
+
+
+def unproject(
+    depth: np.ndarray, rgb: np.ndarray, k: dict[str, float], trunc: float, stride: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Depth + colour to points in the camera optical frame (x right, y down, z fwd)."""
+    pts, valid = _pixels(depth, k, trunc, stride)
+    return pts.astype(np.float32), rgb[::stride, ::stride][valid].astype(np.uint8)
+
+
+# Scene structure is not a navigation target.
+STRUCTURE = frozenset({"", "unknown", "wall", "floor", "ceiling"})
+
+
+def visible_objects(
+    depth: np.ndarray,
+    semantic: np.ndarray,
+    k: dict[str, float],
+    trunc: float,
+    stride: int,
+    world: np.ndarray,
+    labels: list[str],
+    min_points: int = 20,
+) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """Per visible instance: (label, world-frame box center, box size).
+
+    HM3D annotations carry no object boxes, so a box is the extent of the depth
+    pixels the instance covers in this frame.
+    """
+    pts, valid = _pixels(depth, k, trunc, stride)
+    ids = semantic[::stride, ::stride][valid]
+    pts = pts @ world[:3, :3].T + world[:3, 3]
+    out = []
+    for i in np.unique(ids):
+        label = labels[i] if 0 <= i < len(labels) else ""
+        sel = pts[ids == i]
+        if label in STRUCTURE or len(sel) < min_points:
+            continue
+        lo, hi = sel.min(axis=0), sel.max(axis=0)
+        out.append((label, (lo + hi) / 2.0, hi - lo))
+    return out
+
+
+def objects_msg(objects: list[tuple[str, np.ndarray, np.ndarray]], ts: float) -> bytes:
+    m = LCMDetection3DArray()
+    m.header = Header()
+    _stamp(m.header, ts)
+    m.header.frame_id = "world"
+    m.detections = []
+    for label, center, size in objects:
+        # Generated constructors share default nested objects: build every level fresh.
+        d = Detection3D()
+        d.header = Header()
+        _stamp(d.header, ts)
+        d.header.frame_id = "world"
+        d.results = [
+            ObjectHypothesisWithPose(hypothesis=ObjectHypothesis(class_id=label, score=1.0))
+        ]
+        d.results_length = 1
+        cx, cy, cz = (float(v) for v in center)
+        sx, sy, sz = (float(v) for v in size)
+        d.bbox = BoundingBox3D(
+            center=LCMPose(position=Vector3(x=cx, y=cy, z=cz), orientation=Quaternion(w=1.0)),
+            size=Vector3(x=sx, y=sy, z=sz),
+        )
+        m.detections.append(d)
+    m.detections_length = len(m.detections)
+    return bytes(m.lcm_encode())
 
 
 class HabitatHost:
@@ -234,7 +306,7 @@ class HabitatHost:
         self.height = int(cfg["height"])
         self.hfov = float(cfg["hfov_deg"])
         self.camera_height = float(cfg["camera_height_m"])
-        self.publish_semantic = bool(cfg.get("publish_semantic", False))
+        self.publish_semantic = bool(cfg.get("publish_semantic") or cfg.get("publish_objects"))
         self._sim: Any = None
         self._agent: Any = None
         self.yaw = 0.0
@@ -270,6 +342,10 @@ class HabitatHost:
             self._sim.close()
         self._sim = hs.Simulator(hs.Configuration(backend, [agent_cfg]))
         self._agent = self._sim.initialize_agent(0)
+        self.labels = [
+            o.category.name() if o.category is not None else ""
+            for o in self._sim.semantic_scene.objects
+        ]
         self.reset_pose()
 
     def reset_pose(self) -> None:
@@ -395,6 +471,9 @@ def main() -> None:
             pub.put(payload)
 
     timeout = float(cfg.get("cmd_vel_timeout_s", 0.2))
+    objects_enabled = bool(cfg.get("publish_objects")) and "objects" in pubs
+    objects_period = 1.0 / float(cfg.get("objects_hz", 1.0))
+    next_objects = 0.0
     prev: tuple[np.ndarray, float, float] | None = None
     next_tick = last = time.time()
     while True:
@@ -443,6 +522,16 @@ def main() -> None:
         prev = (position.copy(), yaw, now)
 
         put("odometry", odometry_msg(position, quat, vel, "world", "base_link", now))
+        if objects_enabled and "semantic" in obs and now >= next_objects:
+            world = frames.pose_matrix(position + np.array([0.0, 0.0, cam_h]), yaw) @ optical
+            put(
+                "objects",
+                objects_msg(
+                    visible_objects(depth, obs["semantic"], k, trunc, stride, world, host.labels),
+                    now,
+                ),
+            )
+            next_objects = now + objects_period
         put(
             "tf",
             tf_msg(
