@@ -16,9 +16,13 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypedDict
 
-from dimos.msgs.sensor_msgs.PointCloud2 import SECTOR_NAMES
+from typing_extensions import NotRequired
+
+from dimos.msgs.geometry_msgs.PoseStamped import XyzJson
+from dimos.msgs.sensor_msgs.PointCloud2 import SECTOR_NAMES, SectorJson
+from dimos.msgs.vision_msgs.Detection2DArray import BBoxJson
 
 if TYPE_CHECKING:
     from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
@@ -26,7 +30,41 @@ if TYPE_CHECKING:
     from dimos.msgs.vision_msgs.Detection2DArray import Detection2DArray
     from dimos.msgs.vision_msgs.Detection3DArray import Detection3DArray
 
+MAX_OBJECTS = 20
 _BEARINGS_2D = ("far_left", "left", "center", "right", "far_right")
+_SIZES_2D = ((0.4, "filling_view"), (0.15, "large"), (0.03, "medium"), (0.0, "small"))
+_DISTANCES = ((0.5, "touching"), (1.5, "near"), (4.0, "mid"), (math.inf, "far"))
+
+
+class ObjectState(TypedDict):
+    label: str
+    score: float
+    bearing: str
+    distance: NotRequired[str]  # 3D only
+    distance_m: NotRequired[float]
+    bearing_deg: NotRequired[float]
+    position: NotRequired[XyzJson]
+    size: NotRequired[str]  # 2D only
+    bbox: NotRequired[BBoxJson]
+
+
+class RobotState(TypedDict, total=False):
+    motion: str
+    last_drive: dict[str, str]
+    ts: float
+    frame_id: str
+    position: XyzJson
+    yaw_deg: float
+    heading: str
+
+
+class WorldState(TypedDict):
+    task: NotRequired[str]
+    goal: str
+    robot: RobotState
+    objects: list[ObjectState]
+    room: NotRequired[dict[str, dict[str, SectorJson]]]
+    unavailable: NotRequired[list[str]]
 
 
 def bearing_word(rel_angle: float) -> str:
@@ -35,98 +73,76 @@ def bearing_word(rel_angle: float) -> str:
 
 
 def distance_word(d: float) -> str:
-    if d < 0.5:
-        return "touching"
-    if d < 1.5:
-        return "near"
-    if d < 4.0:
-        return "mid"
-    return "far"
+    return next(word for limit, word in _DISTANCES if d < limit)
 
 
-def _objects_3d(
-    dets: Detection3DArray, pose: PoseStamped | None, max_objects: int
-) -> list[dict[str, Any]]:
-    out = dets.to_json()
-    if pose is not None:
-        for o in out:
-            dx, dy = o["position"]["x"] - pose.x, o["position"]["y"] - pose.y
-            size = o.get("size") or {}
-            # To the box's nearest edge: the centre of a large object is never reachable.
-            d = math.hypot(
-                max(0.0, abs(dx) - size.get("x", 0.0) / 2),
-                max(0.0, abs(dy) - size.get("y", 0.0) / 2),
-            )
-            o["distance_m"] = round(d, 2)
-            o["distance"] = distance_word(d)
-            rel = math.atan2(dy, dx) - pose.yaw
-            o["bearing"] = bearing_word(rel)
-            o["bearing_deg"] = round(math.degrees(math.atan2(math.sin(rel), math.cos(rel))), 1)
-        out.sort(key=lambda o: o["distance_m"])
-    return out[:max_objects]
-
-
-def _objects_2d(
-    dets: Detection2DArray, image_width: int, image_height: int, max_objects: int
-) -> list[dict[str, Any]]:
-    out = dets.to_json()
-    for o in out:
-        b = o["bbox"]
-        frac = b["cx"] / image_width if image_width else 0.5
-        o["bearing"] = _BEARINGS_2D[min(4, max(0, int(frac * 5)))]
-        area = (b["w"] * b["h"]) / float(image_width * image_height or 1)
-        o["size"] = (
-            "filling_view"
-            if area > 0.4
-            else "large"
-            if area > 0.15
-            else "medium"
-            if area > 0.03
-            else "small"
+def _objects_3d(dets: Detection3DArray, pose: PoseStamped) -> list[ObjectState]:
+    out: list[ObjectState] = []
+    for d in dets.to_json():
+        dx, dy = d["position"]["x"] - pose.x, d["position"]["y"] - pose.y
+        # To the box's nearest edge: the centre of a large object is never reachable.
+        dist = math.hypot(
+            max(0.0, abs(dx) - d["size"]["x"] / 2), max(0.0, abs(dy) - d["size"]["y"] / 2)
         )
-    out.sort(key=lambda o: -(o["bbox"]["w"] * o["bbox"]["h"]))
-    return out[:max_objects]
+        rel = math.atan2(dy, dx) - pose.yaw
+        out.append(
+            {
+                "label": d["label"],
+                "score": d["score"],
+                "position": d["position"],
+                "bearing": bearing_word(rel),
+                "bearing_deg": round(math.degrees(math.atan2(math.sin(rel), math.cos(rel))), 1),
+                "distance": distance_word(dist),
+                "distance_m": round(dist, 2),
+            }
+        )
+    return sorted(out, key=lambda o: o["distance_m"])[:MAX_OBJECTS]
+
+
+def _objects_2d(dets: Detection2DArray, image_size: tuple[int, int]) -> list[ObjectState]:
+    w, h = image_size
+    out: list[ObjectState] = []
+    for d in dets.to_json():
+        area = d["bbox"]["w"] * d["bbox"]["h"] / (w * h)
+        out.append(
+            {
+                "label": d["label"],
+                "score": d["score"],
+                "bbox": d["bbox"],
+                "bearing": _BEARINGS_2D[min(4, int(5 * d["bbox"]["cx"] / w))],
+                "size": next(word for limit, word in _SIZES_2D if area > limit),
+            }
+        )
+    return sorted(out, key=lambda o: -o["bbox"]["w"] * o["bbox"]["h"])[:MAX_OBJECTS]
 
 
 def build_world_state(
+    goal: str,
+    pose: PoseStamped,
     *,
-    goal: str | None,
-    pose: PoseStamped | None,
     task: str | None = None,
-    detections_3d: Detection3DArray | None = None,
-    detections_2d: Detection2DArray | None = None,
-    lidar: PointCloud2 | None = None,
-    robot: dict[str, Any] | None = None,
-    max_objects: int = 20,
-    image_width: int = 1280,
-    image_height: int = 720,
-    lidar_kwargs: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    unavailable: list[str] = []
-    state: dict[str, Any] = {"goal": goal or ""}
+    detections_3d: Detection3DArray | None,
+    detections_2d: Detection2DArray | None,
+    lidar: PointCloud2 | None,
+    robot: RobotState,
+    image_size: tuple[int, int] = (1280, 720),
+    lidar_band: tuple[float, float, float] = (-0.2, 0.8, 5.0),
+) -> WorldState:
+    if detections_3d is not None:
+        objects = _objects_3d(detections_3d, pose)
+    elif detections_2d is not None:
+        objects = _objects_2d(detections_2d, image_size)
+    else:
+        objects = []
+    robot_state: RobotState = {**robot, **pose.to_json()}
+    state: WorldState = {"goal": goal, "robot": robot_state, "objects": objects}
     if task:
         state = {"task": task, **state}
-
-    robot_section: dict[str, Any] = dict(robot or {})
-    if pose is not None:
-        robot_section.update(pose.to_json())
-    else:
-        unavailable.append("pose")
-    state["robot"] = robot_section
-
-    if detections_3d is not None:
-        state["objects"] = _objects_3d(detections_3d, pose, max_objects)
-    elif detections_2d is not None:
-        state["objects"] = _objects_2d(detections_2d, image_width, image_height, max_objects)
-    else:
-        state["objects"] = []
-        unavailable.append("objects")
-
     if lidar is not None:
-        state["room"] = lidar.to_json(pose, **(lidar_kwargs or {}))
+        z_min, z_max, max_range = lidar_band
+        state["room"] = {
+            "sectors": lidar.to_json(pose, z_min=z_min, z_max=z_max, max_range=max_range)
+        }
     else:
-        unavailable.append("room")
-
-    if unavailable:
-        state["unavailable"] = unavailable
+        state["unavailable"] = ["room"]
     return state

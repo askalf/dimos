@@ -284,18 +284,19 @@ class RawRobotBridge(Module):
             if pose is None:
                 continue
             state = build_world_state(
-                goal=None,
-                pose=pose,
+                "",
+                pose,
                 detections_3d=self._fresh("detections_3d"),
+                detections_2d=None,
                 lidar=self._fresh("lidar"),
-                lidar_kwargs={
-                    "z_min": self.config.lidar_z_min,
-                    "z_max": self.config.lidar_z_max,
-                    "max_range": self.config.lidar_max_range,
-                },
+                robot={},
+                lidar_band=(
+                    self.config.lidar_z_min,
+                    self.config.lidar_z_max,
+                    self.config.lidar_max_range,
+                ),
             )
-            del state["goal"]
-            self._put("world_state/json", json.dumps(state), pose.ts)
+            self._put("world_state/json", json.dumps({**state, "goal": None}), pose.ts)
 
     def _drive(self) -> None:
         """Republish the held velocity until the deadman expires, then one zero."""

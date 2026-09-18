@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import TYPE_CHECKING, Any, BinaryIO, TypeAlias
+from typing import TYPE_CHECKING, Any, BinaryIO, TypeAlias, TypedDict
 
 if TYPE_CHECKING:
     from rerun._baseclasses import Archetype
@@ -52,6 +52,20 @@ _HEADINGS = (
     "south",
     "south_east",
 )
+
+
+class XyzJson(TypedDict):
+    x: float
+    y: float
+    z: float
+
+
+class PoseJson(TypedDict):
+    ts: float
+    frame_id: str
+    position: XyzJson
+    yaw_deg: float
+    heading: str
 
 
 def heading_word(yaw_deg: float) -> str:
@@ -114,7 +128,7 @@ class PoseStamped(Pose, Timestamped):
             f"euler=[{math.degrees(self.roll):.1f}, {math.degrees(self.pitch):.1f}, {math.degrees(self.yaw):.1f}])"
         )
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(self) -> PoseJson:
         yaw_deg = math.degrees(self.yaw)
         return {
             "ts": self.ts,

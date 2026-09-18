@@ -167,6 +167,7 @@ def test_explicit_spawn_uses_real_constructor(mocker, navigable):
     mocker.patch.dict("sys.modules", {"habitat_sim": hs})
     sim = hs.Simulator.return_value
     sim.pathfinder.is_navigable.return_value = navigable
+    sim.semantic_scene.objects = []
     config = dict(
         scene_id="example",
         scene_dataset_config="default",

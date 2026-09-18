@@ -78,6 +78,7 @@ all_blueprints = {
     "habitat-nav-gt": "dimos.simulation.habitat.blueprints:habitat_nav_gt",
     "habitat-raycaster": "dimos.simulation.habitat.blueprints:habitat_raycaster",
     "habitat-teleop": "dimos.simulation.habitat.blueprints:habitat_teleop",
+    "habitat-typesafe": "dimos.simulation.habitat.blueprints:habitat_typesafe",
     "habitat-voxel": "dimos.simulation.habitat.blueprints:habitat_voxel",
     "keyboard-teleop-a1z": "dimos.robot.manipulators.a1z.blueprints.teleop:keyboard_teleop_a1z",
     "keyboard-teleop-a750": "dimos.robot.manipulators.a750.blueprints.teleop:keyboard_teleop_a750",
