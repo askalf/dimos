@@ -294,7 +294,6 @@ class TypeSafePolicyConfig(AgentConfig):
     turn_rate: float = 0.5  # rad/s for turns; ~86 deg/s in-sim, ~a quarter turn per tick
     # Republish interval inside a tick; must beat the sim's 500 ms cmd_vel deadman.
     control_dt: float = 0.1
-    min_confidence: float = 0.35  # below this, hold still
     reached_noul: float = 0.8
     odom_topic: str = "/odom"
     # The environment should already have waited for the sim; this is a backstop.
@@ -405,10 +404,10 @@ class TypeSafePolicy(Agent):
 
         DimSim's ground model integrates only ``linear.x`` (along the heading)
         and ``angular.z``; ``linear.y`` is ignored, so these are the only two
-        axes there are. Nothing about heading is computed here.
+        axes there are. Nothing about heading is computed here, and there is
+        no confidence threshold: ``choice`` is the argmax and it is applied as
+        is. Only a "0,0" pick (or the episode ending) stops the robot.
         """
-        if step.confidence < self.config.min_confidence:
-            return Twist.zero()
         x, w = STEPS[str(step.choice)]
         return Twist(
             linear=(self.config.speed * x, 0.0, 0.0),

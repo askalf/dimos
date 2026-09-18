@@ -186,10 +186,11 @@ def test_twist_takes_no_pose(scene_json: Path) -> None:
     assert list(inspect.signature(TypeSafePolicy.twist).parameters) == ["self", "step"]
 
 
-def test_low_confidence_holds_still(scene_json: Path) -> None:
-    policy = TypeSafePolicy(scene_json=scene_json, min_confidence=0.5)
-    twist = policy.twist(_choice("1,0", confidence=0.2))
-    assert (twist.linear.x, twist.angular.z) == (0.0, 0.0)
+def test_pick_is_applied_whatever_the_confidence(scene_json: Path) -> None:
+    """No threshold: the argmax is the command. Only "0,0" stops the robot."""
+    policy = TypeSafePolicy(scene_json=scene_json)
+    twist = policy.twist(_choice("1,0", confidence=0.21))
+    assert (twist.linear.x, twist.angular.z) == pytest.approx((0.2, 0.0))
 
 
 # --- preflight -------------------------------------------------------------------
