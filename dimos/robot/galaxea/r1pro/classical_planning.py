@@ -104,6 +104,12 @@ class ClassicalGraspPlanner(ObjectReachability):
             ):
                 continue
             result.append(pose)
+        # A target across the body from the free hand is a slow, awkward reach
+        # from where the robot stands. Reposition first; keep that stance last.
+        c, s = np.cos(current[2]), np.sin(current[2])
+        lateral = float(-s * (target[0] - current[0]) + c * (target[1] - current[1]))
+        if (arm == "left" and lateral < -0.05) or (arm == "right" and lateral > 0.05):
+            result = result[1:] + result[:1]
         return result
 
     def _collisions(
@@ -611,7 +617,15 @@ class ClassicalGraspPlanner(ObjectReachability):
             index, arm = 0, "right"
         hands = list(ARMS)
         failures = []
-        for forward, lateral in ((0.28, 0.28), (0.32, 0.30), (0.36, 0.32)):
+        # Elbows-in first so a loaded robot fits narrow passages; widen only when
+        # the tight stance collides with the body or the carried items.
+        for forward, lateral in (
+            (0.22, 0.20),
+            (0.25, 0.24),
+            (0.28, 0.28),
+            (0.32, 0.30),
+            (0.36, 0.32),
+        ):
             self.initialize_local_probe(index, arm)
             self.allow_target_contact = bool(held)
             base = self.probe.body("base_link")

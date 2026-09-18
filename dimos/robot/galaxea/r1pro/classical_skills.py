@@ -34,6 +34,7 @@ from dimos.manipulation.manipulation_spec import ExecutionStatus, ManipulationSp
 from dimos.manipulation.planning.trajectory_generator.joint_trajectory_generator import (
     JointTrajectoryGenerator,
 )
+from dimos.msgs.manipulation_msgs.GraspCandidateArray import GraspCandidateArray
 from dimos.msgs.nav_msgs.Path import Path
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
@@ -59,6 +60,8 @@ from dimos.robot.galaxea.r1pro.object_primitives import ARMS
 from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
+# Cross-body reaches with a held object can take minutes to rank; bound the wait.
+ASSESSMENT_TIMEOUT_S = 150.0
 
 
 class R1ProClassicalSkills(Module):
@@ -473,6 +476,28 @@ class R1ProClassicalSkills(Module):
                     "Measured base is outside the classical prepositioning tolerance"
                 )
 
+    def _assess_pick(
+        self, index: int, candidates: GraspCandidateArray, arm: str
+    ) -> list[dict[str, Any]]:
+        """Rank proposals out of process so a slow search fails cleanly and never stalls physics."""
+        self._sim.begin_classical_pick_assessment(index, candidates, arm)
+        deadline = time.monotonic() + ASSESSMENT_TIMEOUT_S
+        try:
+            while True:
+                status = self._sim.classical_pick_assessment()
+                if status["state"] == "done":
+                    return list(status["options"])
+                if status["state"] == "failed":
+                    raise RuntimeError(status["error"])
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f"Could not find a comfortable grasp within {ASSESSMENT_TIMEOUT_S:.0f} s; "
+                        "free the other hand or ask again from closer"
+                    )
+                self._pause(1.0)
+        finally:
+            self._sim.cancel_classical_pick_assessment()
+
     def _prepare_posture(self, selection: dict[str, Any], report: dict[str, Any]) -> None:
         stance = selection["reachability"]
         positions = stance["ready_joints"]
@@ -735,7 +760,7 @@ class R1ProClassicalSkills(Module):
             candidates = self._grasp_generator.propose_grasps(cloud)
             report["grasp_candidates"] = len(candidates)
             self._phase("assess_reachability", report)
-            options = self._sim.assess_classical_pick(index, candidates, arm)
+            options = self._assess_pick(index, candidates, arm)
             if not options:
                 raise RuntimeError(
                     "No GraspGenX candidate has a clear approach and lift with the requested hand"
