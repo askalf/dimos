@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -53,6 +54,20 @@ class SecondaryModule(Module):
     config: SecondaryConfig
 
 
+@dataclass(frozen=True)
+class Body:
+    length: float
+    max_speed: float
+
+
+class BodyConfig(ModuleConfig):
+    body: Body = Body(length=1.0, max_speed=0.5)
+
+
+class BodyModule(Module):
+    config: BodyConfig
+
+
 class ProviderConfig(BaseModel):
     api_key: str
     retries: int = 1
@@ -66,6 +81,20 @@ class ConfigurableTransport(Transport[bytes]):
 
     def subscribe(self, callback: Any, selfstream: Stream[bytes] | None = None) -> Any:
         return lambda: None
+
+
+def test_sparse_dataclass_override_completes_from_the_default() -> None:
+    parsed = BlueprintConfigParser(BodyModule.blueprint()).parse(
+        [], environ={"BODYMODULE__BODY__MAX_SPEED": "0.6"}
+    )
+
+    assert parsed.module_kwargs("bodymodule")["body"] == {"length": 1.0, "max_speed": 0.6}
+
+    # A blueprint-pinned body is what gets overlaid, not the class default.
+    pinned = BodyModule.blueprint(body=Body(length=2.0, max_speed=0.4))
+    parsed = BlueprintConfigParser(pinned).parse([], environ={"BODYMODULE__BODY__MAX_SPEED": "0.6"})
+
+    assert parsed.module_kwargs("bodymodule")["body"] == {"length": 2.0, "max_speed": 0.6}
 
 
 def test_parse_supports_value_forms_types_nested_defaults_and_last_wins() -> None:
