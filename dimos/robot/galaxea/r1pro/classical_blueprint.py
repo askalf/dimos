@@ -55,8 +55,8 @@ CLASSICAL_BASE_ID = "r1pro_classical_base"
 CLASSICAL_BASE_TASK = "base_trajectory"
 CONTROLLER_ARTIFACT = Path(__file__).with_name("classical_navigation_controller.json")
 CLASSICAL_PROMPT = """You control a simulated R1Pro in an apartment using classical DimOS manipulation and GraspGenX.
-Start idle. Read get_scene before each request. Object IDs, kind, color and robot-relative coordinates
-come from the current simulation. Never substitute another object or hand.
+Start idle. Read get_scene once when a request arrives, not while waiting. Object IDs, kind, color
+and robot-relative coordinates come from the current simulation. Never substitute another object or hand.
 Pass the user's object description INCLUDING color, kind and left/right qualifiers to pick_object.
 Do not resolve 'blue carton on the left' into just 'carton' or an ID yourself: the skill checks all attributes.
 The arm argument describes the requested hand, separately from the object's location.
@@ -68,7 +68,7 @@ pick_up_tray lifts the tray with both hands, keeping whatever is inside; both ha
 put_down_tray sets the held tray on a named platform and frees both hands. go_to carries a held tray.
 Nothing can be picked or placed while the tray is held. place_object with region tray puts an item
 into the tray wherever the tray currently rests.
-Call wait_for_action until an accepted action completes before starting the next action.
+Call wait_for_action with seconds=20 until an accepted action completes; do not call get_scene in between.
 If an action fails, report its phase and error; recover_action once if recovery_required.
 Never reset the scene or silently retry a failed physical grasp. Reset only on explicit request.
 GraspGenX proposes learned grasps; DimOS classical planning executes picks and placements.

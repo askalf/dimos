@@ -717,15 +717,57 @@ class R1ProClassicalSkills(Module):
         This demo uses simulation instance labels and virtual depth scans.
         """
         state = self._sim.primitive_state()
-        for row in state["objects"]:
-            row["color"] = color_name(row["rgba"])
+        tray = self._sim.tray_state()
+        # Keep this small: the agent re-reads it often and every field lands in its context.
+        objects = [
+            dict(
+                id=row["id"],
+                kind=row["kind"],
+                color=color_name(row["rgba"]),
+                position=[round(float(v), 3) for v in row["position"]],
+                forward_m=round(float(row["forward_m"]), 2),
+                left_m=round(float(row["left_m"]), 2),
+                distance_m=round(float(row["distance_m"]), 2),
+                on=(
+                    "tray"
+                    if row["inside"]
+                    else next(
+                        (
+                            name
+                            for name, region in state["defined_regions"].items()
+                            if set(region["support_geoms"]) & set(row["support_geoms"])
+                        ),
+                        None,
+                    )
+                ),
+                held_by=row["held_by"],
+                upright=row["upright"],
+                support_geoms=row["support_geoms"],
+                grasping_arms=row["grasping_arms"],
+                contacting_arms=row["contacting_arms"],
+                inside=row["inside"],
+            )
+            for row in state["objects"]
+        ]
         return json.dumps(
-            {
-                **state,
-                "tray": self._sim.tray_state(),
-                "action": self._status(),
-                "controller": "classical_graspgenx",
-            }
+            dict(
+                objects=objects,
+                held_objects=state["held_objects"],
+                tray=dict(
+                    station=tray["station"],
+                    held=tray["held"],
+                    cargo=tray["cargo"],
+                    position=[round(float(v), 3) for v in tray["position"]],
+                    support_geoms=tray["support_geoms"],
+                    tilt_radians=round(float(tray["tilt_radians"]), 3),
+                ),
+                regions=list(state["defined_regions"]),
+                base_pose=[round(float(v), 3) for v in state["base_pose"]],
+                sim_time=round(float(state["sim_time"]), 1),
+                error=state["error"],
+                action=self._status(),
+                controller="classical_graspgenx",
+            )
         )
 
     @skill
