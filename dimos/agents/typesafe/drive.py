@@ -12,13 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Drive questions and their decoding. Pure: state in, questions out; answers in, Drive out."""
+"""The adapter: TypeSafe questions for driving, and their answers decoded into a Drive."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal, TypedDict
 
-from dimos.agents.typesafe.client import Answers, ChoiceAnswer, Question, Text, choice, noul
+from typing_extensions import NotRequired
+
+Text = str | Mapping[str, object] | list[object]
+
+
+class ChoiceQuestion(TypedDict):
+    type: Literal["choice"]
+    instructions: Text
+    criteria: Mapping[str, Text | None]
+
+
+class NoulQuestion(TypedDict):
+    type: Literal["noul"]
+    instructions: Text
+    criteria: NotRequired[Mapping[str, Text]]
+
+
+Question = ChoiceQuestion | NoulQuestion
+
+
+class ChoiceAnswer(TypedDict):
+    type: Literal["choice"]
+    choice: str
+    confidence: float
+    probabilities: dict[str, float]
+
+
+class NoulAnswer(TypedDict):
+    type: Literal["noul"]
+    noul: float
+
+
+Answers = dict[str, ChoiceAnswer | NoulAnswer]
+
+
+def choice(instructions: Text, criteria: Mapping[str, Text | None]) -> ChoiceQuestion:
+    return {"type": "choice", "instructions": instructions, "criteria": criteria}
+
+
+def noul(instructions: Text, criteria: Mapping[str, Text]) -> NoulQuestion:
+    return {"type": "noul", "instructions": instructions, "criteria": criteria}
+
 
 AXES = (("x", "forward", "backward"), ("y", "left", "right"), ("yaw", "turn_left", "turn_right"))
 _CONTEXT = "Read `goal`, `robot`, `objects` (each has `bearing` and `distance`) and `room` (each sector has `state`)."

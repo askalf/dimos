@@ -13,14 +13,16 @@
 # limitations under the License.
 """Reactive text-only agent: world state in, joystick-style cmd_vel out.
 
-Each tick folds the latest pose, detections and scan into one JSON state, asks
-TypeSafe one request (a 3-way Choice per axis, a stop Noul, a target Choice) and
-drives. The model picks directions; code sets magnitudes from the target's
-bearing and distance, ramps the Twist at 10 Hz and zeroes it on a deadman.
+Each tick folds the latest pose, detections and scan into one JSON state
+(world_state.py), sends it with the drive questions to TypeSafe in one POST,
+and the adapter (drive.py) turns the typed answers into a Twist. The model
+picks directions; code sets magnitudes from the target's bearing and distance,
+ramps the Twist at 10 Hz and zeroes it on a deadman.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import os
 from pathlib import Path
@@ -31,9 +33,9 @@ from typing import Any, Generic, TypeVar
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.base import BaseMessage
 from reactivex.disposable import Disposable
+import requests
 
-from dimos.agents.typesafe.client import API_KEY_ENV, Answers, Question, SystemOne
-from dimos.agents.typesafe.drive import Drive, decode, questions
+from dimos.agents.typesafe.drive import Answers, Drive, Question, decode, questions
 from dimos.agents.typesafe.world_state import WorldState, build_world_state
 from dimos.constants import DEFAULT_THREAD_JOIN_TIMEOUT
 from dimos.core.core import rpc
@@ -49,8 +51,10 @@ from dimos.utils.logging_config import setup_logger
 
 logger = setup_logger()
 
+API_KEY_ENV = "TYPESAFE_API_KEY"
 T = TypeVar("T")
 Vec3 = tuple[float, float, float]
+Ask = Callable[[WorldState, dict[str, Question]], Answers]
 ZERO: Vec3 = (0.0, 0.0, 0.0)
 PUBLISH_HZ = 10.0
 # ponytail: fixed steering gains; config them if a robot needs different ones.
@@ -115,7 +119,8 @@ class TypeSafeAgent(Module):
         self._det3d: _Latest[Detection3DArray] = _Latest()
         self._det2d: _Latest[Detection2DArray] = _Latest()
         self._lidar: _Latest[PointCloud2] = _Latest()
-        self._client: SystemOne | None = None
+        self._ask: Ask = self._post
+        self._session = requests.Session()
         self._lock = threading.Lock()
         self._goal: str | None = None
         self._motion = "idle"
@@ -131,11 +136,7 @@ class TypeSafeAgent(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        self._client = SystemOne(
-            os.environ.get(API_KEY_ENV, ""),
-            model=self.config.model,
-            timeout_s=self.config.timeout_s,
-        )
+        self._session.headers["Authorization"] = f"Bearer {os.environ.get(API_KEY_ENV, '')}"
         self.register_disposable(Disposable(self.odom.subscribe(self._pose.put)))
         self.register_disposable(Disposable(self.odometry.subscribe(self._on_odometry)))
         self.register_disposable(Disposable(self.detections_3d.subscribe(self._det3d.put)))
@@ -157,8 +158,7 @@ class TypeSafeAgent(Module):
         for t in self._threads:
             t.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
         self.cmd_vel.publish(Twist.zero())
-        if self._client is not None:
-            self._client.close()
+        self._session.close()
         super().stop()
 
     @rpc
@@ -178,6 +178,17 @@ class TypeSafeAgent(Module):
     @rpc
     def goal(self) -> str | None:
         return self._goal
+
+    def _post(self, state: WorldState, qs: dict[str, Question]) -> Answers:
+        """TypeSafe System One: `POST /v1/systemone`. A failed tick zeroes the target; the next tick retries."""
+        r = self._session.post(
+            os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai") + "/v1/systemone",
+            json={"state": state, "model": self.config.model, "questions": qs},
+            timeout=self.config.timeout_s,
+        )
+        r.raise_for_status()
+        answers: Answers = r.json()["answers"]
+        return answers
 
     def _on_odometry(self, o: Odometry) -> None:
         self._pose.put(
@@ -205,7 +216,7 @@ class TypeSafeAgent(Module):
 
     def _tick(self) -> None:
         goal = self._goal
-        if goal is None or self._client is None:
+        if goal is None:
             return
         stale = self.config.stale_s
         pose, det3d, det2d = self._pose.get(stale), self._det3d.get(stale), self._det2d.get(stale)
@@ -224,7 +235,7 @@ class TypeSafeAgent(Module):
             lidar_band=self.config.lidar_band,
         )
         qs = questions(tuple(dict.fromkeys(o["label"] for o in state["objects"])))
-        answers = self._client(state, qs)
+        answers = self._ask(state, qs)
         self._trace(state, qs, answers)
         drive = decode(
             answers,

@@ -17,8 +17,8 @@ import time
 
 import pytest
 
-from dimos.agents.typesafe.agent import TypeSafeAgent
-from dimos.agents.typesafe.client import API_KEY_ENV, Answers, Question
+from dimos.agents.typesafe.agent import API_KEY_ENV, TypeSafeAgent
+from dimos.agents.typesafe.drive import Answers, Question
 from dimos.agents.typesafe.test_drive import answers
 from dimos.agents.typesafe.test_world_state import det3d
 from dimos.core.transport import LCMTransport, pLCMTransport
@@ -42,9 +42,6 @@ class FakeSystemOne:
         if self.fail:
             raise RuntimeError("boom")
         return self.answers
-
-    def close(self) -> None:
-        pass
 
 
 Rig = tuple[TypeSafeAgent, FakeSystemOne, list[Twist]]
@@ -72,7 +69,7 @@ def rig(monkeypatch: pytest.MonkeyPatch) -> Iterator[Rig]:
     unsub = a.cmd_vel.transport.subscribe(twists.append)
     a.start()
     fake = FakeSystemOne()
-    a._client = fake  # type: ignore[assignment]
+    a._ask = fake
     yield a, fake, twists
     unsub()
     a.stop()
