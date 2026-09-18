@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::laws::hinted::update as hinted_update;
 use dimos_local_planner::planner::Emb;
-use dimos_module::{native_config, warn_throttled, Input, Module, Output, Tf};
+use dimos_module::{native_config, Input, Module, Output, Tf};
 use lcm_msgs::geometry_msgs::Twist;
 use lcm_msgs::nav_msgs::Path;
 use lcm_msgs::std_msgs::Bool;
@@ -281,12 +281,6 @@ impl Worker {
                         // a plan with no live pose under it: the deadman on the pose
                         self.publish_twist(0.0, 0.0, 0.0).await;
                     }
-                    warn_throttled!(
-                        Duration::from_secs(3),
-                        path = snap.path.is_some(),
-                        pose = pose.is_some(),
-                        "not driving: a local plan or its pose on tf is missing",
-                    )
                 }
                 Tick::Stale { age_s } => {
                     if stale.enter() {
@@ -305,10 +299,6 @@ impl Worker {
                 }
                 Tick::Holding => {
                     self.publish_twist(0.0, 0.0, 0.0).await;
-                    warn_throttled!(
-                        Duration::from_secs(3),
-                        "not driving: waiting for a new goal, the last one is reached and latched",
-                    );
                 }
                 Tick::Drive => {
                     if stale.recover() {

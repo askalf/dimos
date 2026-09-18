@@ -445,13 +445,7 @@ impl Worker {
                         msg::publish(&self.path, &produced).await;
                     }
                 }
-                Tick::Wait => warn_throttled!(
-                    Duration::from_secs(3),
-                    local_map = snap.cloud.is_some(),
-                    pose = pose.is_some(),
-                    planner_path = snap.route.is_some(),
-                    "nothing planned: an input the planner needs has not arrived",
-                ),
+                Tick::Wait => {}
             }
         }
     }
