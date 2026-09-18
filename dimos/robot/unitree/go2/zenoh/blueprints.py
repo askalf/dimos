@@ -67,10 +67,6 @@ planner_viz_hz = 2.0
 # not the 0.31 m trunk). Planner and follower must share it: route and room hint agree.
 MOTION_BODY_DILATE_M = -0.03
 
-# GO2Zenoh publishes this mount onto tf, where nav reads its odometry corrections.
-# Either a raw (roll, pitch, yaw) tuple in degrees or a GO2ZenohConfig.mid360_mount preset.
-MID360_MOUNT = "SF"
-
 
 def _static_robot_body(rr: Any) -> list[Any]:
     """Go2-shaped box on the body frame."""
@@ -159,7 +155,7 @@ def _rerun_config(visual_override: dict[str, Any] | None = None) -> dict[str, An
 # is the layer to drive from when something upstream is suspect.
 go2_zenoh_basic = autoconnect(
     vis_module(viewer_backend=global_config.viewer, rerun_config=_rerun_config()),
-    GO2Zenoh.blueprint(mid360_mount=MID360_MOUNT),
+    GO2Zenoh.blueprint(),
     MovementManager.blueprint(),
 ).global_config(transport="zenoh", n_workers=4, robot_model="unitree_go2")
 
@@ -224,9 +220,6 @@ go2_zenoh_nav_remote = autoconnect(
     MovementManager.blueprint(),
 ).global_config(transport="zenoh", n_workers=6, robot_model="unitree_go2")
 
-# The motion rigs' mount; `MID360_MOUNT` above stays whatever the nav stack wants.
-MOTION_MID360_MOUNT = "ATHENS"
-
 # Permissive global graph: the local planner + follower are the precision layer, so hard
 # clearance drops to the 0.05 floor and the soft wall band narrows, pricing corridors.
 _mls_planner_motion = MLSPlannerNative.blueprint(
@@ -247,8 +240,6 @@ _mls_planner_motion = MLSPlannerNative.blueprint(
 # odometry: the mount is a lever arm. Private: no follower, so the registry must not offer it.
 _go2_zenoh_motion_base = autoconnect(
     go2_zenoh_raycaster,
-    # last duplicate wins: overrides basic's SF mount (order pinned in test_blueprints.py)
-    GO2Zenoh.blueprint(mid360_mount=MOTION_MID360_MOUNT),
     _mls_planner_motion.remappings([(MLSPlannerNative, "path", "planner_path")]),
     # body_band (default) rides the base's known height above the floor, so the map's z
     # origin is never guessed (local_planner/obstacles.py)
@@ -270,8 +261,8 @@ go2_zenoh_motion = autoconnect(
 go2_zenoh_motion_pointlio = autoconnect(
     _go2_zenoh_motion_base,
     TrajectoryFollowerNative.blueprint(),
-    # last duplicate wins; the three LIO ports go nowhere, leaving PointLio the only producer
-    GO2Zenoh.blueprint(mid360_mount=MOTION_MID360_MOUNT).remappings(
+    # last duplicate wins: the three LIO ports go nowhere, leaving PointLio the only producer
+    GO2Zenoh.blueprint().remappings(
         [
             (GO2Zenoh, "odometry", "go2_odometry_unused"),
             (GO2Zenoh, "lidar", "go2_lidar_unused"),
