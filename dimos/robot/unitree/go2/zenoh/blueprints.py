@@ -283,7 +283,13 @@ go2_zenoh_motion_pointlio = autoconnect(
             }
         ),
     ),
-).global_config(transport="zenoh", n_workers=11, robot_model="unitree_go2")
+).global_config(
+    transport="zenoh",
+    # the Go2's router, on its own eth0 across the Jetson link
+    zenoh_connect="tcp/192.168.123.161:7447",
+    n_workers=11,
+    robot_model="unitree_go2",
+)
 
 
 # The viewer half alone, for the machine with the screen. Zenoh keeps the newest sample
