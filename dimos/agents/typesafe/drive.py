@@ -16,63 +16,49 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from dimos.agents.typesafe.client import choice, noul
+from dimos.agents.typesafe.client import Answers, ChoiceAnswer, Question, Text, choice, noul
 
+AXES = (("x", "forward", "backward"), ("y", "left", "right"), ("yaw", "turn_left", "turn_right"))
 _CONTEXT = "Read `goal`, `robot`, `objects` (each has `bearing` and `distance`) and `room.sectors` (each has `state`)."
 
-AXES: dict[str, tuple[str, str]] = {
-    "x": ("forward", "backward"),
-    "y": ("left", "right"),
-    "yaw": ("turn_left", "turn_right"),
-}
 
-
-def _opt(what: str, not_for: str, examples: list[str]) -> dict[str, Any]:
+def _opt(what: str, not_for: str, examples: list[object]) -> Text:
     return {"what": what, "not_for": not_for, "examples": examples}
 
 
-def drive_questions(labels: tuple[str, ...] = ()) -> dict[str, dict[str, Any]]:
-    questions = _axis_questions()
-    if labels:
-        questions["target"] = choice(
-            "Which entry of `objects` is the thing `goal` asks to go to? Match by `label`.",
-            {**dict.fromkeys(labels), "none": "`goal` names nothing that is in `objects`"},
-        )
-    return questions
+def _q(question: str) -> Text:
+    return {"question": question, "context": _CONTEXT}
 
 
-def _axis_questions() -> dict[str, dict[str, Any]]:
-    return {
+def questions(labels: tuple[str, ...]) -> dict[str, Question]:
+    qs: dict[str, Question] = {
         "drive.x": choice(
-            {
-                "question": "Should the robot move straight ahead, reverse, or neither, to get closer to the target named in `goal`?",
-                "context": _CONTEXT,
-            },
+            _q(
+                "Should the robot move straight ahead, reverse, or neither, to get closer to the target named in `goal`?"
+            ),
             {
                 "forward": _opt(
                     "the target is ahead / ahead_left / ahead_right and `room.sectors.ahead.state` is not blocked",
-                    "target beside or behind the robot; ahead is blocked",
+                    "target beside or behind; ahead blocked",
                     ["chair ahead, mid, ahead clear"],
                 ),
                 "none": _opt(
-                    "the target is beside or behind the robot, is touching, or ahead is blocked",
+                    "the target is beside or behind, is touching, or ahead is blocked",
                     "target ahead with a clear path",
-                    ["person left, near", "chair ahead, touching"],
+                    ["person left, near"],
                 ),
                 "backward": _opt(
                     "the robot is touching an obstacle ahead and must back away",
                     "any case where turning or stopping would do",
-                    ["ahead blocked at 0.3 m and target behind"],
+                    ["ahead blocked at 0.3 m"],
                 ),
             },
         ),
         "drive.y": choice(
-            {
-                "question": "Should the robot strafe left, right, or neither, to line up with the target named in `goal` or sidestep an obstacle?",
-                "context": _CONTEXT,
-            },
+            _q(
+                "Should the robot strafe left, right, or neither, to line up with the target named in `goal` or sidestep an obstacle?"
+            ),
             {
                 "left": _opt(
                     "the target is ahead_left or left and that side is not blocked",
@@ -92,10 +78,9 @@ def _axis_questions() -> dict[str, dict[str, Any]]:
             },
         ),
         "drive.yaw": choice(
-            {
-                "question": "Should the robot rotate in place counter-clockwise, clockwise, or not at all, so the target named in `goal` is ahead?",
-                "context": _CONTEXT,
-            },
+            _q(
+                "Should the robot rotate in place counter-clockwise, clockwise, or not at all, so the target named in `goal` is ahead?"
+            ),
             {
                 "turn_left": _opt(
                     "the target bearing is left, ahead_left, or behind_left",
@@ -108,18 +93,24 @@ def _axis_questions() -> dict[str, dict[str, Any]]:
                 "turn_right": _opt(
                     "the target bearing is right, ahead_right, behind_right, or behind",
                     "target ahead or on the left",
-                    ["chair behind", "door right, near"],
+                    ["chair behind"],
                 ),
             },
         ),
         "stop": noul(
-            {"question": "Should the robot stop moving right now?", "context": _CONTEXT},
+            _q("Should the robot stop moving right now?"),
             {
                 "true": "the target named in `goal` has `distance` touching, or `goal` asks to stop, or the target is not in `objects`, or `room.sectors.ahead.state` is blocked while moving forward",
                 "false": "the target is in `objects` with `distance` near, mid or far, and there is a clear direction to move; being near is not a reason to stop",
             },
         ),
     }
+    if labels:
+        qs["target"] = choice(
+            "Which entry of `objects` is the thing `goal` asks to go to? Match by `label`.",
+            {**dict.fromkeys(labels), "none": "`goal` names nothing that is in `objects`"},
+        )
+    return qs
 
 
 @dataclass(frozen=True)
@@ -130,55 +121,40 @@ class Drive:
     stop: bool
     confidence: float
     labels: tuple[str, str, str]
-    target: str | None = None
+    target: str | None
 
     @property
     def is_zero(self) -> bool:
-        return self.stop or (self.x == 0 and self.y == 0 and self.yaw == 0)
+        return self.stop or not (self.x or self.y or self.yaw)
 
 
-def _axis(
-    answer: dict[str, Any], pos: str, neg: str, min_confidence: float, blend: bool
-) -> tuple[float, str, float]:
-    probs = answer.get("probabilities") or {}
-    conf = float(answer.get("confidence", 0.0))
-    label = str(answer.get("choice", "none"))
-    if blend:
-        return float(probs.get(pos, 0.0)) - float(probs.get(neg, 0.0)), label, conf
-    if conf < min_confidence or label == "none":
-        return 0.0, "none" if conf < min_confidence else label, conf
-    return (1.0 if label == pos else -1.0), label, conf
+def _choice(answers: Answers, key: str) -> ChoiceAnswer | None:
+    a = answers.get(key)
+    return a if a is not None and a["type"] == "choice" else None
 
 
-def decode_drive(
-    answers: dict[str, Any],
-    *,
-    min_confidence: float = 0.5,
-    blend: bool = False,
-    stop_threshold: float = 0.7,
-) -> Drive:
-    stop = float(answers.get("stop", {}).get("noul", 0.0)) >= stop_threshold
-    vals: dict[str, float] = {}
+def decode(answers: Answers, *, min_confidence: float, stop_threshold: float) -> Drive:
+    stop_answer = answers.get("stop")
+    stop = (
+        stop_answer is not None
+        and stop_answer["type"] == "noul"
+        and stop_answer["noul"] >= stop_threshold
+    )
+    vals: list[float] = []
     labels: list[str] = []
     confs: list[float] = []
-    for axis, (pos, neg) in AXES.items():
-        v, label, conf = _axis(answers.get(f"drive.{axis}", {}), pos, neg, min_confidence, blend)
-        vals[axis] = v
+    for axis, pos, _neg in AXES:
+        a = _choice(answers, f"drive.{axis}")
+        label, conf = (a["choice"], a["confidence"]) if a else ("none", 0.0)
+        if conf < min_confidence:
+            label = "none"
+        vals.append(0.0 if stop or label == "none" else 1.0 if label == pos else -1.0)
         labels.append(label)
         confs.append(conf)
-    if stop:
-        vals = dict.fromkeys(vals, 0.0)
-    target = answers.get("target", {}).get("choice")
-    if target == "none" or (
-        target is not None and float(answers["target"].get("confidence", 0.0)) < min_confidence
-    ):
-        target = None
+    t = _choice(answers, "target")
+    target = (
+        t["choice"] if t and t["choice"] != "none" and t["confidence"] >= min_confidence else None
+    )
     return Drive(
-        vals["x"],
-        vals["y"],
-        vals["yaw"],
-        stop,
-        min(confs) if confs else 0.0,
-        (labels[0], labels[1], labels[2]),
-        target,
+        vals[0], vals[1], vals[2], stop, min(confs), (labels[0], labels[1], labels[2]), target
     )

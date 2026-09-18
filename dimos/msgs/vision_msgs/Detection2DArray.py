@@ -11,13 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any
+from typing import TypedDict
 
 from dimos_lcm.vision_msgs.Detection2DArray import (
     Detection2DArray as LCMDetection2DArray,
 )
 
 from dimos.types.timestamped import to_timestamp
+
+
+class BBoxJson(TypedDict):
+    cx: float
+    cy: float
+    w: float
+    h: float
+
+
+class Detection2DJson(TypedDict):
+    label: str
+    score: float
+    bbox: BBoxJson
 
 
 class Detection2DArray(LCMDetection2DArray):  # type: ignore[misc]
@@ -30,9 +43,9 @@ class Detection2DArray(LCMDetection2DArray):  # type: ignore[misc]
     def ts(self) -> float:
         return to_timestamp(self.header.stamp)
 
-    def to_json(self) -> list[dict[str, Any]]:
+    def to_json(self) -> list[Detection2DJson]:
         """One entry per detection: label, score and pixel bbox (center + size)."""
-        out: list[dict[str, Any]] = []
+        out: list[Detection2DJson] = []
         for detection in self.detections[: self.detections_length]:
             results = detection.results[: detection.results_length]
             label = next((str(r.hypothesis.class_id) for r in results if r.hypothesis.class_id), "")

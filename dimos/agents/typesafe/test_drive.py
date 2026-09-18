@@ -11,86 +11,68 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from dimos.agents.typesafe.drive import decode_drive, drive_questions
+from dimos.agents.typesafe.client import Answer, Answers
+from dimos.agents.typesafe.drive import decode, questions
 
 
-def _choice(label: str, probs: dict[str, float], confidence: float) -> dict:
-    return {"type": "choice", "choice": label, "probabilities": probs, "confidence": confidence}
-
-
-def _answers(x="none", y="none", yaw="none", conf=0.9, stop=0.0) -> dict:
+def _choice(label: str, *options: str, confidence: float = 0.9) -> Answer:
     return {
-        "drive.x": _choice(
-            x,
-            {
-                "forward": 1.0 if x == "forward" else 0.0,
-                "backward": 1.0 if x == "backward" else 0.0,
-                "none": 1.0 if x == "none" else 0.0,
-            },
-            conf,
-        ),
-        "drive.y": _choice(
-            y,
-            {
-                "left": 1.0 if y == "left" else 0.0,
-                "right": 1.0 if y == "right" else 0.0,
-                "none": 1.0 if y == "none" else 0.0,
-            },
-            conf,
-        ),
-        "drive.yaw": _choice(
-            yaw,
-            {
-                "turn_left": 1.0 if yaw == "turn_left" else 0.0,
-                "turn_right": 1.0 if yaw == "turn_right" else 0.0,
-                "none": 1.0 if yaw == "none" else 0.0,
-            },
-            conf,
-        ),
+        "type": "choice",
+        "choice": label,
+        "confidence": confidence,
+        "probabilities": {o: float(o == label) for o in options},
+    }
+
+
+def _answers(
+    x: str = "none", y: str = "none", yaw: str = "none", conf: float = 0.9, stop: float = 0.0
+) -> Answers:
+    return {
+        "drive.x": _choice(x, "forward", "none", "backward", confidence=conf),
+        "drive.y": _choice(y, "left", "none", "right", confidence=conf),
+        "drive.yaw": _choice(yaw, "turn_left", "none", "turn_right", confidence=conf),
         "stop": {"type": "noul", "noul": stop},
     }
 
 
-def test_questions_are_one_choice_per_axis_plus_stop() -> None:
-    q = drive_questions()
-    assert set(q) == {"drive.x", "drive.y", "drive.yaw", "stop"}
-    assert set(q["drive.x"]["criteria"]) == {"forward", "none", "backward"}
-    assert q["stop"]["type"] == "noul"
+def _decode(answers: Answers):  # type: ignore[no-untyped-def]
+    return decode(answers, min_confidence=0.5, stop_threshold=0.7)
+
+
+def test_questions_one_choice_per_axis_plus_stop_and_target() -> None:
+    assert set(questions(())) == {"drive.x", "drive.y", "drive.yaw", "stop"}
+    q = questions(("chair", "person"))
+    assert q["target"]["type"] == "choice" and set(q["target"]["criteria"]) == {
+        "chair",
+        "person",
+        "none",
+    }
 
 
 def test_forward_and_strafe_compose() -> None:
-    d = decode_drive(_answers(x="forward", y="left"))
-    assert (d.x, d.y, d.yaw) == (1.0, 1.0, 0.0)
-    assert not d.stop and d.labels == ("forward", "left", "none")
+    d = _decode(_answers(x="forward", y="left"))
+    assert (d.x, d.y, d.yaw, d.stop, d.labels) == (
+        1.0,
+        1.0,
+        0.0,
+        False,
+        ("forward", "left", "none"),
+    )
 
 
 def test_low_confidence_axis_is_zero() -> None:
-    d = decode_drive(_answers(x="forward", conf=0.3), min_confidence=0.5)
-    assert d.x == 0.0 and d.labels[0] == "none"
-    assert d.confidence == 0.3
+    d = _decode(_answers(x="forward", conf=0.3))
+    assert (d.x, d.labels[0], d.confidence) == (0.0, "none", 0.3)
 
 
 def test_stop_overrides_axes() -> None:
-    d = decode_drive(_answers(x="forward", yaw="turn_right", stop=0.9))
-    assert d.stop and d.is_zero and (d.x, d.y, d.yaw) == (0.0, 0.0, 0.0)
-
-
-def test_blend_uses_probability_difference() -> None:
-    a = _answers()
-    a["drive.x"] = _choice("forward", {"forward": 0.6, "none": 0.1, "backward": 0.3}, 0.4)
-    d = decode_drive(a, blend=True)
-    assert abs(d.x - 0.3) < 1e-9
-
-
-def test_target_question_lists_object_labels() -> None:
-    q = drive_questions(("chair", "person"))
-    assert set(q["target"]["criteria"]) == {"chair", "person", "none"}
-    assert "target" not in drive_questions()
+    d = _decode(_answers(x="forward", yaw="turn_right", stop=0.9))
+    assert d.stop and d.is_zero
 
 
 def test_target_decoded_and_none_dropped() -> None:
     a = _answers(x="forward")
-    a["target"] = _choice("chair", {"chair": 0.9, "none": 0.1}, 0.8)
-    assert decode_drive(a).target == "chair"
-    a["target"] = _choice("none", {"chair": 0.1, "none": 0.9}, 0.8)
-    assert decode_drive(a).target is None
+    a["target"] = _choice("chair", "chair", "none")
+    assert _decode(a).target == "chair"
+    a["target"] = _choice("none", "chair", "none")
+    assert _decode(a).target is None

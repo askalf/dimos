@@ -69,7 +69,7 @@ class DemoObjects(Module):
             self._thread = None
         super().stop()
 
-    def message(self) -> Detection3DArray:
+    def _message(self) -> Detection3DArray:
         now = time.time()
         dets = []
         for label, x, y, z in self.config.objects:
@@ -87,5 +87,5 @@ class DemoObjects(Module):
 
     def _publish_loop(self) -> None:
         while not self._stop_event.is_set():
-            self.detections_3d.publish(self.message())
+            self.detections_3d.publish(self._message())
             self._stop_event.wait(1.0 / self.config.rate_hz)
