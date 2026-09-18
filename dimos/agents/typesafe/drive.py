@@ -157,9 +157,10 @@ def _noul(answers: Answers, key: str, threshold: float) -> bool:
     return a is not None and a["type"] == "noul" and a["noul"] >= threshold
 
 
-def decode(answers: Answers, *, min_confidence: float, stop_threshold: float) -> Drive:
+def decode(answers: Answers, *, stop_threshold: float) -> Drive:
+    """Picks are taken as picked: confidence is reported, never a gate (it only measures
+    how far the other options trailed)."""
     task = _choice(answers, "task")
-    # The pick, not its confidence: a two-way answer at the target hovers near even.
     finished = task is not None and task["choice"] == "finished"
     stop = finished or _noul(answers, "stop", stop_threshold)
     vals: list[float] = []
@@ -168,15 +169,11 @@ def decode(answers: Answers, *, min_confidence: float, stop_threshold: float) ->
     for axis, pos, _neg in AXES:
         a = _choice(answers, f"drive.{axis}")
         label, conf = (a["choice"], a["confidence"]) if a else ("none", 0.0)
-        if conf < min_confidence:
-            label = "none"
         vals.append(0.0 if stop or label == "none" else 1.0 if label == pos else -1.0)
         labels.append(label)
         confs.append(conf)
     t = _choice(answers, "target")
-    target = (
-        t["choice"] if t and t["choice"] != "none" and t["confidence"] >= min_confidence else None
-    )
+    target = t["choice"] if t and t["choice"] != "none" else None
     return Drive(
         vals[0],
         vals[1],

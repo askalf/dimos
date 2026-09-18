@@ -92,7 +92,6 @@ class TypeSafeAgentConfig(ModuleConfig):
     angular_speed: float = 0.8
     linear_accel: float = 0.8
     angular_accel: float = 1.6
-    min_confidence: float = 0.5
     stop_threshold: float = 0.7
     reached_m: float = 0.5
     give_up_s: float = 5.0  # goal clears after this long without motion
@@ -246,7 +245,6 @@ class TypeSafeAgent(Module):
         self._trace(state, qs, answers, started, time.monotonic() - t0)
         drive = decode(
             answers,
-            min_confidence=self.config.min_confidence,
             stop_threshold=self.config.stop_threshold,
         )
         self._steer(state, drive)
