@@ -787,7 +787,7 @@ def test_execute_rejection_reports_coordinator_reason(executable_gui, module_fac
     reason = "Trajectory start for joint arm/j0 differs from current position by 0.1"
     mocker.patch.object(
         module._control_coordinator,
-        "execute_trajectory",
+        "task_invoke",
         return_value=TrajectoryExecutionResult(
             TrajectoryExecutionStatus.START_STATE_MISMATCH, reason
         ),
