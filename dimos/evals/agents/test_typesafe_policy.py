@@ -29,7 +29,9 @@ from dimos.evals.agents.typesafe_policy import (
     STEPS,
     TypeSafePolicy,
     build_questions,
+    derive_goal_label,
     load_scene,
+    scene_labels,
 )
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
@@ -220,3 +222,27 @@ def test_preflight_rejects_unknown_goal(scene_json: Path) -> None:
     policy = TypeSafePolicy(scene_json=scene_json, goal_label="jacuzzi")
     with pytest.raises(LookupError):
         policy.preflight(None)  # type: ignore[arg-type]
+
+
+# --- goal from the instruction ---------------------------------------------------
+
+
+def test_derive_goal_label_picks_the_word_that_names_an_object(scene_json: Path) -> None:
+    labels = scene_labels(scene_json)
+    assert derive_goal_label("navigate to the sectional couch", labels) == "sectional"
+    assert derive_goal_label("go to the bathtub", scene_labels(SHIPPED_SCENE)) == "bathtub"
+
+
+def test_derive_goal_label_ignores_stop_and_short_words(scene_json: Path) -> None:
+    """'with' occurs inside labels ("with chrome") but never names a goal."""
+    with pytest.raises(LookupError, match="names a scene object"):
+        derive_goal_label("go with the flow", scene_labels(SHIPPED_SCENE))
+
+
+def test_load_scene_rejects_an_empty_goal(scene_json: Path) -> None:
+    with pytest.raises(ValueError, match="matches everything"):
+        load_scene(scene_json, "")
+
+
+def test_preflight_without_goal_label_only_checks_the_file(scene_json: Path) -> None:
+    TypeSafePolicy(scene_json=scene_json).preflight(None)  # type: ignore[arg-type]

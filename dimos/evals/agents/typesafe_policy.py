@@ -26,10 +26,12 @@ else is plumbing.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 import json
 import math
 from pathlib import Path
+import re
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -152,6 +154,8 @@ class Scene:
 
 def load_scene(path: Path, goal_label: str) -> Scene:
     """Detections JSON -> the 2D scene Jev sees. ``goal_label`` is a substring."""
+    if not goal_label:
+        raise ValueError("goal_label must name the goal; an empty string matches everything")
     raw = json.loads(Path(path).expanduser().read_text())
     goal = next(
         (d for d in raw["detections"] if goal_label.lower() in str(d["label"]).lower()), None
@@ -183,6 +187,61 @@ def load_scene(path: Path, goal_label: str) -> Scene:
             for d in kept
         ],
     )
+
+
+def scene_labels(path: Path) -> list[str]:
+    raw = json.loads(Path(path).expanduser().read_text())
+    return [str(d["label"]) for d in raw["detections"]]
+
+
+# Instruction words that also occur inside object labels ("with chrome",
+# "wall-kitchen-front") but never name the goal.
+_STOP_WORDS = frozenset(
+    {
+        "back",
+        "drive",
+        "find",
+        "front",
+        "from",
+        "goal",
+        "head",
+        "into",
+        "left",
+        "navigate",
+        "near",
+        "next",
+        "over",
+        "please",
+        "reach",
+        "right",
+        "robot",
+        "side",
+        "then",
+        "there",
+        "toward",
+        "towards",
+        "walk",
+        "with",
+    }
+)
+
+
+def derive_goal_label(instruction: str, labels: Sequence[str]) -> str:
+    """The longest word of the instruction that occurs in some scene label.
+
+    Jev does no language grounding here: the instruction has to call the goal
+    by a word from its label ("bathtub", "sectional"), and code does the lookup
+    so the goal box in the state is always a real object. Letting the model
+    pick the goal would be a separate Choice question and a separate eval.
+    """
+    lowered = [label.lower() for label in labels]
+    words = re.findall(r"[a-z][a-z-]{3,}", instruction.lower())
+    hits = [w for w in words if w not in _STOP_WORDS and any(w in label for label in lowered)]
+    if not hits:
+        raise LookupError(
+            f"no word of {instruction!r} names a scene object; use a word from its label"
+        )
+    return max(hits, key=len)
 
 
 def _footprint(d: dict[str, Any]) -> Box2D:
@@ -220,7 +279,7 @@ def _contained(own_id: str, boxes: dict[str, Box2D]) -> bool:
 class TypeSafePolicyConfig(AgentConfig):
     model: str = "jev-latest"  # typesafe_sdk.constants.DEFAULT_MODEL
     scene_json: Path = Path()  # required; a DimSim detections snapshot, see load_scene
-    goal_label: str = "sectional"  # substring of the goal detection's label
+    goal_label: str = ""  # a word of the goal's label; empty derives it from the instruction
     max_ticks: int = 60
     tick_s: float = 1.0
     # The SDK default is 10s; a tick that blocks longer than this is dead time.
@@ -257,7 +316,9 @@ class TypeSafePolicy(Agent):
             raise ValueError("TypeSafePolicy calls no tools; leave modules empty")
         if not self.config.scene_json.is_file():
             raise FileNotFoundError(f"scene_json not found: {self.config.scene_json}")
-        load_scene(self.config.scene_json, self.config.goal_label)  # fail before anything starts
+        scene_labels(self.config.scene_json)  # fail before anything starts
+        if self.config.goal_label:
+            load_scene(self.config.scene_json, self.config.goal_label)
 
     def run(
         self, inputs: str, env: RunningEnvironment, run_dir: Path, *, timeout_s: float
@@ -270,7 +331,10 @@ class TypeSafePolicy(Agent):
         raw.mkdir(parents=True, exist_ok=True)
         trajectory = TrajectoryBuilder(inputs, name=type(self).__name__, model=self.config.model)
 
-        scene = load_scene(self.config.scene_json, self.config.goal_label)
+        goal_label = self.config.goal_label or derive_goal_label(
+            inputs, scene_labels(self.config.scene_json)
+        )
+        scene = load_scene(self.config.scene_json, goal_label)
         # api_key comes from TYPESAFE_API_KEY (typesafe_sdk.constants.API_KEY_ENV).
         client = TypeSafeClient(model=self.config.model, timeout=self.config.request_timeout_s)
         questions = build_questions()
