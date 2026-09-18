@@ -82,6 +82,9 @@ class HomeKinematics:
             for g in self.config.planning_groups
         ]
         base = data.body("base_link")
+        # Targets are re-expressed relative to this build pose, so one world serves any stance.
+        self.reference_position = base.xpos.copy()
+        self.reference_rotation = base.xmat.reshape(3, 3).copy()
         yaw = float(np.arctan2(base.xmat[3], base.xmat[0]))
         self.orientation = Quaternion.from_euler(Vector3(0.0, 0.0, yaw))
         self.config.base_pose = PoseStamped(

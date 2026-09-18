@@ -496,7 +496,10 @@ class R1ProClassicalSkills(Module):
                     )
                 self._pause(1.0)
         finally:
-            self._sim.cancel_classical_pick_assessment()
+            try:
+                self._sim.cancel_classical_pick_assessment()
+            except Exception:
+                logger.exception("Could not cancel the grasp assessment")
 
     def _prepare_posture(self, selection: dict[str, Any], report: dict[str, Any]) -> None:
         stance = selection["reachability"]

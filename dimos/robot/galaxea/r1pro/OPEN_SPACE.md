@@ -70,6 +70,10 @@ The September 17 desktop run exposed a 12.4-second viewer synchronization stall 
 
 After the host reboot the same day, active cores idled at 0.8 to 1.6 GHz with package temperatures near 60 to 70 C, and the seed 5000 three-action sequence (right carton pick, low-bench delivery and placement) passed headless on the snapshot-viewer code in 6.5 minutes of wall time. The earlier 200 MHz readings were a thermal or power fault of the host, not a simulation regression; check clocks and temperatures again before interpreting any slow run.
 
+## Grasp assessment
+
+Ranking GraspGenX proposals runs in a separate worker process that the simulator starts and warms at the first session call, so the kinematics world (about a minute to build) is paid once, before the first pick. Each pick then ranks in roughly 20 to 40 seconds; the skill polls with a cancellable wait and gives up after 150 seconds with a plain reason ("free the other hand or ask again from closer"), killing the worker so a runaway search cannot starve physics. The worker logs to `assessment-worker.log` in the session directory; each request lives in a `classical-assessment-*` directory with its `result.json`. When the free hand is across the body from the target, the ranker tries repositioned stances first.
+
 ## Local regression
 
 The non-agent blueprint is `r1pro-classical-open-space-sim`. A reproducible test through local MCP, without a language-model call:

@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Protocol, cast
 
@@ -54,6 +55,9 @@ from dimos.robot.galaxea.r1pro.primitive_scene import placement_options
 from dimos.robot.galaxea.r1pro.tray_motion import TrayMotion
 from dimos.robot.galaxea.r1pro.tray_sim import configure_tray_holding
 from dimos.simulation.engines.mujoco_engine import MujocoEngine
+from dimos.utils.logging_config import setup_logger
+
+logger = setup_logger()
 
 
 class ClassicalSimSpec(ApartmentSimSpec, Protocol):
@@ -66,9 +70,6 @@ class ClassicalSimSpec(ApartmentSimSpec, Protocol):
         self, index: int, arm: str, positions: list[float], target: list[list[float]] | None = None
     ) -> list[list[float]]: ...
     def classical_object_cloud(self, index: int) -> PointCloud2: ...
-    def assess_classical_pick(
-        self, index: int, candidates: GraspCandidateArray, arm: str
-    ) -> list[dict[str, Any]]: ...
     def classical_line(
         self, index: int, arm: str, target: list[list[float]]
     ) -> list[list[float]]: ...
@@ -95,7 +96,9 @@ class R1ProClassicalSim(R1ProApartmentSim):
         super().__init__(*args, **kwargs)
         self._tray_transport: list[str] | None = None
         self._last_tray_check = float("-inf")
-        self._assessment: tuple[subprocess.Popen[bytes], Path] | None = None
+        self._assessment_worker: subprocess.Popen[bytes] | None = None
+        self._assessment: Path | None = None
+        self._assessment_warmed = False
 
     def _reachable_base_path(
         self, planner: PlanarTransport, pose: NDArray[Any]
@@ -133,14 +136,72 @@ class R1ProClassicalSim(R1ProApartmentSim):
             mujoco.mj_saveModel(self._engine.model, str(model_path), None)
         return model_path
 
+    def _assessment_process(self) -> subprocess.Popen[bytes]:
+        """One long-lived worker keeps the compiled model and kinematics world cached."""
+        if self._assessment_worker is None or self._assessment_worker.poll() is not None:
+            log = (self.config.output / "assessment-worker.log").open("ab")
+            self._assessment_worker = subprocess.Popen(
+                [sys.executable, "-m", "dimos.robot.galaxea.r1pro.classical_assessment", "--serve"],
+                stdin=subprocess.PIPE,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        return self._assessment_worker
+
+    def _kill_assessment_worker(self) -> None:
+        worker = self._assessment_worker
+        self._assessment_worker = None
+        if worker is not None and worker.poll() is None:
+            worker.kill()
+            try:
+                worker.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.error("Assessment worker did not exit after kill")
+
+    def _send_assessment(self, command: str) -> None:
+        for attempt in range(2):
+            worker = self._assessment_process()
+            try:
+                assert worker.stdin is not None
+                worker.stdin.write(f"{command}\n".encode())
+                worker.stdin.flush()
+                return
+            except (BrokenPipeError, OSError):
+                self._kill_assessment_worker()
+                if attempt:
+                    raise
+
+    @rpc
+    def warm_classical_assessment(self) -> None:
+        """Start the assessment worker and build its kinematics world before the first pick."""
+        if self._engine is None:
+            return
+        with self._engine._lock:
+            model_path = self._save_model()
+        self._send_assessment(f"warm {model_path}")
+
+    def _warm_assessment_once(self) -> None:
+        """Build the assessment world while the demo starts, not during the first pick."""
+        if self._assessment_warmed:
+            return
+        self._assessment_warmed = True
+        threading.Thread(
+            target=self.warm_classical_assessment, name="classical-assessment-warm", daemon=True
+        ).start()
+
     @rpc
     def begin_classical_pick_assessment(
         self, index: int, candidates: GraspCandidateArray, arm: str
     ) -> None:
-        """Rank GraspGenX proposals in a separate process; poll classical_pick_assessment."""
+        """Rank GraspGenX proposals in the assessment worker; poll classical_pick_assessment."""
         if candidates.header.frame_id != "world":
             raise ValueError("Grasp proposals must be expressed in world")
-        if self._assessment is not None and self._assessment[0].poll() is None:
+        if (
+            self._assessment is not None
+            and not (self._assessment / "result.json").exists()
+            and self._assessment_worker is not None
+            and self._assessment_worker.poll() is None
+        ):
             raise RuntimeError("A grasp assessment is already running")
         scene = self._snapshot()
         poses, scores = [], []
@@ -174,32 +235,22 @@ class R1ProClassicalSim(R1ProApartmentSim):
                 )
             )
         )
-        with (request / "worker.log").open("wb") as log:
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "dimos.robot.galaxea.r1pro.classical_assessment",
-                    str(request),
-                ],
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
-        self._assessment = (process, request)
+        self._assessment = request
+        self._send_assessment(f"rank {request}")
 
     @rpc
     def classical_pick_assessment(self) -> dict[str, Any]:
         """Report the assessment as running, done with ranked options, or failed."""
         if self._assessment is None:
             raise RuntimeError("No grasp assessment was started")
-        process, request = self._assessment
-        code = process.poll()
-        if code is None:
+        result_path = self._assessment / "result.json"
+        if not result_path.exists():
+            worker = self._assessment_worker
+            if worker is None or worker.poll() is not None:
+                log = self.config.output / "assessment-worker.log"
+                tail = log.read_text(errors="replace")[-600:] if log.exists() else ""
+                return dict(state="failed", error=f"Assessment worker exited: {tail}")
             return dict(state="running")
-        result_path = request / "result.json"
-        if code != 0 or not result_path.exists():
-            tail = (request / "worker.log").read_text(errors="replace")[-600:]
-            return dict(state="failed", error=f"Assessment worker exited with {code}: {tail}")
         result = json.loads(result_path.read_text())
         if "error" in result:
             return dict(state="failed", error=str(result["error"]))
@@ -207,10 +258,14 @@ class R1ProClassicalSim(R1ProApartmentSim):
 
     @rpc
     def cancel_classical_pick_assessment(self) -> None:
-        """Kill a running assessment; a stopped search must not keep burning a core."""
-        if self._assessment is not None and self._assessment[0].poll() is None:
-            self._assessment[0].kill()
-            self._assessment[0].wait(timeout=5)
+        """Kill an unfinished assessment; a stopped search must not keep burning a core."""
+        if self._assessment is not None and not (self._assessment / "result.json").exists():
+            self._kill_assessment_worker()
+
+    @rpc
+    def stop(self) -> None:
+        self._kill_assessment_worker()
+        super().stop()
 
     def _publish_shm_and_lcm(self, engine: MujocoEngine) -> None:
         with engine._lock:
@@ -220,6 +275,7 @@ class R1ProClassicalSim(R1ProApartmentSim):
                     pose, max_speed=0.3, max_accel=0.2, max_yaw_rate=0.4, max_yaw_accel=0.4
                 )
         super()._publish_shm_and_lcm(engine)
+        self._warm_assessment_once()
         now = time.monotonic()
         if self._tray_transport is not None and now - self._last_tray_check >= 0.05:
             with engine._lock:
@@ -461,39 +517,6 @@ class R1ProClassicalSim(R1ProApartmentSim):
         return segmented_object_cloud(
             scene.model, scene.data, scene.model.body(scene.layout.objects[index].name).id
         )
-
-    @rpc
-    def assess_classical_pick(
-        self, index: int, candidates: GraspCandidateArray, arm: str
-    ) -> list[dict[str, Any]]:
-        """Rank actual GraspGenX TCP poses by collision-checked DimOS reachability."""
-        if candidates.header.frame_id != "world":
-            raise ValueError("Grasp proposals must be expressed in world")
-        scene = self._snapshot()
-        poses, scores = [], []
-        for candidate in candidates.candidates:
-            matrix = np.eye(4)
-            matrix[:3, :3] = candidate.pose.orientation.to_rotation_matrix()
-            matrix[:3, 3] = candidate.pose.position.to_numpy()
-            poses.append(matrix)
-            scores.append(candidate.score)
-        if not poses:
-            return []
-        np.savez(
-            self.config.output / f"classical-grasps-{time.time_ns()}.npz",
-            poses=poses,
-            scores=scores,
-            qpos=scene.data.qpos,
-            qvel=scene.data.qvel,
-            ctrl=scene.data.ctrl,
-            index=index,
-            arm=arm,
-        )
-        planner = ClassicalGraspPlanner(scene)
-        return [
-            asdict(plan)
-            for plan in planner.rank(index, np.asarray(poses), np.asarray(scores), arm=arm)
-        ]
 
     @rpc
     def classical_carry_posture(self) -> list[list[float]]:

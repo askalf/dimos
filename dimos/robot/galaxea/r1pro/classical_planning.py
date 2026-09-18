@@ -617,15 +617,7 @@ class ClassicalGraspPlanner(ObjectReachability):
             index, arm = 0, "right"
         hands = list(ARMS)
         failures = []
-        # Elbows-in first so a loaded robot fits narrow passages; widen only when
-        # the tight stance collides with the body or the carried items.
-        for forward, lateral in (
-            (0.22, 0.20),
-            (0.25, 0.24),
-            (0.28, 0.28),
-            (0.32, 0.30),
-            (0.36, 0.32),
-        ):
+        for forward, lateral in ((0.28, 0.28), (0.32, 0.30), (0.36, 0.32)):
             self.initialize_local_probe(index, arm)
             self.allow_target_contact = bool(held)
             base = self.probe.body("base_link")

@@ -100,7 +100,11 @@ class ObjectReachability:
     """Use DimOS IK and copied MuJoCo contacts; never move the live scene."""
 
     def __init__(
-        self, scene: PrimitiveSceneState, workspaces: dict[str, PrimitiveWorkspace] | None = None
+        self,
+        scene: PrimitiveSceneState,
+        workspaces: dict[str, PrimitiveWorkspace] | None = None,
+        *,
+        kinematics: HomeKinematics | None = None,
     ) -> None:
         self.scene = scene
         self.workspaces = workspaces or {}
@@ -125,13 +129,14 @@ class ObjectReachability:
             float(self.initial.qpos[follower] - self.initial.qpos[driver])
             for driver, follower in self.grippers
         ]
-        self.kinematics = HomeKinematics(self.model, self.initial)
+        # Building the kinematics world costs tens of seconds; a caller may share one.
+        self.kinematics = kinematics or HomeKinematics(self.model, self.initial)
         self.transport = scene.transport_planner()
         self.robot = (
             self.transport.robot_bodies - self.transport.cargo_ids - {self.transport.tray_id}
         )
-        self.reference_position = self.initial.body("base_link").xpos.copy()
-        self.reference_rotation = self.initial.body("base_link").xmat.reshape(3, 3).copy()
+        self.reference_position = self.kinematics.reference_position.copy()
+        self.reference_rotation = self.kinematics.reference_rotation.copy()
         self.attachments: dict[int, tuple[Arm, NDArray[Any], NDArray[Any]]] = {}
 
     def _attach(self, index: int, arm: Arm) -> None:
