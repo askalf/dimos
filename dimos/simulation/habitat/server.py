@@ -31,6 +31,7 @@ import sys
 import time
 from typing import Any
 
+from dimos_lcm.geometry_msgs.PoseStamped import PoseStamped as LCMPoseStamped
 from dimos_lcm.geometry_msgs.Quaternion import Quaternion
 from dimos_lcm.geometry_msgs.Transform import Transform
 from dimos_lcm.geometry_msgs.TransformStamped import TransformStamped
@@ -173,6 +174,18 @@ def odometry_msg(
     m.twist.twist.linear.y = float(twist[1])
     m.twist.twist.angular.z = float(twist[2])
     m.twist.covariance = [0.0] * 36
+    return bytes(m.lcm_encode())
+
+
+def pose_msg(position: np.ndarray, quat_xyzw: np.ndarray, frame_id: str, ts: float) -> bytes:
+    m = LCMPoseStamped()
+    m.header = Header()
+    _stamp(m.header, ts)
+    m.header.frame_id = frame_id
+    p = m.pose.position
+    p.x, p.y, p.z = [float(v) for v in position]
+    q = m.pose.orientation
+    q.x, q.y, q.z, q.w = [float(v) for v in quat_xyzw]
     return bytes(m.lcm_encode())
 
 
@@ -443,6 +456,7 @@ def main() -> None:
         prev = (position.copy(), yaw, now)
 
         put("odometry", odometry_msg(position, quat, vel, "world", "base_link", now))
+        put("odom", pose_msg(position, quat, "world", now))
         put(
             "tf",
             tf_msg(
@@ -456,8 +470,11 @@ def main() -> None:
             ),
         )
 
-        if scan_enabled and "registered_scan" in pubs:
+        if scan_enabled and ("registered_scan" in pubs or "lidar" in pubs):
             pts, colors = unproject(depth, rgb, k, trunc, stride)
+            if "lidar" in pubs:
+                body = pts @ optical[:3, :3].T + optical[:3, 3] + np.array([0.0, 0.0, cam_h])
+                put("lidar", cloud_msg(body, colors, "base_link", now))
             if scan_frame == "world":
                 world = frames.pose_matrix(position + np.array([0.0, 0.0, cam_h]), yaw) @ optical
                 pts = pts @ world[:3, :3].T + world[:3, 3]

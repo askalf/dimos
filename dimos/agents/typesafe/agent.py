@@ -172,6 +172,13 @@ class TypeSafeAgent(Module):
     def robot_state(self) -> dict[str, Any]:
         return dict(self._robot)
 
+    @rpc
+    def set_trace_dir(self, path: str | None) -> None:
+        """One request/response pair per model call under *path*; None turns it off."""
+        with self._lock:
+            self.config.trace_dir = Path(path) if path is not None else None
+            self._seq = 0
+
     def _store(self, name: str) -> Any:
         def cb(msg: Any) -> None:
             with self._lock:
@@ -260,8 +267,9 @@ class TypeSafeAgent(Module):
         self.world_state.publish(json.dumps(state))
         labels = tuple(dict.fromkeys(o["label"] for o in state["objects"] if o.get("label")))
         questions = drive_questions(labels)
+        started, t0 = time.time(), time.monotonic()
         answers = self._client.system_one(state, questions)
-        self._trace(state, questions, answers)
+        self._trace(state, questions, answers, started, time.monotonic() - t0)
         drive = decode_drive(
             answers,
             min_confidence=self.config.min_confidence,
@@ -362,14 +370,31 @@ class TypeSafeAgent(Module):
             self._stop_event.wait(dt)
 
     def _trace(
-        self, state: dict[str, Any], questions: dict[str, Any], answers: dict[str, Any]
+        self,
+        state: dict[str, Any],
+        questions: dict[str, Any],
+        answers: dict[str, Any],
+        started_at: float,
+        latency_s: float,
     ) -> None:
-        if self.config.trace_dir is None:
+        """Same layout as ``dimos.agents.llm_trace`` so eval adapters read both."""
+        if self.config.trace_dir is None or self._client is None:
             return
         d = Path(self.config.trace_dir)
         d.mkdir(parents=True, exist_ok=True)
         self._seq += 1
         (d / f"{self._seq}-request.json").write_text(
-            json.dumps({"body": {"state": state, "questions": questions}})
+            json.dumps({"started_at": started_at, "body": {"state": state, "questions": questions}})
         )
-        (d / f"{self._seq}-response.json").write_text(json.dumps({"body": {"answers": answers}}))
+        (d / f"{self._seq}-response.json").write_text(
+            json.dumps(
+                {
+                    "latency_s": latency_s,
+                    "body": {
+                        "model": self._client.last_model,
+                        "answers": answers,
+                        "usage": self._client.last_usage,
+                    },
+                }
+            )
+        )

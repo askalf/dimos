@@ -58,7 +58,7 @@ planner_viz_hz = 2.0
 ROBOT_HEIGHT = 0.5
 
 # Hidden, not dropped: still tickable in the viewer.
-HIDDEN = ("world/nodes", "world/depth_image")
+HIDDEN = ("world/nodes", "world/depth_image", "world/detections_3d")
 
 
 def _small_points(cloud: Any) -> Any:

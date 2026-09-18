@@ -21,6 +21,7 @@ from pydantic import Field
 from dimos.constants import DIMOS_PROJECT_ROOT
 from dimos.core.native_module import LogFormat, NativeModule, NativeModuleConfig
 from dimos.core.stream import In, Out
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.geometry_msgs.Twist import Twist
 from dimos.msgs.nav_msgs.Odometry import Odometry
 from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
@@ -89,6 +90,10 @@ class HabitatConnection(NativeModule):
     depth_image: Out[Image]
     camera_info: Out[CameraInfo]
     registered_scan: Out[PointCloud2]
+    # The scan in the body frame (base_link, z up from the floor), for reactive consumers.
+    lidar: Out[PointCloud2]
     odometry: Out[Odometry]
+    # The pose alone, the Go2 convention consumers such as TypeSafeAgent and raw-robot-bridge take.
+    odom: Out[PoseStamped]
     tf: Out[TFMessage]
     semantic_image: Out[Image]

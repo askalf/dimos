@@ -119,10 +119,14 @@ def run(
     ),
     tags: str = typer.Option("", help="Comma-separated tag filter"),
     limit: int = typer.Option(0, min=0, help="Run at most N cases"),
+    case: list[str] = typer.Option([], "--case", help="Run only these case IDs"),
+    parallel: int = typer.Option(1, min=1, help="Cases at once, one dimos each; needs --container"),
+    container: str = typer.Option("", help="Docker image that runs each case (docker/eval)"),
+    repeat: int = typer.Option(1, min=1, help="Trials per case"),
 ) -> None:
     from dimos.evals.runner import EvalRunner, summarize
 
-    cases = importlib.import_module(suite).SUITE
+    cases = [c for c in importlib.import_module(suite).SUITE if not case or c.id in case]
     kwargs = agent_kwargs(set_)
     if allow is not None:
         if "allowed_tools" in kwargs:
@@ -135,14 +139,26 @@ def run(
         if "excluded_keywords" in kwargs:
             raise typer.BadParameter("Use --exclude or --set excluded_keywords, not both")
         kwargs["excluded_keywords"] = [w.strip() for w in exclude.split(",") if w.strip()]
-    runner = EvalRunner()
-    results = runner.run(
-        cases,
-        agent_class(agent)(**kwargs),
-        tags=frozenset(t for t in tags.split(",") if t) if tags else frozenset(),
-        limit=limit,
-        provenance=run_provenance({"kind": "suite_module", "value": suite}, agent, kwargs),
-    )
+    provenance = run_provenance({"kind": "suite_module", "value": suite}, agent, kwargs)
+    selected = frozenset(t for t in tags.split(",") if t) if tags else frozenset()
+    if parallel > 1 or container or repeat > 1:
+        if parallel > 1 and not container:
+            raise typer.BadParameter(
+                "parallel cases need --container: one dimos per host otherwise"
+            )
+        from dimos.evals.parallel import run_parallel
+
+        chosen = [c for c in cases if not selected or selected & c.tags][: limit or None]
+        run_dir, results = run_parallel(
+            suite, agent, set_, chosen,
+            parallel=parallel, container=container, repeat=repeat, manifest=provenance,
+        )  # fmt: skip
+    else:
+        runner = EvalRunner()
+        results = runner.run(
+            cases, agent_class(agent)(**kwargs), tags=selected, limit=limit, provenance=provenance
+        )
+        run_dir = runner.run_dir
 
     for r in results:
         status = "ERROR" if r.error else ("PASS" if r.passed else "fail")
@@ -151,7 +167,7 @@ def run(
     s = summarize(results)
     typer.echo(
         f"\n{s.n} cases | mean {s.mean_score:.2f} | pass {s.pass_rate:.0%} "
-        f"| errors {s.errors} | {s.duration_s:.0f}s | {runner.run_dir}"
+        f"| errors {s.errors} | {s.duration_s:.0f}s | {run_dir}"
     )
 
 
