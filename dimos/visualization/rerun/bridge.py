@@ -226,7 +226,7 @@ class Config(ModuleConfig):
     # topic there is. Naming them matters when the bridge runs on the viewer's
     # machine rather than beside the robot: an unlisted topic is never subscribed,
     # so on zenoh it never crosses the link. `visual_override: None` only stops the
-    # drawing -- by then the bytes have already arrived.
+    # drawing; by then the bytes have already arrived.
     topics: list[str] = field(default_factory=list)
 
     entity_prefix: str = "world"
@@ -510,7 +510,7 @@ class RerunBridgeModule(Module):
             return pubsub.subscribe_all(self._on_message)
 
         # The wildcard stands in for the key's type segment, which the decoder
-        # resolves per sample -- so this Topic is a pattern, not the concrete one
+        # resolves per sample, so this Topic is a pattern, not the concrete one
         # LCMTopicProto asks for.
         unsubs = [
             pubsub.subscribe(ZenohTopic(f"dimos/{name.strip('/')}/*"), self._on_message)  # type: ignore[arg-type]

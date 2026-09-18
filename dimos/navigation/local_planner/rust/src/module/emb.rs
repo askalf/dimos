@@ -14,7 +14,7 @@
 
 //! What the adapters do with the body they are configured with. The body
 //! itself arrives in the config, deserialised from `embodiment/base.py`'s
-//! record -- there is no table here to drift from it.
+//! record: there is no table here to drift from it.
 
 pub use crate::emb::{base_params, governor};
 use crate::planner::Emb;

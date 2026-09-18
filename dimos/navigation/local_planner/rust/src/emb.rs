@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! A law's parameters, read off the body it drives. The body itself arrives
-//! as `embodiment/base.py`'s record -- a module's config, or the JSON the
-//! python wrappers pass; there is no table here to drift from it.
-
 //! A law's base tuning and the governor, read off the body. The body itself
 //! arrives as `embodiment/base.py`'s record; there is no table here to drift
 //! from it.

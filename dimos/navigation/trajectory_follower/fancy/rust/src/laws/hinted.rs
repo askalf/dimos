@@ -74,7 +74,7 @@ pub fn update(
 ) -> (f64, f64, f64) {
     if path.len() < 2 {
         // empty path or a single-pose veto stub: there is nothing to
-        // follow -- hold position (the planner is saying "stop")
+        // follow: hold position (the planner is saying "stop")
         return (0.0, 0.0, 0.0);
     }
     let base = &cfg.base;
@@ -98,25 +98,12 @@ pub fn update(
         })
         .unwrap_or(base.max_speed);
 
-    // CONSTANT TIME HEADWAY. The seed pursues a point a fixed 0.35 m along the
-    // plan whatever the speed. Steering straight at a carrot that far away
-    // chords the plan's curvature, and the chord always falls to the INSIDE of
-    // the turn -- i.e. toward the very obstacle the planner curved around. The
-    // steady-state inset grows with the square of the carrot distance, so in a
-    // passage whose planned clearance is a few centimetres it is the whole
-    // error budget.
-    //
-    // The fix is to hold the *time* headway constant instead of the distance:
-    // the follower always looks cfg.lookahead / cfg.max_speed seconds ahead
-    // (0.7 s at the defaults). At full cruise this is exactly the seed's
-    // 0.35 m -- open rooms are untouched -- and at the governor floor it is
-    // 0.14 m, cutting the inward chord by ~6x precisely where the plan has no
-    // room to give.
-    //
-    // This costs no speed. The command magnitude is min(k_pos * L, vmax), so
-    // any L >= vmax / k_pos still saturates at vmax; the floor below enforces
-    // that explicitly so an odd config cannot turn a shorter carrot into a
-    // slower robot. Trading collisions for timeouts is not the deal here.
+    // Constant time headway: look cfg.lookahead / cfg.max_speed seconds ahead
+    // instead of the seed's fixed 0.35 m. A fixed carrot chords the plan's
+    // curvature to the inside of the turn, toward the obstacle the planner
+    // curved around; a time headway shortens the carrot where the plan has no
+    // room. The floor keeps min(k_pos * L, vmax) saturating at vmax, so this
+    // costs no speed.
     let headway = base.lookahead / base.max_speed.max(1e-6);
     let look = (vmax * headway).max(vmax / base.k_pos.abs().max(1e-6));
 
@@ -128,7 +115,7 @@ pub fn update(
     let (mut vx, mut vy) = (base.k_pos * bx, base.k_pos * by);
     let speed = vx.hypot(vy);
     if speed > 1e-12 {
-        // `want` is the intended GROUND speed -- the pursuit gain, capped by
+        // `want` is the intended ground speed: the pursuit gain, capped by
         // the governor. Unchanged from the seed.
         let want = speed.min(vmax);
         // ...and this is what the gait has to be asked for to deliver it.

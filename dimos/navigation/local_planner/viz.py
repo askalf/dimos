@@ -85,15 +85,11 @@ def render_body(
 ) -> Archetype | None:
     """The plan's expected body poses as oriented boxes, coloured by room.
 
-    The box is the embodiment's STRAIGHT-DRIFT row, not the all-gait union (see
-    motion_visual_override), sitting ``center_off`` along the pose's +x so it is
-    where the robot is rather than centred on the pose point. Room colours off
-    the embodiment's own governor: red at or under its precision floor, amber
-    on the ramp, green past ``speed_clearance``. ``stride_m`` subsamples along
-    arc rather than by index: plans are discretised at 0.1 m, so drawing every
-    waypoint is an opaque wall of boxes that hides the very geometry it is
-    there to show. ``line_radius`` is the wireframe's own thickness in metres
-    -- thin edges disappear against a dense point cloud at any useful zoom.
+    The box is the embodiment's straight-drift row (see motion_visual_override),
+    offset ``center_off`` along the pose's +x. Room colours follow the governor:
+    red at or under the precision floor, amber on the ramp, green past
+    ``speed_clearance``. ``stride_m`` subsamples along arc so the boxes do not
+    wall over the geometry; ``line_radius`` is the wireframe thickness in metres.
     """
     import rerun as rr  # heavy, optional: only the viewer process pays for it
 
@@ -106,10 +102,8 @@ def render_body(
         # last good picture on that is worse than holding it
         return None
     if n == 1:
-        # a single-pose stub is the planner's VETO -- "no safe route, hold".
-        # Draw it, in red: an empty viewport looks like a dead module, and the
-        # difference between "refusing" and "crashed" is the whole question
-        # when the robot will not move.
+        # a single-pose stub is the planner's veto ("no safe route, hold").
+        # Draw it in red: an empty viewport looks like a dead module.
         p = msg.poses[0]
         cx, cy = _body_centre(p, center_off)
         return rr.Boxes3D(

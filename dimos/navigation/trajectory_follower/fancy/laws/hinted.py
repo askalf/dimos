@@ -101,8 +101,8 @@ class HintedController:
     ) -> Twist:
         cfg, emb = self.config, self.emb
         if len(path) < 2:
-            # empty path or a single-pose veto stub: there is nothing to
-            # follow -- hold position (the planner is saying "stop")
+            # empty path or a single-pose veto stub: nothing to follow, hold
+            # position (the planner is saying "stop")
             return Twist(Vector3(0, 0, 0), Vector3(0, 0, 0))
         xy = np.array([[p.position.x, p.position.y] for p in path.poses])
         yaws = np.array([p.yaw for p in path.poses])
@@ -157,18 +157,11 @@ class HintedController:
                 nxt = float(ceilings[min(i + 1, n - 1)])
                 vmax = min(nxt, float(np.min(window))) if len(window) else nxt
 
-        # CONSTANT TIME HEADWAY, not a constant distance. Steering at a carrot
-        # a fixed distance away chords the plan's curvature, and the chord
-        # always falls to the INSIDE of the turn -- toward the obstacle the
-        # planner curved around -- with an inset that grows as the square of
-        # the carrot distance. Holding the TIME headway constant instead
-        # (lookahead / max_speed) leaves full cruise untouched and shortens the
-        # carrot where the governor has slowed for a pinch.
-        #
-        # It costs no speed: the command magnitude is min(k_pos * L, vmax), so
-        # any L >= vmax / k_pos still saturates, and the floor below enforces
-        # that so an odd config cannot turn a shorter carrot into a slower
-        # robot.
+        # Constant time headway (lookahead / max_speed), not a constant
+        # distance: a fixed-distance carrot chords the curve to the inside of
+        # the turn, toward the obstacle the planner curved around. It costs no
+        # speed: the command is min(k_pos * L, vmax) and the floor keeps L
+        # saturating.
         headway = cfg.lookahead / max(emb.max_speed, 1e-6)
         look = max(vmax * headway, vmax / max(abs(cfg.k_pos), 1e-6))
 
@@ -189,15 +182,13 @@ class HintedController:
         c, s_ = math.cos(-pyaw), math.sin(-pyaw)
         bx, by = c * ex - s_ * ey, s_ * ex + c * ey
         vx, vy = cfg.k_pos * bx, cfg.k_pos * by
-        # np.hypot, not math.hypot: CPython implements its own correctly-rounded
-        # hypot, rust's f64::hypot is libm, and the two differ by an ulp. This
-        # law divides by `speed` on EVERY tick (the seed only did so when
-        # clamping), so that ulp reaches the twist -- np.hypot is the same libm
-        # call the rust makes. See test_rust_parity.
+        # np.hypot, not math.hypot: CPython's hypot is correctly rounded, rust's
+        # f64::hypot is libm, and the ulp between them reaches the twist since
+        # this law divides by `speed` every tick. See test_rust_parity.
         speed = float(np.hypot(vx, vy))
         if speed > 1e-12:
-            # `want` is the intended GROUND speed -- the pursuit gain, capped
-            # by the governor. Unchanged from the seed.
+            # `want` is the intended ground speed: the pursuit gain, capped by
+            # the governor.
             want = min(speed, vmax)
             # ...and this is what the gait has to be asked for to deliver it.
             cmd = walk_command(want, emb.walk_gain, emb.walk_slip, emb.walk_slip_ramp)

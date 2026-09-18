@@ -38,7 +38,7 @@ class Embodiment:
     Nothing measured has a default: a body states every number
     (`embodiment/go2.py::GO2`) or is `replace(GO2, ...)` of one that does.
     comfort = obstacles-we-care-about radius (preference, tunable);
-    precision = local control tracking accuracy (hard floor -- clearance
+    precision = local control tracking accuracy (hard floor: clearance
     below it is fiction, planning it is planning a contact).
     """
 
@@ -76,7 +76,7 @@ class Embodiment:
     steppable: float
     height: float
     base_height: float
-    # The follower tuning searched on this body -- fitted, where everything
+    # The follower tuning searched on this body: fitted, where everything
     # above is measured. Nested so the line between the two stays visible.
     control: ControllerConfig = field(hash=False)
     center_off: float = 0.0  # body center relative to the pose point

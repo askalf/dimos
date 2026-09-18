@@ -13,8 +13,8 @@
 // limitations under the License.
 
 //! A law's parameters, read off the body it drives. The body itself arrives
-//! as `embodiment/base.py`'s record -- a module's config, or the JSON the
-//! python wrappers pass; there is no table here to drift from it.
+//! as `embodiment/base.py`'s record (a module's config, or the JSON the
+//! python wrappers pass); there is no table here to drift from it.
 
 use dimos_local_planner::planner::Emb;
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Which returns are obstacles -- the rust twin of `motion/obstacles.py`,
+//! Which returns are obstacles: the rust twin of `motion/obstacles.py`,
 //! which is the specification.
 //!
 //! The band is a property of the BODY, not of the scene: the base rides
@@ -86,9 +86,8 @@ pub fn load(name: &str, emb: &Emb) -> Option<Box<dyn ObstacleModel>> {
 }
 
 /// The cloud in the frame a model reads: z off the support surface. f32
-/// throughout, as the python does -- the planner's SDF and the room hint both
-/// see the shifted numbers, and widening first would disagree with them in the
-/// last bits.
+/// throughout, as the python does; widening first would disagree in the last
+/// bits.
 pub fn referenced(points: &[[f32; 3]], ground_z: f64) -> Vec<[f32; 3]> {
     let ground = ground_z as f32;
     points.iter().map(|p| [p[0], p[1], p[2] - ground]).collect()
@@ -106,7 +105,7 @@ pub fn ground_points(points: &[[f32; 3]], ground_z: f64) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// The obstacles this model sees -- the cloud the search plans on.
+/// The obstacles this model sees: the cloud the search plans on.
 pub fn hard_points(model: &dyn ObstacleModel, points: &[[f32; 3]], ground_z: f64) -> Vec<[f32; 3]> {
     let pts = referenced(points, ground_z);
     model

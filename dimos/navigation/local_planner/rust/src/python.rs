@@ -19,9 +19,9 @@ use pyo3::prelude::*;
 
 use crate::planner::{plan_explored as plan_impl, Emb, COMMIT_MARGIN};
 
-/// One plan call. points: (N, 2) float64 obstacle xy in world frame -- every
-/// row is an obstacle, the caller's model already decided which (see
-/// `planner.rs`). `emb` is the `Embodiment` as JSON -- the same dict the native
+/// One plan call. points: (N, 2) float64 obstacle xy in world frame, every
+/// row an obstacle (the caller's model already decided which, see
+/// `planner.rs`). `emb` is the `Embodiment` as JSON, the same dict the native
 /// modules are configured with, dumped by `planners/target.py`; an empty
 /// `envelope` asks for the all-gait union at every heading, which is what an
 /// unmeasured embodiment gets. `incumbent` is the (M, 3) route the caller last

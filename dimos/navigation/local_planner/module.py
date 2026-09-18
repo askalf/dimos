@@ -83,12 +83,8 @@ def annotate(
 def stamped(ref: Path, ts: float = 0.0, frame_id: str = "odom", ground_z: float = 0.0) -> Path:
     """The planner's planar route stamped with time, frame and the ground it stands on.
 
-    The search is planar and hands back z = 0, but `odom` z = 0 is wherever the
-    LIO frame started -- on this rig, a lidar's height above the floor. Stamping
-    the plan with `ground_z` (the surface the feet stand on, which the module
-    already tracks for the obstacle model) puts the route on the ground instead
-    of floating it over the robot. Every consumer of the path is planar; only a
-    viewer reads the z.
+    The search hands back z = 0, but `odom` z = 0 is wherever the LIO frame
+    started. `ground_z` puts the route on the floor; only a viewer reads the z.
     """
     poses = [
         PoseStamped(
@@ -160,28 +156,20 @@ class LocalPlannerConfig(ModuleConfig):
         "dimos.navigation.local_planner.search.target:make_py", validate_default=True
     )
     embodiment: Embodiment = GO2
-    # HOW AGGRESSIVE the search is allowed to be: a gap has to be
-    # `box_width + 2 * precision` wide before a route through it exists at all.
-    #
-    # `body_dilate_m` grows (or, negative, shrinks) every planning box PER SIDE.
-    # The table's boxes are MEASURED -- the swinging legs, not the trunk, set
-    # the width, which is why they read wider than the robot looks -- so a
-    # negative value here is a deployment saying "plan me tighter than the legs
-    # measured", and the legs are what pays for it.
-    #
-    # The hard margin the search adds on top stays the embodiment's own
-    # precision floor -- what the follower can actually hold -- because a
-    # `float | None` cannot cross into the native twin, and one knob that both
-    # halves carry beats two that drift.
+    # How aggressive the search may be: a gap has to be `box_width + 2 *
+    # precision` wide before a route through it exists. `body_dilate_m` grows
+    # (negative: shrinks) every planning box per side. The boxes are measured
+    # on the swinging legs, so a negative value plans tighter than the legs
+    # measured. The hard margin on top stays the embodiment's precision floor:
+    # one knob both twins carry.
     body_dilate_m: float = 0.0
     # Price multiplier per metre over a lattice cell the cloud saw no floor
     # under: the search skirts unexplored terrain rather than crossing it, and
     # still crosses it when nothing else reaches the goal. <= 1 turns it off.
     unseen_cost: float = 5.0
-    # Plan when an input that MATTERS changed -- a new local map, or a carrot
-    # that moved by `replan_carrot_m` -- rather than on every tick of the clock
-    # (`replan_due`). The follower tracks the published path as the robot moves
-    # and needs no republish to do it. False replans every tick.
+    # Plan when an input changed (a new local map, or a carrot that moved by
+    # `replan_carrot_m`) rather than on every tick (`replan_due`). The follower
+    # tracks the published path as the robot moves. False replans every tick.
     replan_on_change: bool = True
     replan_carrot_m: float = REPLAN_CARROT_M
     # A carrot that jumped this far is a different task, and the episode's warm
@@ -231,7 +219,7 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
         # where that memory lives: the shell owns it, the planner judges it.
         self._incumbent: Path | None = None
         # Whether a path is out there for the follower to act on. A route
-        # that vanishes clears it -- once -- and this is what makes it once.
+        # that vanishes clears it once, and this is what makes it once.
         self._published = False
         # Built in start(): the tf buffer needs the port's transport.
         self._pose_src: TfPose | None = None
@@ -291,11 +279,10 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
             cloud_at, cloud_seq = self._cloud_at, self._cloud_seq
         age = None if cloud_at is None else time.monotonic() - cloud_at
         if pose is not None and age is not None and age > self.config.max_map_age_s:
-            # A hold is not gated: it is a statement about the CLOCK, and
-            # nothing arriving is exactly the case it fires on. Forget what
-            # was planned so the first live tick plans again -- and what was
-            # published with it: a route held across a dead link is a route
-            # nothing has re-validated.
+            # A hold is not gated: it is a statement about the clock, and
+            # nothing arriving is exactly the case it fires on. Forget the plan
+            # so the first live tick plans again, and what was published with
+            # it: a route held across a dead link is unvalidated.
             self._planned = None
             self._incumbent = None
             self.hold(pose, age)
@@ -333,8 +320,8 @@ class LocalPlanner(Module, spec.MapLocalPlanner):
     def clear(self) -> None:
         """The global route is gone (MLS found none, or the goal was cancelled).
 
-        Nothing to follow, so say so once -- an empty path, which the follower
-        reads as stop -- and forget the plan: the next route is a new task.
+        Say so once (an empty path, which the follower reads as stop) and
+        forget the plan: the next route is a new task.
         """
         if not self._published:
             return

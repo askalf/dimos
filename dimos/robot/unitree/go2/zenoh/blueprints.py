@@ -196,12 +196,11 @@ _mls_planner = MLSPlannerNative.blueprint(
     **mls_planner_config.model_dump(exclude_unset=True)
 ).remappings([(MLSPlannerNative, "global_map", "global_map_unused")])
 
-# Consumes GO2Zenoh's lidar + odometry directly: the bridge stamps them exactly as
-# PointLio does locally (frames odom / mid360_link, xyz+intensity at point_step 16).
-# Re-declared with the pointlio map muted: the raytraced maps replace it wherever
-# ray tracing runs. autoconnect dedupes by instance name and keeps the LAST one
-# declared (`_eliminate_duplicates`, core/coordination/blueprints.py), so this vis
-# module wins over basic's -- as long as it stays to the right of it in the call.
+# Consumes GO2Zenoh's lidar + odometry directly, stamped as PointLio stamps them
+# locally (frames odom / mid360_link, xyz+intensity at point_step 16). Re-declared
+# with the pointlio map muted: the raytraced maps replace it. autoconnect keeps the
+# last duplicate by instance name (`_eliminate_duplicates`), so this vis module wins
+# over basic's as long as it stays to the right of it in the call.
 _raytraced_vis = vis_module(
     viewer_backend=global_config.viewer,
     rerun_config=_rerun_config({"world/pointlio_map": None}),
@@ -297,36 +296,28 @@ _mls_planner_motion = MLSPlannerNative.blueprint(
     viz_publish_hz=planner_viz_hz,
 ).remappings([(MLSPlannerNative, "global_map", "global_map_unused")])
 
-# MLS stays the global planner but its path moves to planner_path and becomes a carrot
-# source -- the evolved local planner replans to a point ~5 m of arc along it over the
+# MLS stays the global planner; its path moves to planner_path and becomes a carrot
+# source: the local planner replans to a point ~5 m of arc along it over the
 # raycaster's local map, and the pursuit follower tracks the local plan with the
-# clearance-governed speed. Both read the body pose off tf (`odom -> base_link`, per tick)
-# rather than off odometry: GO2Zenoh publishes the odometry edge and the mount, and the
-# mount is a rotation AND a lever arm -- a stack that skips it plans for a body 0.30 m
-# ahead of the robot and 0.16 m above it.
+# clearance-governed speed. Both read the body pose off tf (`odom -> base_link`), not
+# off odometry: the mount is a rotation and a lever arm, and a stack that skips it
+# plans for a body 0.30 m ahead of the robot and 0.16 m above it.
 #
-# SPEEDS ARE SIM-CALIBRATED. The law's gait-slip inverse was measured against the
-# freewalk_mcf policy in the matched MuJoCo env, NOT against the gait the robot actually
-# runs (~23% over-speed on a different gait). Re-probe against the deployed gait before
-# trusting it at speed; until then dial the ceiling down here rather than in the law --
-# e.g. embodiment=replace(GO2, max_speed=0.4), or
-# replace(GO2, control=GO2.control.model_copy(update={"k_pos": 1.5})) for its gains.
+# Speeds are sim-calibrated (freewalk_mcf policy in the matched MuJoCo env, not the
+# deployed gait). Dial the ceiling down here rather than in the law, e.g.
+# embodiment=replace(GO2, max_speed=0.4).
 #
-# Everything but the follower is shared, so it composes as a sub-blueprint the way
-# go2_zenoh_raycaster does. Private (leading underscore) so the generated registry does
-# not offer a headless stack as a runnable blueprint -- it has no follower and would
-# plan without ever moving.
+# Private so the generated registry does not offer a headless stack: it has no
+# follower and would plan without ever moving.
 _go2_zenoh_motion_base = autoconnect(
     go2_zenoh_raycaster,
     # Re-declared on the motion rig: autoconnect keeps the LAST duplicate, so this
     # overrides basic's SF mount. Order-dependent, hence pinned in test_blueprints.py.
     GO2Zenoh.blueprint(mid360_mount=MOTION_MID360_MOUNT),
     _mls_planner_motion.remappings([(MLSPlannerNative, "path", "planner_path")]),
-    # The obstacle band rides the BODY (obstacle_model="body_band", the default): the
-    # base sits a known height above the surface its feet stand on, so the cloud
-    # referenced to that surface says what the planner can hit. Nothing about the map's
-    # z origin -- which on a LIO stack is base height -- has to be guessed
-    # (motion/obstacles.py).
+    # The obstacle band rides the body (obstacle_model="body_band", the default): the
+    # base sits a known height above the surface its feet stand on, so the map's z
+    # origin (base height on a LIO stack) is never guessed (motion/obstacles.py).
     LocalPlannerNative.blueprint(body_dilate_m=MOTION_BODY_DILATE_M),
     # The click relay (clicked_point -> goal/way_point), and teleop preempting nav on
     # cmd_vel.
@@ -342,26 +333,22 @@ go2_zenoh_motion = autoconnect(
 ).global_config(transport="zenoh", n_workers=9, robot_model="unitree_go2")
 
 
-# `go2-zenoh-motion` with Point-LIO running HERE instead of read off the bridge.
+# `go2-zenoh-motion` with Point-LIO running here instead of read off the bridge.
 #
 # The MID-360 moved off the Go2's network port onto the Jetson, so the robot's onboard
-# Point-LIO is blind and the three ports GO2Zenoh relays from it -- odometry, lidar,
-# pointlio_map -- never arrive. Running our own restores them from the lidar's new home.
+# Point-LIO is blind and the three ports GO2Zenoh relays from it (odometry, lidar,
+# pointlio_map) never arrive. Running our own restores them.
 #
-# Only the producer changes, not the frames: GO2Zenoh's static mount tree is already
-# rooted at mid360_link "because Point-LIO owns that frame" (see its transforms()), and
-# odom -> mid360_link is the same edge either way. So the mount stays the bridge's job and
-# the moving edge becomes Point-LIO's -- GO2Zenoh derives that edge from its own odometry
-# port, which is remapped into the void here, so it simply stops publishing it rather than
-# fighting for base_link at 35 Hz.
+# Only the producer changes, not the frames: the mount tree stays the bridge's job
+# (rooted at mid360_link, see GO2Zenoh.transforms()) and odom -> mid360_link becomes
+# Point-LIO's edge. GO2Zenoh's odometry port is remapped into the void so it stops
+# publishing that edge.
 #
-# The rust Point-LIO, not the C++ one: the C++ SDK speaks LCM only until its binary is
-# rebuilt against the zenoh support #3846 landed, and this stack is zenoh. It takes the
-# lidar from the Mid360 driver rather than opening the sensor itself, so the addresses
-# are the DRIVER's, and they are this rig's: the MID-360 at .157 on the Jetson's second
-# link. host_ip is explicit because deriving it from the lidar's subnet picks the wrong
-# NIC here -- the Jetson carries 192.168.123.5/32 for the lidar AND 192.168.123.222/24 for
-# the Go2 link -- and Point-LIO would never hear a point.
+# The rust Point-LIO, not the C++ one: the C++ SDK speaks LCM only and this stack is
+# zenoh. It takes the lidar from the Mid360 driver, so the addresses are the driver's
+# and this rig's: the MID-360 at .157 on the Jetson's second link. host_ip is explicit
+# because deriving it from the lidar's subnet picks the wrong NIC (the Jetson carries
+# 192.168.123.5/32 for the lidar and 192.168.123.222/24 for the Go2 link).
 go2_zenoh_motion_pointlio = autoconnect(
     _go2_zenoh_motion_base,
     TrajectoryFollowerNative.blueprint(),
@@ -377,11 +364,9 @@ go2_zenoh_motion_pointlio = autoconnect(
     ),
     mid360_for_pointlio(lidar_ip="192.168.123.157", host_ip="192.168.123.5"),
     PointLioRust.blueprint(),
-    # The clouds are the driver's raw frames, LIO's deskewed ones and the
-    # planner's region box -- all of them either already drawn as the raytraced
-    # map or not worth drawing. Muted here rather than upstream because only
-    # this stack has lidar_raw.
-    # The bridge still receives and decodes them; this only stops the rerun conversion.
+    # Mute the raw and deskewed clouds and the planner's region box: already drawn
+    # as the raytraced map or not worth drawing. Muted here because only this stack
+    # has lidar_raw. The bridge still decodes them; this only stops the rerun draw.
     vis_module(
         viewer_backend=global_config.viewer,
         rerun_config=_rerun_config(
@@ -399,18 +384,15 @@ go2_zenoh_motion_pointlio = autoconnect(
 # The viewer half, on its own: run it on the machine with the screen while the stack
 # runs headless next to the robot (`--robot-ip <robot>` dials that router).
 #
-# This is the fix for a viewer that lags on bad wifi. A rerun gRPC stream is ordered
-# and lossless, so a viewer behind a slow link replays history rather than skipping it
-# and the delay only grows. Zenoh drops instead: the subscription keeps the newest
-# sample per topic, and the publisher's congestion control discards the rest. Moving
-# the bridge to this side of the link puts that drop in front of the wifi, and the
-# rerun hop it feeds is then localhost.
+# A rerun gRPC stream is ordered and lossless, so a viewer behind a slow link replays
+# history and the delay only grows. Zenoh keeps the newest sample per topic and drops
+# the rest, so moving the bridge to this side of the link puts that drop in front of
+# the wifi; the rerun hop it feeds is localhost.
 #
-# `topics` is what makes it cheap. It is one zenoh subscription per name, so anything
-# unlisted never crosses the link at all -- unlike `visual_override: None`, which only
-# declines to draw what already arrived. The clouds stay on the robot: `lidar` and
-# `lidar_raw` are the raw sweeps, `local_map_fine` and `global_map` the maps the local
-# map already summarises, and `imu` is 200 Hz of something nothing draws.
+# `topics` is one zenoh subscription per name, so anything unlisted never crosses the
+# link (`visual_override: None` only declines to draw what already arrived). The
+# clouds stay on the robot: `lidar`, `lidar_raw`, `local_map_fine`, `global_map`, and
+# the 200 Hz `imu` nothing draws.
 # go2web's zenoh router, named rather than scouted: this stack's whole point is
 # that the robot is on the far side of wifi, where multicast scouting finds nothing
 # (docs/usage/transports/zenoh.md). Overridable for another rig, and --robot-ip

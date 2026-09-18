@@ -15,7 +15,7 @@
 """`topics` subscribes per zenoh key; without it the bridge takes the firehose.
 
 The point of the allowlist is that an unlisted topic never crosses the network,
-so what matters is which subscriptions are declared -- not what is filtered after
+so what matters is which subscriptions are declared, not what is filtered after
 the bytes arrive.
 """
 

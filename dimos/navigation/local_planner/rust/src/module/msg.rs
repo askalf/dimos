@@ -28,10 +28,10 @@ pub type State = [f64; 3];
 
 /// Yaw of a quaternion, matching `Quaternion.euler[2]`.
 ///
-/// The python goes through `scipy.Rotation.as_euler("xyz")`, i.e. extrinsic
-/// x-then-y-then-z, whose composite is `Rz(yaw) Ry(pitch) Rx(roll)` -- the
-/// standard ROS convention, and this is its standard closed form. Only the
-/// yaw is ever taken: both modules work in SE(2).
+/// The python goes through `scipy.Rotation.as_euler("xyz")`, extrinsic
+/// x-then-y-then-z, composite `Rz(yaw) Ry(pitch) Rx(roll)`: the ROS
+/// convention, in its closed form. Only the yaw is taken, both modules work
+/// in SE(2).
 pub fn yaw_of(q: &Quaternion) -> f64 {
     let siny = 2.0 * (q.w * q.z + q.x * q.y);
     let cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
@@ -85,11 +85,9 @@ pub fn header(frame_id: &str, ts: f64) -> Header {
 /// One plan waypoint as a stamped pose in `frame_id`, on the plane at
 /// `ground_z`.
 ///
-/// The search is planar and knows no z, but `odom` z = 0 is wherever the LIO
-/// frame started -- on a lidar-odometry stack, a sensor's height above the
-/// floor. Stamping the plan with the surface the feet stand on is what puts the
-/// route on the ground instead of floating it over the robot. Every consumer of
-/// the path is planar; only a viewer reads the z.
+/// The search is planar, but `odom` z = 0 is wherever the LIO frame started,
+/// typically a sensor's height above the floor. Stamping the surface the feet
+/// stand on puts the route on the ground; only a viewer reads the z.
 pub fn pose_stamped(state: &State, ts: f64, frame_id: &str, ground_z: f64) -> PoseStamped {
     PoseStamped {
         header: header(frame_id, ts),
@@ -106,9 +104,8 @@ pub fn pose_stamped(state: &State, ts: f64, frame_id: &str, ground_z: f64) -> Po
 
 /// A plan as a nav Path, per-waypoint stamps carrying the precision profile.
 ///
-/// `stamps` of the wrong length leaves every pose at `t0`, which is what an
-/// unstamped path looks like to `decode_ceilings` -- the honest shape for a
-/// plan whose profile could not be computed.
+/// `stamps` of the wrong length leaves every pose at `t0`: an unstamped path
+/// to `decode_ceilings`, the honest shape for a plan without a profile.
 pub fn build_path(
     states: &[State],
     stamps: &[f64],
@@ -127,7 +124,7 @@ pub fn build_path(
     }
 }
 
-/// The plan as `(x, y, yaw)` rows -- the python `controller.path_xy_yaw`.
+/// The plan as `(x, y, yaw)` rows: the python `controller.path_xy_yaw`.
 pub fn path_states(path: &Path) -> Vec<State> {
     path.poses
         .iter()

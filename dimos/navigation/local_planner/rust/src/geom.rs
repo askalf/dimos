@@ -28,7 +28,7 @@
 //! remainder like `math.remainder`, never `%` or `rem_euclid`.
 
 /// The numbers a law reads: the body's tuning plus its plant, driving inside
-/// one band -- `emb::base_params` builds it from an `Emb`.
+/// one band; `emb::base_params` builds it from an `Emb`.
 #[derive(Clone)]
 pub struct Params {
     pub lookahead: f64,
@@ -55,7 +55,7 @@ pub fn ieee_remainder(x: f64, y: f64) -> f64 {
     x - (x / y).round_ties_even() * y
 }
 
-/// Shortest signed angle from `b` to `a` -- the python `_angle_diff`.
+/// Shortest signed angle from `b` to `a`, the python `_angle_diff`.
 #[inline]
 pub fn angle_diff(a: f64, b: f64) -> f64 {
     ieee_remainder(a - b, TAU)
@@ -125,7 +125,7 @@ pub fn fan_target(
     }
 }
 
-/// First waypoint at or past `arcs[i] + look` -- the seed's carrot.
+/// First waypoint at or past `arcs[i] + look`, the seed's carrot.
 ///
 /// `np.searchsorted(arcs, s)` with the default side='left': the first index
 /// whose arc is >= s, which on sorted data is the count of strictly smaller
@@ -183,8 +183,8 @@ pub fn clearance_governor(
         return None;
     }
     // the mask (arcs >= arcs[i]) & (arcs <= arcs[i] + speed_lookahead) is not
-    // a contiguous slice -- coincident fan waypoints before `i` share its arc
-    // -- so scan the whole array like numpy does
+    // a contiguous slice (coincident fan waypoints before `i` share its arc),
+    // so scan the whole array like numpy does
     let hi = arcs[i] + cfg.speed_lookahead;
     let mut room: Option<f64> = None;
     for (k, &a) in arcs.iter().enumerate() {

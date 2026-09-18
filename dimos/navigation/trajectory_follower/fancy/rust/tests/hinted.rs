@@ -15,19 +15,14 @@
 //! The hinted law's behavioural cases, from `motion-tc-autoresearch` branch
 //! `blind_research01`, where the law was called `blind`.
 //!
-//! The seed's portrait carries over (a law that stopped driving forward or
-//! stopped obeying a veto stub would be broken whatever its governor reads),
-//! with ONE restatement: the envelope is a bound on the ground speed the law
-//! INTENDS, not on the number in the twist. The twist is a request to a gait
-//! that under-delivers it by a measured margin (see `walk_slip`), so
-//! `walk_command(max_speed)` -- not `max_speed` -- is the largest linear
-//! command this law may emit. The bound is still a bound; what changed is
-//! which quantity it is expressed in.
+//! The seed's portrait carries over with one restatement: the envelope bounds
+//! the ground speed the law intends, not the number in the twist, so
+//! `walk_command(max_speed)` is the largest linear command it may emit (see
+//! `walk_slip`).
 //!
-//! The stamp cases at the bottom are written against the REFEREE's encoder
-//! rather than against this law's decoder, so they fail if the wire dialect is
-//! ever misread -- the failure mode that matters, because a misread stamp is
-//! silently a wrong speed rather than a crash.
+//! The stamp cases at the bottom are written against the referee's encoder,
+//! not this law's decoder, so a misread wire dialect fails here instead of
+//! silently becoming a wrong speed.
 
 use std::f64::consts::PI;
 
@@ -84,9 +79,8 @@ fn behind_the_path_still_drives_onto_it() {
     assert!(vx > 0.0 && vy.abs() < 1e-12, "vx={vx} vy={vy}");
 }
 
-/// RESTATED from the seed: the envelope bounds the INTENDED ground speed.
-/// Asserting both ways round is the point -- the envelope did not widen, it
-/// changed units.
+/// Restated from the seed: the envelope bounds the intended ground speed.
+/// Asserting both ways round shows it changed units, not width.
 #[test]
 fn speed_and_yaw_rate_clamped() {
     let c = cfg();
@@ -164,11 +158,9 @@ fn fan_advances_by_yaw_progress() {
     );
 }
 
-/// The creep is asserted on the GROUND speed the command buys, not on the
-/// command. Asserting it on the command is how the seed came to ask for a
-/// speed the gait answers with 0.002 m/s -- see `walk_slip`. A creep that does
-/// not move the robot is not a creep, it is a stall, and it costs the whole
-/// episode clock for none of the caution it looks like.
+/// The creep is asserted on the ground speed the command buys, not on the
+/// command: the seed asked for a speed the gait answers with 0.002 m/s (see
+/// `walk_slip`), a stall dressed as caution.
 #[test]
 fn governor_creeps_in_tight_room() {
     let c = cfg();
@@ -238,9 +230,9 @@ fn stateless_and_deterministic() {
 
 // Constant time headway.
 
-/// The carrot shortens with the governed speed. Behaviourally: on a curving
-/// plan, a governed-down follower cuts less of the corner -- and the corner it
-/// would cut is the side the planner curved away from.
+/// The carrot shortens with the governed speed: on a curving plan a
+/// governed-down follower cuts less of the corner, on the side the planner
+/// curved away from.
 #[test]
 fn headway_shortens_the_carrot_when_governed_down() {
     let c = cfg();
@@ -257,9 +249,8 @@ fn headway_shortens_the_carrot_when_governed_down() {
     let (fx, fy, _) = update(pose, &p, Some(&wide), None, &c);
     let (sx, sy, _) = update(pose, &p, Some(&tight), None, &c);
     // Heading of the command in the body frame. On a left turn the chord to a
-    // far carrot leans further LEFT than the path tangent -- that lean IS the
-    // corner cut, and it is toward the inside of the turn. A nearer carrot
-    // leans less, which is the whole mechanism.
+    // far carrot leans further left than the path tangent; that lean is the
+    // corner cut, toward the inside of the turn. A nearer carrot leans less.
     let fast_off = fy.atan2(fx);
     let slow_off = sy.atan2(sx);
     assert!(
@@ -381,7 +372,7 @@ fn clearance_array_takes_precedence_over_the_stamps() {
 }
 
 /// A producer that does not speak the dialect must not be able to slow the
-/// robot down by accident -- nor speed it up.
+/// robot down by accident, nor speed it up.
 #[test]
 fn unstamped_and_nonsense_stamps_fall_back_to_cruise() {
     let c = cfg();
@@ -427,7 +418,7 @@ fn the_stamped_creep_is_a_speed_the_gait_can_realize() {
     let cmd = vx.hypot(vy);
     assert!(
         cmd >= 0.30,
-        "commanded {cmd} m/s is inside the gait dead band -- the robot marches in place"
+        "commanded {cmd} m/s is inside the gait dead band: the robot marches in place"
     );
     // ...and it is still a creep, not cruise: the intended ground speed is the
     // governor floor, not max_speed.

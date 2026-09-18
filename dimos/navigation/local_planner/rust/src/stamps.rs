@@ -22,26 +22,13 @@
 
 use crate::geom::Params;
 
-/// A segment shorter than this is a rotation in place, not a move -- the
-/// python `profile._FAN_EPS`, and it has to match: the encoder prices fan
-/// segments by yaw span instead of by clearance, so their dt carries no
-/// precision and the decoder must skip them rather than read a speed out of
-/// them.
+/// A segment shorter than this is a rotation in place, not a move: the python
+/// `profile._FAN_EPS`, which this must match. Fan segments are priced by yaw
+/// span, so their dt carries no precision and the decoder skips them.
 pub const FAN_EPS: f64 = 1e-6;
 
-/// The governor curve the ENCODER speaks, mirroring `profile.py`'s module
-/// constants.
-///
-/// Deliberately not `Params`. Decoding takes the consumer's own band, so a
-/// controller recovers the ceiling its own governor would have produced; but
-/// encoding is the producer's side of a WIRE contract, and if it moved with
-/// whatever config the planner process happened to hold, two robots with
-/// different controller tuning would stamp the same path differently. The
-/// python keeps these as module constants for the same reason, and notes that
-/// they are held in step with `ControllerConfig` by hand.
 /// The governor curve the encoder speaks: the embodiment's (`embodiment/base.py`),
-/// handed across by whoever owns the body -- the python module or the native
-/// module's own table -- never a per-process tuning.
+/// handed across by whoever owns the body, never a per-process tuning.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Governor {
     pub max_speed: f64,
@@ -56,13 +43,9 @@ pub struct Governor {
 
 /// Clearance (m) -> speed ceiling (m/s): creep at the floor, cruise with room.
 ///
-/// A port of `profile.governor_speed`. Infinite clearance is expected and
-/// meaningful -- no obstacles means nothing can touch the body, so the
-/// fraction saturates and the waypoint gets cruise.
-// `max` then `min` rather than `clamp`, which is what clippy wants here:
-// f64::clamp PANICS when handed a NaN. No caller can produce one (clearance is
-// a distance), but a panic in the planner tick is a far worse failure than the
-// creep this degrades to, and the encoder runs on whatever the map hands it.
+/// A port of `profile.governor_speed`. Infinite clearance is meaningful: no
+/// obstacles means nothing can touch the body, so the waypoint gets cruise.
+// `max` then `min` rather than `clamp`: f64::clamp panics on NaN.
 #[allow(clippy::manual_clamp)]
 pub fn governor_speed(clearance: f64, gov: &Governor) -> f64 {
     let frac = (clearance - gov.floor) / (gov.speed_clearance - gov.floor);
@@ -71,21 +54,13 @@ pub fn governor_speed(clearance: f64, gov: &Governor) -> f64 {
 
 /// Stamp a path with its precision profile: the timestamps, in order.
 ///
-/// A port of `profile.encode_precision`, which states the dialect:
-/// `ts[i] - ts[i-1] = segment length / governor speed`, the governor evaluated
-/// at the TIGHTER of the segment's two endpoints. `decode_ceilings` above is
-/// the exact inverse.
-///
-/// Returns the stamps rather than mutating a path, because this crate has no
-/// message types -- the adapter writes them onto the poses. `clearance` of the
-/// wrong length is ignored and every segment gets cruise, matching the python's
-/// `if len(clearance) == n` guard: a planner that could not compute room still
-/// produces a well-formed path, it just carries no precision hint.
-///
-/// Fan segments (yaw with no displacement) are priced by yaw span at
-/// `max_yaw_rate` instead, which is why the decoder has to skip them -- their
-/// dt is not a distance over a speed and reading one as such would invent a
-/// ceiling from a rotation.
+/// A port of `profile.encode_precision`: `ts[i] - ts[i-1] = segment length /
+/// governor speed`, the governor evaluated at the tighter of the segment's two
+/// endpoints; `decode_ceilings` is the exact inverse. Returns the stamps
+/// rather than mutating a path, since this crate has no message types.
+/// `clearance` of the wrong length gives every segment cruise (the python's
+/// `if len(clearance) == n` guard). Fan segments (yaw, no displacement) are
+/// priced by yaw span at `max_yaw_rate`, which is why the decoder skips them.
 pub fn encode_precision(path: &[[f64; 3]], clearance: &[f64], t0: f64, gov: &Governor) -> Vec<f64> {
     let n = path.len();
     if n == 0 {
@@ -105,10 +80,8 @@ pub fn encode_precision(path: &[[f64; 3]], clearance: &[f64], t0: f64, gov: &Gov
         let (dx, dy) = (path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]);
         let ds = (dx * dx + dy * dy).sqrt();
         if ds < FAN_EPS {
-            // `np.remainder` (floor-mod), NOT the IEEE remainder the laws use
-            // for angle_diff -- this mirrors the python statement exactly. The
-            // two disagree only at +/-pi, and the abs() below makes even that
-            // agree, but the form is kept so the port reads against its spec.
+            // `np.remainder` (floor-mod), not the IEEE remainder the laws use
+            // for angle_diff: mirrors the python statement exactly.
             let dyaw = path[k][2] - path[k - 1][2];
             let wrapped = (dyaw + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
                 - std::f64::consts::PI;
@@ -124,41 +97,21 @@ pub fn encode_precision(path: &[[f64; 3]], clearance: &[f64], t0: f64, gov: &Gov
 /// Per-waypoint speed ceiling (m/s) recovered from the stamps, or `None` when
 /// the producer does not speak the dialect.
 ///
-/// `profile.py` states it: `ts[i] - ts[i-1] = segment length / governor speed
-/// for that segment`, where the governor speed is the clearance curve
-/// evaluated at the tighter of the segment's two endpoints. So the inverse is
-/// division -- `ds/dt` recovers `min(gov(clr[i-1]), gov(clr[i]))` exactly, in
-/// m/s, with no need to round-trip through a synthetic clearance.
-///
-/// A port of `profile.decode_ceilings`, deliberately statement for statement:
-///
-/// * Fewer than two poses, or stamps that are flat or go backwards, mean the
-///   producer does not speak the dialect. Returns `None`; the caller then
-///   cruises at `max_speed`.
-/// * Fan segments inherit the previous ceiling.
-/// * The result is clipped into `[min_speed, max_speed]`, which is what makes
-///   the channel safe to trust: a stamp can only ever ask the robot to be
-///   *more* careful than cruise, never faster, and garbage stamps (a path
-///   whose poses were default-constructed microseconds apart, say) saturate
-///   at cruise instead of commanding something absurd.
-///
-/// What this is NOT is a schedule. The stamps are consumed as a per-waypoint
-/// speed *ceiling* keyed to arc position; the absolute times, the plan's t0
-/// and the tick clock never enter. Chasing the timeline would mean
-/// accelerating to make up lost time in precisely the tight passages the
-/// encoding is warning about -- `profile.py` says so in as many words, and it
-/// is why `t` is not marshalled into any law that reads this.
-/// `ds` comes from the waypoints, NOT from differencing cumulative arc length.
-/// The two are not bit-identical, the encoder used the raw segment, and the
-/// python twin (`profile.decode_ceilings`) uses the raw segment too -- so
-/// reconstructing it from `arcs` costs parity for nothing.
+/// A port of `profile.decode_ceilings`, statement for statement: `ds/dt`
+/// recovers `min(gov(clr[i-1]), gov(clr[i]))` in m/s. Fewer than two poses,
+/// or stamps that are flat or go backwards, return `None`; fan segments
+/// inherit the previous ceiling; the result is clipped into
+/// `[min_speed, max_speed]`, so a stamp can only ask for more care than cruise.
+/// A per-waypoint ceiling keyed to arc position, not a schedule: absolute
+/// times never enter. `ds` is the raw segment, as in the python, not a
+/// difference of `arcs`.
 pub fn decode_ceilings(ts: &[f64], path: &[[f64; 3]], cfg: &Params) -> Option<Vec<f64>> {
     let n = path.len();
     if n < 2 || ts.len() != n {
         return None;
     }
-    // `np.any(dt < 0) or not np.any(dt > 0)` -- unstamped paths (all-equal
-    // ts) and anything non-monotone are rejected outright.
+    // `np.any(dt < 0) or not np.any(dt > 0)`: unstamped (all-equal ts) and
+    // non-monotone paths are rejected outright.
     let mut any_positive = false;
     for k in 1..n {
         let dt = ts[k] - ts[k - 1];
@@ -199,12 +152,9 @@ pub fn decode_ceilings(ts: &[f64], path: &[[f64; 3]], cfg: &Params) -> Option<Ve
 
 /// The tightest decoded ceiling within `speed_lookahead` of `arcs[i]`.
 ///
-/// Read from `i + 1` rather than `i`. That is not an off-by-one: a decoded
-/// ceiling is a property of the SEGMENT ending at its waypoint, so
-/// `ceilings[k]` already carries `clr[k-1]`. Scanning `[i+1 ..]` therefore
-/// reproduces `gov(min clr over [i ..])` -- the clearance governor's window
-/// exactly -- whereas starting at `i` would drag in the waypoint behind the
-/// robot.
+/// Scans from `i + 1`: a decoded ceiling belongs to the segment ending at its
+/// waypoint, so `ceilings[k]` already carries `clr[k-1]` and `[i+1 ..]`
+/// reproduces `gov(min clr over [i ..])` exactly.
 pub fn ceiling_ahead(ceilings: &[f64], arcs: &[f64], i: usize, cfg: &Params) -> f64 {
     let n = arcs.len();
     let hi = arcs[i] + cfg.speed_lookahead;

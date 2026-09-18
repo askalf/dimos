@@ -15,12 +15,11 @@
 """TrajectoryFollowerNative: the rust twin of :mod:`.follower`.
 
 Same ports, same laws (`dimos_trajectory_follower`, parity-locked to the python), and
-a control tick with no python in it -- which is the point: on the robot the
-follower runs off a locally-held path at a steady 10 Hz instead of receiving
-``cmd_vel`` in bursts whenever the link hiccups. :mod:`.follower` stays the
-reference implementation.
+a control tick with no python in it: on the robot the follower runs off a
+locally-held path at a steady 10 Hz instead of receiving ``cmd_vel`` in bursts
+whenever the link hiccups. :mod:`.follower` stays the reference implementation.
 
-One field does NOT cross: ``controller``, because the native module runs the
+One field does not cross: ``controller``, because the native module runs the
 one law (``laws/hinted.rs``) by construction.
 """
 

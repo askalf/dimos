@@ -84,7 +84,7 @@ class GlobalConfig(BaseSettings):
     zenoh_multicast: bool = True
     # Multicast group scouting joins, e.g. 224.0.0.224:7446. Empty takes zenoh's
     # own. Moving it walks a session onto a private discovery bus, which is how
-    # parallel sessions on one machine stay apart -- LCM_DEFAULT_URL's analog.
+    # parallel sessions on one machine stay apart (LCM_DEFAULT_URL's analog).
     zenoh_scout_addr: str = ""
     # Whether peers propagate the peers they already know over established links.
     # Unlike multicast scouting this reaches nothing new on the LAN, and zenoh

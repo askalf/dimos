@@ -118,7 +118,7 @@ fn every_point_handed_in_takes_room_away_whatever_its_z() {
 #[test]
 fn the_body_is_subtracted_and_may_go_negative() {
     // room is measured from the body's edge, so a point already inside the
-    // footprint reports negative -- the governor floors it, this must not
+    // footprint reports negative; the governor floors it, this must not
     let q = [[0.0, 0.0]];
     let points = vec![[0.1f32, 0.0, 0.2]];
     assert_eq!(path_clearance(&q, &points, 0.25)[0], 0.1f32 as f64 - 0.25);

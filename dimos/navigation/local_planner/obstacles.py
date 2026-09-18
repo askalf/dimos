@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Which returns are obstacles -- a property of the BODY, not of the scene.
+"""Which returns are obstacles: a property of the body, not of the scene.
 
 The planner's world is a z-slice of the cloud, and where that slice belongs is
 something the robot already knows: the base rides `base_height` above the
 surface its feet stand on. Re-reference the cloud to that surface and the
-geometry reads itself -- below `steppable` the legs negotiate it, above
+geometry reads itself: below `steppable` the legs negotiate it, above
 `height` the body passes underneath, in between it is a wall. Nothing is
 estimated off the scene, so nothing can be estimated wrong.
 
@@ -112,7 +112,7 @@ def ground_points(cloud: NDArray[np.float32], ground_z: float) -> NDArray[np.flo
 def hard_points(
     model: ObstacleModel, cloud: NDArray[np.float32], ground_z: float
 ) -> NDArray[np.float32]:
-    """The obstacles this model sees -- the cloud the search plans on."""
+    """The obstacles this model sees: the cloud the search plans on."""
     pts = referenced(cloud, ground_z)
     return np.ascontiguousarray(pts[model.field(pts).hard])
 
@@ -124,7 +124,7 @@ def path_clearance(
 
     A speed hint for the controller, not a safety contract. Nothing to hit or
     an empty path = infinite room. `points` is a model's hard set: every row is
-    something the body can hit, and z rides along unread -- deciding that again
+    something the body can hit, and z rides along unread; deciding that again
     here would price a different world than the plan was made for.
     """
     xy = np.asarray(xy, dtype=np.float64).reshape(-1, 2)

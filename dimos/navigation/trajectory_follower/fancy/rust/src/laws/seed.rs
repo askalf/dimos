@@ -15,8 +15,8 @@
 //! The reference pursuit law: holonomic, clearance-governed, fixed lookahead.
 //!
 //! Port of `control/laws/seed.py::PursuitController.update`. This law is the
-//! permanent baseline -- every track's A/B is against it and every lab seeds
-//! from it -- so it does NOT absorb research results. Fold those into the
+//! permanent baseline (every track's A/B is against it and every lab seeds
+//! from it), so it does not absorb research results. Fold those into the
 //! track's own law instead; a moving baseline is not a baseline.
 
 use crate::geom::{
@@ -34,8 +34,8 @@ pub fn update(
     cfg: &Params,
 ) -> (f64, f64, f64) {
     if path.len() < 2 {
-        // empty path or a single-pose veto stub: there is nothing to
-        // follow -- hold position (the planner is saying "stop")
+        // empty path or a single-pose veto stub: nothing to follow, hold
+        // position (the planner is saying "stop")
         return (0.0, 0.0, 0.0);
     }
     let (px, py, pyaw) = pose;

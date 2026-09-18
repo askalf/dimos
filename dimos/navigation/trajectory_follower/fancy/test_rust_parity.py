@@ -87,7 +87,7 @@ def _s_curve(rng: np.random.Generator) -> list[tuple[float, float, float]]:
 
 
 def _with_fans(rng: np.random.Generator) -> list[tuple[float, float, float]]:
-    """An S-curve with coincident-waypoint rotations spliced in -- the branch
+    """An S-curve with coincident-waypoint rotations spliced in: the branch
     that exercises both fan detection and the yaw-progress advance."""
     base = _s_curve(rng)
     out: list[tuple[float, float, float]] = []

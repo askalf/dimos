@@ -19,7 +19,7 @@
 //! live there.
 //!
 //! Run with `cargo test --release --no-default-features --test invariants`
-//! (no pyo3 link needed -- the crate exposes `planner` as an rlib).
+//! (no pyo3 link needed: the crate exposes `planner` as an rlib).
 
 use std::time::Instant;
 
@@ -102,17 +102,11 @@ fn deterministic_across_calls() {
 fn no_cross_call_memoization() {
     let pts = slalom();
     let emb = Emb::fixture();
-    // The assertion is repeat-A against fresh-B: a query the planner has
-    // already answered, versus an equivalent one it has not. That ratio is
-    // immune to how fast or busy the machine is, unlike comparing A to its
-    // own first call, which also absorbs allocator warmup.
+    // The assertion is repeat-A against fresh-B: a query already answered
+    // versus an equivalent one not yet seen, a ratio immune to machine load.
     //
-    // The control must differ in EVERY input, not just the goal. Two earlier
-    // versions of this test were defeated: one repeated a single control
-    // query (so a cache populated on its first call and the control became
-    // as fast as the repeat), and one varied only the goal (so a cache keyed
-    // on the CLOUD -- a stashed distance field or roadmap, which is what a
-    // real precompute-and-reuse optimization looks like -- sailed through).
+    // The control must differ in every input, not just the goal, or a cache
+    // keyed on the cloud (a stashed distance field or roadmap) sails through.
     // Rigidly translating the whole world keeps the work identical while
     // making every possible cache key miss. Do not simplify this.
     let pose_a = (0.0, 0.0, 0.0);
@@ -141,7 +135,7 @@ fn no_cross_call_memoization() {
         rep_a >= 0.7 * fresh_b,
         "a repeated query took {:.3} ms while an equivalent fresh one (the same world \
          translated) took {:.3} ms ({:.0}% of it). The planner appears to reuse work across \
-         calls -- of the answer, the distance field, or anything else keyed on the input. \
+         calls: the answer, the distance field, or anything else keyed on the input. \
          Reuse across genuinely different replans is fine; this is not that.",
         rep_a * 1e3,
         fresh_b * 1e3,

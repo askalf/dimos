@@ -14,7 +14,7 @@
 
 //! The SEED law's behavioural cases, mirroring `test_controller.py` so a
 //! regression shows up in `cargo test` and not only under pytest. Exact
-//! agreement with the python is a separate gate -- `test_rust_parity.py`.
+//! agreement with the python is a separate gate, `test_rust_parity.py`.
 //!
 //! This law is the permanent baseline, so these cases are frozen: a research
 //! generation that wants different behaviour lands in `laws/hinted.rs` and
@@ -114,10 +114,11 @@ fn fan_done_resumes_translation() {
 #[test]
 fn fan_advances_by_yaw_progress() {
     let cfg = cfg();
-    let p = fan(); // yaws 0.0 .. 1.5 in 0.3 steps, all at the origin
-                   // At yaw 0.6 the carrot is 0.9, one step ON: k_yaw * 0.3. Without the
-                   // advance the index stays pinned at the fan's first pose and the command
-                   // is k_yaw * (0.3 - 0.6) = -0.6 -- rotating back into the fan.
+    // yaws 0.0 .. 1.5 in 0.3 steps, all at the origin
+    let p = fan();
+    // At yaw 0.6 the carrot is 0.9, one step on: k_yaw * 0.3. Without the
+    // advance the index stays pinned at the fan's first pose and the command
+    // is k_yaw * (0.3 - 0.6) = -0.6, rotating back into the fan.
     let (_, _, wz_mid) = update((0.0, 0.0, 0.6), &p, None, &cfg);
     assert!(
         (wz_mid - cfg.k_yaw * 0.3).abs() < 1e-9,
@@ -186,7 +187,7 @@ fn ieee_remainder_matches_python() {
     for (x, want) in [
         (PI, PI),
         (-PI, -PI),
-        // 3pi/tau is exactly 1.5, and half rounds to the EVEN 2 -- so the
+        // 3pi/tau is exactly 1.5, and half rounds to the even 2, so the
         // wrap goes down to -pi. Truncation would leave +pi here.
         (3.0 * PI, -PI),
         (2.5 * PI, PI / 2.0),

@@ -96,9 +96,8 @@ class TrajectoryFollowerConfig(ModuleConfig):
     # max_path_age_s.
     base_frame: str = "base_link"
     # The deadman: zero the twist once the held path is this old, measured from
-    # ARRIVAL. It guards a planner that stopped speaking, alive-and-failing
-    # included -- the link dropping is not the only way a plan goes stale.
-    # Must clear the replan cadence (plans arrive per map, gaps to ~1.3 s seen).
+    # arrival. Guards a planner that stopped speaking, alive-and-failing included.
+    # Must clear the replan cadence (one plan per map, gaps to ~1.3 s).
     max_path_age_s: float = 2.5
 
 

@@ -16,16 +16,14 @@
 //!
 //! A port of `adapter/planner.py`, which is the specification. The raycaster's
 //! `local_map` is the cloud, the `world_frame -> base_frame` edge on tf is the
-//! pose (read per tick, `tf_pose.rs`), and the goal is a carrot -- `goal_lookahead_m` of arc along the MLS global route
-//! (`planner_path`), clamped to its end. A spawned worker ticks on a fixed
-//! cadence but replans only when an input that matters has changed, and
-//! publishes the result as a stamped nav Path.
+//! pose (read per tick, `tf_pose.rs`), and the goal is a carrot: `goal_lookahead_m`
+//! of arc along the MLS global route (`planner_path`), clamped to its end. A
+//! spawned worker ticks on a fixed cadence but replans only when an input that
+//! matters has changed, and publishes the result as a stamped nav Path.
 //!
-//! A REFUSAL COMES OUT AS THE PLANNER MADE IT: a single-pose stub, which the
-//! follower reads as "hold". That is also the shape the staleness guard
-//! publishes, because a map that has gone quiet and a search that found no
-//! route are the same statement to whatever is downstream -- there is no safe
-//! way forward from here.
+//! A refusal comes out as the planner made it: a single-pose stub, which the
+//! follower reads as "hold". The staleness guard publishes the same shape,
+//! since a quiet map and a failed search both mean no safe way forward.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -50,7 +48,7 @@ use crate::module::tf_pose::PoseWatch;
 #[derive(Clone)]
 #[validate(schema(function = "validate_obstacle_model"))]
 pub struct Config {
-    /// The body, as `embodiment/base.py` records it -- the python module's
+    /// The body, as `embodiment/base.py` records it: the python module's
     /// own value, so the two halves cannot plan for different robots.
     pub embodiment: Emb,
     /// Every planning box grown by this much PER SIDE; negative shrinks it,
@@ -75,23 +73,17 @@ pub struct Config {
     /// `max_map_age_s` it counts as missing again.
     pub world_frame: String,
     pub base_frame: String,
-    /// Plan when an input that MATTERS changed -- a new local map, or a carrot
-    /// that moved -- rather than on every tick of the clock. The planner ticks
-    /// at 5 Hz over a 1 Hz map, so four ticks in five re-solve an unchanged
-    /// world; the follower tracks the published path as the robot moves and
-    /// needs no republish to do it.
+    /// Plan only on a new local map or a moved carrot, not on every tick of
+    /// the clock.
     pub replan_on_change: bool,
-    /// How far the carrot has to move to be worth re-solving for. The route it
-    /// rides on is republished at ~1 Hz with its head trimmed to the robot and
-    /// its tail re-solved, so the waypoints move every time and the carrot does
-    /// not -- gating on the array would dedup nothing.
+    /// How far the carrot has to move to be worth re-solving for. The route is
+    /// republished at ~1 Hz with its head trimmed and tail re-solved, so the
+    /// waypoints move every time and the carrot does not.
     ///
     #[validate(range(min = 0.0))]
     pub replan_carrot_m: f64,
-    /// A carrot that jumped this far is a different task, and the route this
-    /// module is holding on to is about the old one -- so it is dropped and the
-    /// next search starts from nothing. Republish noise moves the carrot ~0 m; a
-    /// real reroute moves it metres.
+    /// A carrot that jumped this far is a different task: the held route is
+    /// dropped and the next search starts from nothing.
     #[validate(range(min = 0.0))]
     pub reset_carrot_m: f64,
     /// What counts as an obstacle (`obstacles.rs`). "body_band" reads the cloud
@@ -221,11 +213,9 @@ pub fn carrot_along(route: &[[f64; 2]], robot: (f64, f64), lookahead: f64) -> Op
 
 /// Has an input the plan depends on moved since the plan was made?
 ///
-/// The plan consumes the global route through exactly one quantity -- the
-/// carrot -- so that is what the gate compares. Keying on the waypoint array
-/// instead never dedups anything: MLS trims the route head to the robot on
-/// every ~1 Hz republish and re-solves with tail wobble, so the array moves
-/// every time while the carrot does not move at all.
+/// The plan consumes the global route through exactly one quantity, the
+/// carrot, so that is what the gate compares. The waypoint array moves on
+/// every ~1 Hz republish while the carrot does not.
 pub fn replan_due(
     gate: bool,
     planned: Option<(u64, (f64, f64))>,
@@ -579,7 +569,7 @@ mod tests {
         points.iter().map(|&(x, y)| [x, y]).collect()
     }
 
-    // carrot_along -- the cases in adapter/test_planner.py
+    // carrot_along: the cases in adapter/test_planner.py
 
     #[test]
     fn carrot_walks_arc_from_the_closest_waypoint() {
@@ -664,7 +654,7 @@ mod tests {
 
     #[test]
     fn a_missing_input_waits_rather_than_holding() {
-        // no pose is "not running yet", not "the map died" -- publishing a
+        // no pose is "not running yet", not "the map died": publishing a
         // hold stub would need a pose to put it at anyway
         assert_eq!(decide(false, Some(9.0), true, false, 5.0), Tick::Wait);
         assert_eq!(decide(true, None, true, false, 5.0), Tick::Wait);
@@ -874,8 +864,8 @@ mod tests {
     // the obstacle model
 
     /// A sealed box on a ground surface at `ground_z`, the whole thing sunk so
-    /// the map's z origin is base height rather than the ground -- the
-    /// recording's case.
+    /// the map's z origin is base height rather than the ground (the
+    /// recording's case).
     fn room_on_a_floor(ground_z: f32) -> Vec<[f32; 3]> {
         let mut pts = Vec::new();
         let mut t = -2.0f32;
@@ -885,7 +875,7 @@ mod tests {
                 pts.push([t, u, ground_z]); // the ground slab
                 u += 0.08;
             }
-            // walls, standing 0.10..0.30 m ABOVE that ground -- entirely under
+            // walls, standing 0.10..0.30 m above that ground: entirely under
             // the absolute 0.05..0.45 band once the ground is at -0.28
             for k in 1..=3 {
                 let z = ground_z + 0.1 * k as f32;
@@ -921,7 +911,7 @@ mod tests {
         assert_eq!(seen.poses.len(), 1, "the walls are still invisible");
     }
 
-    /// The latent bug the planar search contract closes -- twin of
+    /// The latent bug the planar search contract closes, twin of
     /// `adapter/test_planner.py::test_a_tall_body_plans_around_what_the_old_band_cut_off`.
     ///
     /// A 0.55 m wall is inside a 0.60 m body's band and outside the absolute

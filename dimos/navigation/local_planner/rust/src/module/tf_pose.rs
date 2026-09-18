@@ -12,15 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The base pose off tf, read per tick -- the rust twin of `TfPose` in
+//! The base pose off tf, read per tick: the rust twin of `TfPose` in
 //! `dimos/navigation/tf_pose.py`, which is the specification.
 //!
-//! GO2Zenoh publishes `odom -> mid360_link` off odometry at odometry rate and
-//! the static mounts beside it, so tf carries `odom -> base_link` -- LIO's
-//! sensor pose already resolved into the body (0.30 m back and 0.16 m down on
-//! this rig). The deadman is on OUR clock, keyed by the edge's stamp: the
-//! stamp is the robot's clock, which need not be ours, and what the deadman
-//! asks is how long since tf last moved.
+//! GO2Zenoh publishes `odom -> mid360_link` and the static mounts beside it,
+//! so tf carries `odom -> base_link`. The deadman is on our clock, keyed by
+//! the edge's stamp: it asks how long since tf last moved.
 
 use std::time::Instant;
 

@@ -120,7 +120,7 @@ fn a_fan_is_priced_by_yaw_not_by_room() {
 #[test]
 fn a_fan_takes_the_short_way_round() {
     // -3pi/4 and +3pi/4 are a quarter turn apart through pi, not three
-    // quarters the other way -- the wrap is what makes that true
+    // quarters the other way; the wrap is what makes that true
     let path = vec![[0.0, 0.0, -3.0 * PI / 4.0], [0.0, 0.0, 3.0 * PI / 4.0]];
     let ts = encode_precision(&path, &[], 0.0, &GOV);
     assert!((ts[1] - (PI / 2.0) / MAX_YAW_RATE).abs() < 1e-12);

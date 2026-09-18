@@ -81,8 +81,8 @@ class _DimosCodec:
 def _dimos_wire(topic: str) -> tuple[str, type] | None:
     """Split a dimos wire topic into its port name and message type.
 
-    A dimos topic embeds the type in its last segment --
-    ``dimos/<port>/<msg_name>``, built by ``zenohpubsub.Topic.key_expr`` -- so
+    A dimos topic embeds the type in its last segment,
+    ``dimos/<port>/<msg_name>`` (built by ``zenohpubsub.Topic.key_expr``), so
     every dimos channel describes itself and no per-topic registry is needed.
     None for anything that is not one, which leaves DDS and app channels to
     the injected codecs.

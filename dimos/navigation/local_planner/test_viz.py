@@ -85,10 +85,9 @@ def test_an_unstamped_plan_draws_one_flat_colour() -> None:
     """No pinch is claimed where no precision was stamped.
 
     Freshly built poses carry wall-clock stamps microseconds apart, so the
-    decoder sees an absurd speed and clips it to cruise rather than returning
-    None -- which is the safe direction (a stamp can only ask for MORE care).
-    What matters here is that it cannot manufacture a varying profile out of
-    noise: every box comes out the same colour.
+    decoder clips the absurd speed to cruise rather than returning None. It
+    must not manufacture a varying profile out of noise: every box comes out
+    the same colour.
     """
     plan = _plan()  # never passed through encode_precision
     room = plan_clearance(plan, GO2)

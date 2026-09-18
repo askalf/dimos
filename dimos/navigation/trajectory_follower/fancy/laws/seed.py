@@ -74,7 +74,7 @@ class PursuitController:
         cfg, emb = self.config, self.emb
         if len(path) < 2:
             # empty path or a single-pose veto stub: there is nothing to
-            # follow -- hold position (the planner is saying "stop")
+            # follow: hold position (the planner is saying "stop")
             return Twist(Vector3(0, 0, 0), Vector3(0, 0, 0))
         xy = np.array([[p.position.x, p.position.y] for p in path.poses])
         yaws = np.array([p.yaw for p in path.poses])
@@ -122,11 +122,10 @@ class PursuitController:
         c, s_ = math.cos(-pyaw), math.sin(-pyaw)
         bx, by = c * ex - s_ * ey, s_ * ex + c * ey
         vx, vy = cfg.k_pos * bx, cfg.k_pos * by
-        # math.hypot is CPython's own correctly-rounded one; rust's f64::hypot
-        # is libm, and they differ by an ulp on some inputs. It only reaches the
-        # twist here when the command clamps, and the sweep in test_rust_parity
-        # is bit-exact, so this stays as it is -- the baseline does not move for
-        # a latent ulp. A NEW law should use np.hypot, as laws/hinted.py does.
+        # math.hypot is CPython's correctly-rounded one; rust's f64::hypot is
+        # libm and differs by an ulp on some inputs. test_rust_parity is
+        # bit-exact on this, so the baseline keeps it. A new law should use
+        # np.hypot, as laws/hinted.py does.
         speed = math.hypot(vx, vy)
         if speed > vmax:
             vx, vy = vx / speed * vmax, vy / speed * vmax

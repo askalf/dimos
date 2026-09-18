@@ -34,7 +34,7 @@ from .base import RESOLUTION, densify_states, pose_stamped, states_of
 from .se2 import COMMIT_MARGIN, PERIOD, SdfGrid, anchor, se2_search
 
 PAD = 1.5
-# Free space around the working area, in whole periods -- se2_path's own.
+# Free space around the working area, in whole periods (se2_path's own).
 GRID_PAD = 3 * PERIOD
 
 BUILD_CMD = "uv run maturin develop --uv --release --features python -m dimos/navigation/local_planner/rust/Cargo.toml"

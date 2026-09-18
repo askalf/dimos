@@ -14,14 +14,10 @@
 
 """LocalPlannerNative: the rust twin of :mod:`.planner`.
 
-Same ports, same wire, same defaults -- and no python in the replan tick, so
-it can run on the robot beside the follower. :mod:`.planner` stays the
-reference implementation; this exists because the deployment plan moves the
-time-critical half of the stack onto the Go2.
-
-The one config field that does NOT cross is ``planner``: the deployed module
-IS the rust target planner, and a wrapper that wants a different one is not
-this module.
+Same ports, same wire, same defaults, and no python in the replan tick, so it
+can run on the robot beside the follower. :mod:`.planner` stays the reference
+implementation. The one config field that does not cross is ``planner``: the
+deployed module is the rust target planner.
 """
 
 from __future__ import annotations

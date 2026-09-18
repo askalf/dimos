@@ -45,15 +45,12 @@ States = NDArray[np.float64]
 Pose2 = tuple[float, float, float]  # x, y, yaw
 
 
-# Lattice pitch. VOXEL is a config constant of
-# the deployment (the map's voxel size, never sniffed from data); FINE is half
-# of it, so every voxel centre lands exactly on a fine sample; CELL is 3 fine
-# samples. PERIOD is the pitch at which all three are commensurate -- 2 cells,
-# 3 voxels, 6 fine samples -- and every grid corner is snapped DOWN onto
-# multiples of it in the scenario's own frame. That is what makes sample
-# positions absolute: an obstacle appearing or vanishing can add whole rows at
-# the edge, but it can never move a sample position, so a lidar return metres
-# behind the robot cannot re-sample the question the search is answering.
+# Lattice pitch. VOXEL is the deployment's map voxel size (never sniffed from
+# data); FINE is half of it, so every voxel centre lands on a fine sample; CELL
+# is 3 fine samples. PERIOD is the pitch at which all three are commensurate
+# (2 cells, 3 voxels, 6 fine samples) and every grid corner is snapped down
+# onto multiples of it in the scenario's own frame, so an obstacle appearing or
+# vanishing can add rows at the edge but never move a sample position.
 VOXEL = 0.08
 FINE = 0.04  # VOXEL / 2
 CELL = 0.12  # 3 * FINE
@@ -124,9 +121,9 @@ def path_cost(grid: SdfGrid, states: States, emb: Embodiment, step: float = COST
     The pricing the search puts on its own edges, read along a continuous
     curve instead of along a lattice: a metre of gait-weighted travel, charged
     `max_speed/governor(clearance)` for the time it will take, plus the yaw the
-    route commands -- half price while translating, as a blend edge pays it,
+    route commands: half price while translating, as a blend edge pays it,
     full price for a rotation in place, as a turn edge does. Clearance is read
-    on the UNION, again as the search reads it: a preference has to be
+    on the union, again as the search reads it: a preference has to be
     comparable across routes, so it may not shift with an edge's own drift row.
     """
     s = np.asarray(states, dtype=float).reshape(-1, 3)
@@ -218,25 +215,19 @@ def se2_search(
     smoothed states or None.
 
     Feasibility is motion-conditioned: an edge is tested against the swept box
-    the embodiment needs for THAT edge's drift angle (move direction minus body
+    the embodiment needs for that edge's drift angle (move direction minus body
     yaw), widened by the gait's turning splay when the edge also rotates. The
-    all-gait union stays the fallback -- for embodiments with no measured
-    envelope, and for the turn-in-place edges, which are real motion sweeping
-    the full shape.
+    all-gait union is the fallback for embodiments with no measured envelope
+    and for turn-in-place edges.
 
-    The seed is judged at the TRUE start pose rather than at the cell it snaps
-    to: a pose the robot actually occupies may always be departed. It is judged
-    STANDING -- the static body, the intersection of the envelope's rows -- not
-    on the union of the swept boxes it is not moving through.
+    The seed is judged at the true start pose, not the cell it snaps to, and
+    standing (the static body, the intersection of the envelope's rows), not on
+    the union of swept boxes it is not moving through.
 
-    The route already published, if there is one, is an INPUT. The lattice is
-    quantized, so a replan from a pose a few millimetres along is a slightly
-    different query, and where two routes near-tie the argmin flips for reasons
-    that are about the quantization and not about the world. So: trim the
-    incumbent to the current pose, re-validate it on THIS map, extend it to the
-    goal if the goal moved, price both on the same clock, and switch only if the
-    challenger wins by more than `commit_margin`. `incumbent=None` is
-    bit-identical to a planner that never heard of any of this.
+    `incumbent` is the route already published. It is trimmed to the current
+    pose, re-validated on this map, extended if the goal moved, priced on the
+    same clock as the challenger, and kept unless the challenger wins by more
+    than `commit_margin`. `incumbent=None` is a planner that never heard of it.
     """
     fine = grid.pitch
     x0, y0, x1, y1 = bounds
@@ -343,17 +334,12 @@ def se2_search(
                 return False
         return True
 
-    # A pose the robot actually occupies may always be departed. The seed's
-    # feasibility is therefore read at the TRUE start pose, not at the cell it
-    # snaps to (the snap moves the body up to half a cell diagonal, ~85 mm);
-    # the cell still NAMES the seed node. Standing has no direction of travel,
-    # and the shape it occupies is the STATIC BODY -- the intersection of the
-    # envelope's rows, nested in each of them -- so a pose any edge was cleared
-    # by clears the witness too, and a replan from this planner's own route can
-    # never refuse (on the union it did: a gap only a drift row fits refuses
-    # forever once the robot is inside it). A start genuinely inside an
-    # obstacle still reads negative and still refuses. Interned here, not with
-    # the moving rows: it is read at one exact pose and never wants a plane.
+    # The seed is judged at the true start pose, not the cell it snaps to (the
+    # snap moves the body up to half a cell diagonal); the cell still names the
+    # node. Standing has no direction of travel, so the shape is the static
+    # body, the intersection of the envelope's rows: a pose any edge cleared
+    # clears the witness too, so a replan from this planner's own route never
+    # refuses. A start inside an obstacle still refuses.
     STAND = footprint(emb.stand_box())
 
     def solve(seed: tuple[float, float, float]) -> NDArray[np.float64] | None:

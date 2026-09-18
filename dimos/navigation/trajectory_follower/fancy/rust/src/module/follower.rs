@@ -119,9 +119,8 @@ fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
 
 /// The goal a path carries, or `None` when it carries none.
 ///
-/// A plan ends at the goal, so its last pose is the target -- but a
-/// SINGLE-POSE path is the planner's refusal, and reading that as an arrival
-/// target would latch `goal_reached` at the robot's own feet.
+/// A plan ends at the goal, so its last pose is the target. A single-pose
+/// path is the planner's refusal, not a target at the robot's own feet.
 pub fn goal_of(path: &Path) -> Option<(f64, f64)> {
     if path.poses.len() < 2 {
         return None;
@@ -303,7 +302,7 @@ impl Worker {
             }
 
             // the pose is read here, on the tick, off tf in the frame the plan
-            // is expressed in -- so there is none to read before a plan
+            // is expressed in, so there is none to read before a plan
             let pose = snap.path.as_ref().and_then(|path| {
                 watch.get(
                     &self.tf,
@@ -402,7 +401,7 @@ mod tests {
         GoalLatch::new(0.2)
     }
 
-    // GoalLatch -- the cases in adapter/test_follower.py
+    // GoalLatch: the cases in adapter/test_follower.py
 
     #[test]
     fn goal_latch_fires_once_then_holds() {
