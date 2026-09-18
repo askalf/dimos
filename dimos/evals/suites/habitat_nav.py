@@ -66,7 +66,12 @@ TIMEOUT_S = float(os.environ.get("DIMOS_EVAL_TIMEOUT_S", 1800))
 # What grading and replay need; images and clouds stay out (1 GB per few minutes otherwise).
 RECORD_TOPICS = ("odom", "cmd_vel", "goal", "path", "goal_reached", "stop_movement", "finished")
 # The depth scan is in base_link with the floor at z = 0; keep the floor out of the sectors.
-MODULE_ENV = {"TYPESAFEAGENT__LIDAR_Z_MIN": "0.1", "RAWROBOTBRIDGE__LIDAR_Z_MIN": "0.1"}
+MODULE_ENV = {
+    "TYPESAFEAGENT__LIDAR_BAND": "[0.1, 0.8, 5.0]",
+    # The model's finished signal sits under 0.1 until the target is touching, then 0.45-0.65.
+    "TYPESAFEAGENT__FINISHED_THRESHOLD": "0.4",
+    "RAWROBOTBRIDGE__LIDAR_Z_MIN": "0.1",
+}
 
 
 def grade_nav(

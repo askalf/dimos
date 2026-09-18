@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import TYPE_CHECKING, TypedDict
 
 from typing_extensions import NotRequired
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 MAX_OBJECTS = 20
 _BEARINGS_2D = ("far_left", "left", "center", "right", "far_right")
 _SIZES_2D = ((0.4, "filling_view"), (0.15, "large"), (0.03, "medium"), (0.0, "small"))
+_GOAL_XY = re.compile(r"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)")
 _DISTANCES = ((0.5, "touching"), (1.5, "near"), (4.0, "mid"), (math.inf, "far"))
 
 
@@ -76,7 +78,7 @@ def distance_word(d: float) -> str:
     return next(word for limit, word in _DISTANCES if d < limit)
 
 
-def _objects_3d(dets: Detection3DArray, pose: PoseStamped) -> list[ObjectState]:
+def _objects_3d(dets: Detection3DArray, pose: PoseStamped, goal: str) -> list[ObjectState]:
     out: list[ObjectState] = []
     for d in dets.to_json():
         dx, dy = d["position"]["x"] - pose.x, d["position"]["y"] - pose.y
@@ -96,7 +98,21 @@ def _objects_3d(dets: Detection3DArray, pose: PoseStamped) -> list[ObjectState]:
                 "distance_m": round(dist, 2),
             }
         )
-    return sorted(out, key=lambda o: o["distance_m"])[:MAX_OBJECTS]
+    out.sort(key=lambda o: o["distance_m"])
+    # The nearest ones, but whatever the goal names is always listed, however far. A goal
+    # with coordinates ("the chair at (x, y)") names one object: the same-label others go.
+    named = [o for o in out if o["label"] and o["label"].lower() in goal.lower()]
+    at = _GOAL_XY.search(goal)
+    if at and named:
+        gx, gy = float(at.group(1)), float(at.group(2))
+        best = min(
+            named, key=lambda o: math.hypot(o["position"]["x"] - gx, o["position"]["y"] - gy)
+        )
+        out = [o for o in out if o is best or o not in named]
+        named = [best]
+    rest = [o for o in out if o not in named]
+    keep = named[:MAX_OBJECTS] + rest[: MAX_OBJECTS - min(len(named), MAX_OBJECTS)]
+    return sorted(keep, key=lambda o: o["distance_m"])
 
 
 def _objects_2d(dets: Detection2DArray, image_size: tuple[int, int]) -> list[ObjectState]:
@@ -129,7 +145,7 @@ def build_world_state(
     lidar_band: tuple[float, float, float] = (-0.2, 0.8, 5.0),
 ) -> WorldState:
     if detections_3d is not None:
-        objects = _objects_3d(detections_3d, pose)
+        objects = _objects_3d(detections_3d, pose, goal)
     elif detections_2d is not None:
         objects = _objects_2d(detections_2d, image_size)
     else:
