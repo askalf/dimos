@@ -63,6 +63,26 @@ unless the lock file moved. API keys come from the host environment
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`); export them
 before running.
 
+## Habitat navigation benchmark, TypeSafe arm
+
+`dimos.evals.suites.habitat_nav` (PR 4216) has 84 go-to-object cases over the
+HM3D example house and ten HSSD scenes; the HSSD ground truth from PR 4211 is
+on this branch. Case ids are `<scene>_<label>`, so two cases of one scene run
+as:
+
+```bash
+export TYPESAFE_API_KEY=... DIMOS_TRANSPORT=zenoh
+dimos evals run --docker dimos.evals.suites.habitat_nav --agent dimos.evals.agents.topic \
+    --set 'modules=["type-safe-agent"]' --set trace=TypeSafeAgent \
+    --case 102344193_toilet --case 102344193_shower
+```
+
+`DIMOS_TRANSPORT=zenoh` is required for Habitat: the environment launches its
+dimos on zenoh, and the agent that talks to it runs in the eval process, which
+takes the container-wide transport. The HM3D example scene
+(`--case 00861-GLAQ4DNUx5U_chair` and three more) needs no download; every
+HSSD case needs the dataset below.
+
 ## Habitat
 
 The image also carries Habitat: habitat-sim's own python 3.9 conda environment
