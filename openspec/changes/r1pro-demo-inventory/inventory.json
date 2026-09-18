@@ -1,0 +1,350 @@
+{
+  "audited_at_utc": "2026-09-18T01:13:01.372532+00:00",
+  "scope": "Documentation-only inventory; no simulations, training, branch changes, fetch, commits or pushes performed. Remote refs are locally cached.",
+  "branches": [
+    {
+      "branch": "hackmit/t7-resume",
+      "head": "0b816edf49e416e79847f2a6d327c0288c12345c",
+      "subject": "docs: preserve OpenYAM demo plan and completed handoff",
+      "upstream": null,
+      "cached_remote_branches_containing_tip": [],
+      "ancestor_of_classical": false
+    },
+    {
+      "branch": "mustafa/task/hackmit-manip",
+      "head": "0b816edf49e416e79847f2a6d327c0288c12345c",
+      "subject": "docs: preserve OpenYAM demo plan and completed handoff",
+      "upstream": null,
+      "cached_remote_branches_containing_tip": [],
+      "ancestor_of_classical": false
+    },
+    {
+      "branch": "feat/openyam-sim-completion",
+      "head": "fd94f07ecee7866ac1ef455364a6ca3bac595c37",
+      "subject": "docs: clarify OpenYAM acceptance and resume evidence",
+      "upstream": null,
+      "cached_remote_branches_containing_tip": [],
+      "ancestor_of_classical": false
+    },
+    {
+      "branch": "feat/r1pro-mobile-manip",
+      "head": "8f2138cfb903fc215ad2e77079364ce7f7785ca4",
+      "subject": "fix(r1pro): distinguish planar planning preview",
+      "upstream": "origin/feat/r1pro-mobile-manip",
+      "cached_remote_branches_containing_tip": [
+        "origin/cc/feat/r1pro-teleop"
+      ],
+      "ancestor_of_classical": false
+    },
+    {
+      "branch": "feat/r1pro-act-sim",
+      "head": "0187ef12083fc386935973c9616b2f3ea98bba8f",
+      "subject": "docs(r1pro): record refinement progress and disk recovery",
+      "upstream": "origin/feat/r1pro-act-sim",
+      "cached_remote_branches_containing_tip": [],
+      "ancestor_of_classical": false,
+      "ahead": 42,
+      "behind": 0,
+      "upstream_head": "389632263b8be793b2de8ed7f9cfb2cb6d855761"
+    },
+    {
+      "branch": "feat/r1pro-primitives-integration",
+      "head": "b698b416cb1ba9157fc759f496c512b737702a6b",
+      "subject": "docs: record R1Pro staging comparison results",
+      "upstream": null,
+      "cached_remote_branches_containing_tip": [
+        "origin/feat/r1pro-classical-apartment"
+      ],
+      "ancestor_of_classical": true
+    },
+    {
+      "branch": "feat/r1pro-classical-apartment",
+      "head": "ebd067deccd6e606527cecac0f744d0823bc3b8c",
+      "subject": "perf(r1pro): eliminate redundant cup support contacts and throttle viewer updates",
+      "upstream": "origin/feat/r1pro-classical-apartment",
+      "cached_remote_branches_containing_tip": [
+        "origin/feat/r1pro-classical-apartment"
+      ],
+      "ancestor_of_classical": true,
+      "ahead": 0,
+      "behind": 0,
+      "upstream_head": "ebd067deccd6e606527cecac0f744d0823bc3b8c"
+    },
+    {
+      "branch": "backup/r1pro-before-home-blueprint-rebase",
+      "head": "bb39ed4d3ff1ef798ce4ca4db47b9c1c476441cc",
+      "subject": "feat(r1pro): navigate loaded tray with KronkNav and holonomic control",
+      "upstream": null,
+      "cached_remote_branches_containing_tip": [],
+      "ancestor_of_classical": false
+    },
+    {
+      "branch": "backup/r1pro-before-random-objects-20260911",
+      "head": "14f90296c6e77d0d97498ec3d2e0c56dafd85ed9",
+      "subject": "feat: add interactive R1Pro house actions and recovery",
+      "upstream": null,
+      "cached_remote_branches_containing_tip": [
+        "origin/feat/r1pro-act-sim",
+        "  origin/feat/r1pro-classical-apartment"
+      ],
+      "ancestor_of_classical": true
+    },
+    {
+      "branch": "chore/r1pro-before-apartment-main-rebase-20260913",
+      "head": "145ffe5147701417b8b09d7cdf55750466bc4314",
+      "subject": "feat(r1pro): integrate experimental apartment reachability and ACT navigation",
+      "upstream": null,
+      "cached_remote_branches_containing_tip": [],
+      "ancestor_of_classical": false
+    }
+  ],
+  "worktrees": {
+    "/home/mustafa/dimos-wt/hub": {
+      "head": "0b816edf49e416e79847f2a6d327c0288c12345c",
+      "status": [
+        "?? .venv",
+        "?? MUJOCO_LOG.TXT"
+      ],
+      "recordings_resolved": "/home/mustafa/dimos-wt/hub/recordings"
+    },
+    "/home/mustafa/dimos-wt/r1pro-act-sim": {
+      "head": "0187ef12083fc386935973c9616b2f3ea98bba8f",
+      "status": [
+        "?? .venv",
+        "?? MUJOCO_LOG.TXT",
+        "?? dimos/data/"
+      ],
+      "recordings_resolved": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings"
+    },
+    "/home/mustafa/dimos-wt/r1pro-classical-apartment": {
+      "head": "ebd067deccd6e606527cecac0f744d0823bc3b8c",
+      "status": [
+        " M dimos/robot/galaxea/r1pro/OPEN_SPACE.md",
+        " M dimos/robot/galaxea/r1pro/classical_blueprint.py",
+        " M dimos/simulation/engines/mujoco_engine.py",
+        " M dimos/simulation/engines/mujoco_sim_module.py",
+        " M dimos/simulation/engines/test_mujoco_engine_timing.py",
+        " M openspec/changes/r1pro-act-house-sim/handoffs-open-space.md",
+        "?? .home-venv",
+        "?? .venv",
+        "?? dimos/data/",
+        "?? dimos/simulation/engines/mujoco_viewer.py",
+        "?? dimos/simulation/engines/test_mujoco_viewer.py"
+      ],
+      "recordings_resolved": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings"
+    }
+  },
+  "artifacts": {
+    "policy": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy",
+      "exists": true,
+      "deployment.json": {
+        "source_checkpoint": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/train-stable-4000/checkpoints/004000/pretrained_model",
+        "weights_modified": false,
+        "weights_sha256": "4716f34aa70247b491cc8461f2f1241aaf7d7c1456d9e6c3864e4f1fdaec5051",
+        "override": {
+          "n_action_steps": 30
+        },
+        "profile": "r1pro-sim-pick-place-v1"
+      }
+    },
+    "policy-house": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy-house",
+      "exists": true,
+      "deployment.json": {
+        "source_checkpoint": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/train-mixed-1500/checkpoints/001500/pretrained_model",
+        "weights_modified": false,
+        "weights_sha256": "8c4abe961fa5c9892d2a9ba5f2e5330af5693d65a8316d40a9432b64d18e6e2a",
+        "override": {
+          "n_action_steps": 30
+        },
+        "profile": "r1pro-sim-pick-place-v1"
+      }
+    },
+    "policy-free-tray": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy-free-tray",
+      "exists": true,
+      "deployment.json": {
+        "source_checkpoint": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/train-free-tray-1000/checkpoints/001000/pretrained_model",
+        "weights_modified": false,
+        "weights_sha256": "eb07a052cfbbedb5fcf8e3d3b3ecf97851d1b1f8e85bf3dfd9c38a3d7b1be05f",
+        "override": {
+          "n_action_steps": 30
+        },
+        "profile": "r1pro-sim-pick-place-v1"
+      }
+    },
+    "policy-packing-augmented": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy-packing-augmented",
+      "exists": true,
+      "deployment.json": {
+        "source_checkpoint": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/train-packing-augmented/checkpoints/005000/pretrained_model",
+        "weights_modified": false,
+        "weights_sha256": "b12206836634a7b8857f9863c8ccb1b17b856c6bf2a09ff5d4cb15943d79c5d2",
+        "override": {
+          "n_action_steps": 30
+        },
+        "profile": "r1pro-sim-bottle-packing-v1"
+      }
+    },
+    "policy-objects-interactive": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy-objects-interactive",
+      "exists": true,
+      "deployment.json": {
+        "source_checkpoint": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/random-objects-act-refine-v1/policy",
+        "weights_modified": false,
+        "weights_sha256": "019fc8fa6bf758d9260489b0550d10034fd7e317fcfb8a1151b19363e6b34d76",
+        "override": {
+          "n_action_steps": 30
+        },
+        "profile": "r1pro-sim-object-packing-v1"
+      }
+    },
+    "policy-primitives-preview": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy-primitives-preview",
+      "exists": true,
+      "preview.json": {
+        "source": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/independent-primitives-act-v1/policies",
+        "kind": "experimental_preview",
+        "promoted_over_existing_demo": false,
+        "action_steps": 30,
+        "policies": {
+          "pick-right": "19c1ea20d240c5a1537f198e80fe4a0d41e3a3586712b8de14bfe34d10e92739",
+          "place-right": "7fb85ec830f3579f70a9e942489efec93cf27f0839c9517e1bc3022a81f8b565",
+          "pick-left": "ef187045b27957ee88ca6ec43c5a69a97e19dcf22681f5ee3273d857aa7d0249",
+          "place-left": "8fcfc5dd11849d20b7f4a93b1df621f8592c7ccf01f2ff9e28f88c519a79b067"
+        }
+      }
+    },
+    "policy-apartment-preview": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/policy-apartment-preview",
+      "exists": false
+    }
+  },
+  "jobs": {
+    "random-objects-act-v1": {
+      "stage": "evaluated",
+      "ready": false,
+      "single_successes": 6,
+      "single_total": 12,
+      "sequence_successes": 0,
+      "sequence_total": 8,
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/random-objects-act-v1/status.json"
+    },
+    "random-objects-act-refine-v1": {
+      "stage": "evaluated",
+      "ready": false,
+      "single_successes": 9,
+      "single_total": 12,
+      "sequence_successes": 1,
+      "sequence_total": 8,
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/random-objects-act-refine-v1/status.json"
+    },
+    "independent-primitives-act-v1": {
+      "state": "completed",
+      "stage": "completed",
+      "promoted": false,
+      "successes": 1,
+      "total": 8,
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/independent-primitives-act-v1/status.json"
+    },
+    "primitive-place-refine-v1": {
+      "state": "completed",
+      "stage": "completed",
+      "promoted": false,
+      "successes": 4,
+      "total": 8,
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/primitive-place-refine-v1/status.json"
+    },
+    "primitive-interactive-refine-v1": {
+      "state": "completed",
+      "stage": "completed",
+      "promoted": false,
+      "successes": 3,
+      "total": 8,
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/primitive-interactive-refine-v1/status.json"
+    },
+    "primitive-approach-refine-v1": {
+      "state": "completed",
+      "stage": "completed",
+      "promoted": false,
+      "total": 8,
+      "baseline_successes": 3,
+      "refined_successes": 3,
+      "integrated": {
+        "right": false,
+        "left": true,
+        "both": false,
+        "right_cross_table": true,
+        "left_cross_table": true,
+        "both_reverse": false,
+        "custom_region": false
+      },
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/primitive-approach-refine-v1/status.json"
+    },
+    "apartment-appearance-refine-v1": {
+      "state": "completed",
+      "stage": "completed",
+      "promoted": false,
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/apartment-appearance-refine-v1/status.json",
+      "apartment_successes": 0,
+      "apartment_total": 4
+    },
+    "apartment-reach-refine-v1": {
+      "state": "completed",
+      "stage": "completed",
+      "promoted": false,
+      "status_path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/apartment-reach-refine-v1/status.json",
+      "apartment_successes": 0,
+      "apartment_total": 8
+    }
+  },
+  "evidence": {
+    "r1pro-act-task/home-zenoh-5000/result.json": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/home-zenoh-5000/result.json",
+      "exists": true,
+      "success": true,
+      "seed": 5000,
+      "packing_success": true
+    },
+    "r1pro-act-task/jobs/home-zenoh-5000/validation-summary.json": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-act-task/jobs/home-zenoh-5000/validation-summary.json",
+      "exists": true,
+      "success": true,
+      "packing_success": true,
+      "delivery_success": true,
+      "navigation_seconds": 19.66800000009391,
+      "max_speed": 0.6003573689102881,
+      "tray_placement_error_m": 0.00422097217261069
+    },
+    "r1pro-classical-navigation-fix/seed-1646757217/result.json": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-classical-navigation-fix/seed-1646757217/result.json",
+      "exists": true,
+      "success": true,
+      "seed": 1646757217,
+      "action_count": 7
+    },
+    "r1pro-classical-navigation-fix/cross-hand-1498950867/result.json": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-classical-navigation-fix/cross-hand-1498950867/result.json",
+      "exists": true,
+      "success": true,
+      "seed": 1498950867,
+      "action_count": 8
+    },
+    "r1pro-classical-open-space/seed-5000/validation.json": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-classical-open-space/seed-5000/validation.json",
+      "exists": true,
+      "success": true,
+      "seed": 5000,
+      "action_count": 10
+    },
+    "r1pro-classical-open-space/viewer-stall-20260917/process-stall-check.json": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-classical-open-space/viewer-stall-20260917/process-stall-check.json",
+      "exists": true
+    },
+    "r1pro-classical-open-space/viewer-stall-20260917/pause-active-core-frequency.json": {
+      "path": "/home/mustafa/dimos-wt/r1pro-act-sim/recordings/r1pro-classical-open-space/viewer-stall-20260917/pause-active-core-frequency.json",
+      "exists": true
+    }
+  }
+}
