@@ -31,7 +31,9 @@ def build_classical_open_space(*, agent: bool = False) -> Blueprint:
     prompt = CLASSICAL_PROMPT.replace("in an apartment", "in an open platform arena") + (
         "\nThe named platforms are "
         + ", ".join(f"{p.name} ({p.height * 100:.0f} cm high)" for p in OPEN_PLATFORMS)
-        + ". There is also a tray on the worktable. Use these exact names for go_to and place_object. "
+        + ". There is also a tray on the worktable. Use these exact names for go_to, place_object "
+        "and put_down_tray. The carried tray clears only platforms lower than about 80 cm "
+        "(worktable, low_bench, display_table); put_down_tray refuses taller ones and says why. "
         "There is no kitchen or dining table in this scene. Read get_scene for current object positions."
     )
     return replace(

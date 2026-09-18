@@ -62,6 +62,18 @@ class TrayMotion:
         self.limits = np.array([model.joint(n).range for n in R1PRO_PICK_PLACE_JOINTS])
         self.initial = data.qpos[self.qids].copy()
         mujoco.mj_kinematics(model, self.probe)  # type: ignore[attr-defined]
+        # Handle spacing differs between tray builds; measure it in the base frame.
+        tray = self.probe.body("task_bin").xpos
+        rotation = self.probe.body("base_link").xmat.reshape(3, 3)
+        self.handles = {}
+        for side, sign in (("left", 1), ("right", -1)):
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"tray_{side}_handle")
+            offset = (
+                rotation.T @ (self.probe.geom_xpos[gid] - tray)
+                if gid >= 0
+                else np.array([0.0, sign * TRAY_HANDLE_Y, 0.0])
+            )
+            self.handles[side] = np.array([offset[0], offset[1], 0.0])
 
     def arm_pose(self, side: str, target: NDArray[Any]) -> NDArray[np.float64]:
         section = slice(4, 11) if side == "left" else slice(11, 18)
@@ -150,13 +162,12 @@ class TrayMotion:
         rotation = self.probe.body("base_link").xmat.reshape(3, 3).copy()
         seed = self.probe.qpos.copy()
         try:
-            for side, sign in (("left", 1), ("right", -1)):
-                self.arm_pose(side, centre + rotation @ np.array([0, sign * TRAY_HANDLE_Y, 0]))
+            for side in ("left", "right"):
+                self.arm_pose(side, centre + rotation @ self.handles[side])
         except RuntimeError:
             self.probe.qpos[:] = seed
             self.body_pose(
-                centre + rotation @ np.array([0, TRAY_HANDLE_Y, 0]),
-                centre + rotation @ np.array([0, -TRAY_HANDLE_Y, 0]),
+                centre + rotation @ self.handles["left"], centre + rotation @ self.handles["right"]
             )
         self.probe.qpos[self.qids[-2:]] = opening
         return TrayWaypoint(phase, self.probe.qpos[self.qids].tolist(), seconds)
@@ -193,21 +204,30 @@ class TrayMotion:
     def pickup(self, data: mujoco.MjData) -> list[TrayWaypoint]:
         position = data.body("task_bin").xpos.copy()
         grasp = position + np.array([0.0, 0.0, TRAY_TCP_HEIGHT])
-        above = grasp + np.array([0.0, 0.0, 0.15])
         # Raise the parked left arm sideways before reaching across the table.
         # The complete joint interpolation is collision checked below.
         shoulder = self.qids[5]
         if data.site("left_tcp").xpos[2] < grasp[2]:
             self.probe.qpos[shoulder] = max(float(self.probe.qpos[shoulder]), 0.8)
         self.probe.qpos[self.qids[-2:]] = 0.05
-        points = [
-            TrayWaypoint("raise_hands", self.probe.qpos[self.qids].tolist(), 2.0),
-            self.waypoint("approach_tray", above, 0.05, 1.5),
-            self.waypoint("lower_to_handles", grasp, 0.05, 1.5),
-            self.waypoint("grasp_handles", grasp, 0.009, 2.0),
-            self.waypoint("lift_tray", grasp + np.array([0, 0, 0.15]), 0.009, 3.0),
-        ]
-        return self._checked(points, data)
+        raised = self.probe.qpos.copy()
+        # A high support leaves no room for the full approach and lift height.
+        errors = []
+        for clearance in (0.15, 0.10, 0.06, 0.04):
+            self.probe.qpos[:] = raised
+            lift = np.array([0.0, 0.0, clearance])
+            try:
+                points = [
+                    TrayWaypoint("raise_hands", raised[self.qids].tolist(), 2.0),
+                    self.waypoint("approach_tray", grasp + lift, 0.05, 1.5),
+                    self.waypoint("lower_to_handles", grasp, 0.05, 1.5),
+                    self.waypoint("grasp_handles", grasp, 0.009, 2.0),
+                    self.waypoint("lift_tray", grasp + lift, 0.009, 3.0),
+                ]
+                return self._checked(points, data)
+            except RuntimeError as exc:
+                errors.append(f"{clearance:.2f} m clearance: {exc}")
+        raise RuntimeError("; ".join(errors))
 
     def placement(self, data: mujoco.MjData, target: list[float]) -> list[TrayWaypoint]:
         """Extend over the real tabletop, lower onto it, then release and retreat."""

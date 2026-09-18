@@ -15,6 +15,7 @@
 """Exercise classical apartment commands through MCP, without an external language model."""
 
 import argparse
+from collections.abc import Callable
 from dataclasses import replace
 import hashlib
 import json
@@ -24,7 +25,10 @@ from typing import Any
 
 import requests
 
+from dimos.agents.mcp.mcp_client import McpClient
 from dimos.core.coordination.module_coordinator import ModuleCoordinator
+from dimos.core.global_config import global_config
+from dimos.core.transport_factory import make_transport
 from dimos.robot.galaxea.r1pro.classical_blueprint import build_classical_apartment
 from dimos.robot.galaxea.r1pro.classical_sim import R1ProClassicalSim
 from dimos.robot.galaxea.r1pro.open_space_blueprint import build_classical_open_space
@@ -35,7 +39,11 @@ from dimos.robot.galaxea.r1pro.sim_session import reserve_demo_session
 def run(args: argparse.Namespace) -> dict[str, Any]:
     args.output.mkdir(parents=True, exist_ok=True)
     sim_class = R1ProOpenSpaceSim if args.open_space else R1ProClassicalSim
-    source = build_classical_open_space() if args.open_space else build_classical_apartment()
+    source = (
+        build_classical_open_space(agent=args.agent)
+        if args.open_space
+        else build_classical_apartment(agent=args.agent)
+    )
     atoms = tuple(
         replace(
             a,
@@ -55,6 +63,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         ),
                     )
                     if a.module is sim_class
+                    else dict(mcp_server_url=f"http://127.0.0.1:{args.mcp_port}/mcp")
+                    if a.module is McpClient
                     else {}
                 ),
             },
@@ -108,16 +118,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 report["initial"] = call("get_scene")
                 for command in args.actions:
                     primitive, arm, target = command.split(":", 2)
-                    if primitive not in ("pick", "place", "go"):
+                    calls = {
+                        "pick": ("pick_object", {"arm": arm, "object": target}),
+                        "place": ("place_object", {"arm": arm, "region": target}),
+                        "go": ("go_to", {"destination": target}),
+                        "tray_pick": ("pick_up_tray", {}),
+                        "tray_place": ("put_down_tray", {"region": target}),
+                    }
+                    if primitive not in calls:
                         raise ValueError(
-                            "Actions use pick:arm:object, place:arm:region, or apartment go:arm:region"
+                            "Actions use pick:arm:object, place:arm:region, go:arm:region, "
+                            "tray_pick::, or tray_place::region"
                         )
-                    accepted = call(
-                        "go_to" if primitive == "go" else f"{primitive}_object",
-                        {"destination": target}
-                        if primitive == "go"
-                        else {"arm": arm, "object" if primitive == "pick" else "region": target},
-                    )
+                    accepted = call(*calls[primitive])
                     row = dict(command=command, accepted=accepted)
                     report["actions"].append(row)
                     if not accepted["accepted"]:
@@ -150,6 +163,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                                 report["recovery"] = recovery
                                 report["after_recovery"] = call("get_scene")
                         raise RuntimeError(f"Action failed: {outcome}")
+                if args.say:
+                    report["conversation"] = run_conversation(args, call)
+                    (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
                 report["success"] = True
                 if args.stay_open:
                     print("Actions complete. Close the viewer or press Ctrl-C to stop.", flush=True)
@@ -166,6 +182,60 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     return report
 
 
+def run_conversation(
+    args: argparse.Namespace, call: Callable[..., dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Send each --say line through the language agent like HumanCLI, then record the outcome."""
+    g = global_config.model_copy(update={"zenoh_scout_addr": args.zenoh_scout_addr})
+    human = make_transport("/human_input", g=g)
+    agent = make_transport("/agent", g=g)
+    idle = make_transport("/agent_idle", g=g)
+    replies: list[dict[str, Any]] = []
+    state = dict(idle=True, busy_seen=False)
+
+    def on_agent(message: Any) -> None:
+        replies.append(
+            dict(
+                kind=type(message).__name__,
+                content=str(getattr(message, "content", ""))[:2000],
+                tool_calls=[
+                    dict(name=c.get("name"), args=c.get("args"))
+                    for c in getattr(message, "tool_calls", None) or []
+                ],
+            )
+        )
+
+    def on_idle(flag: Any) -> None:
+        state["idle"] = bool(flag)
+        if not flag:
+            state["busy_seen"] = True
+
+    agent.subscribe(on_agent)
+    idle.subscribe(on_idle)
+    time.sleep(2.0)
+    rows = []
+    for text in args.say:
+        first = len(replies)
+        state.update(idle=True, busy_seen=False)
+        human.publish(text)
+        print(f"Said: {text}", flush=True)
+        deadline = time.monotonic() + 900
+        while True:
+            time.sleep(0.5)
+            if state["busy_seen"] and state["idle"]:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"The agent did not finish handling: {text}")
+        while call("get_scene")["action"].get("state") == "running":
+            time.sleep(2.0)
+        after = call("get_scene")
+        rows.append(dict(say=text, replies=replies[first:], action=after["action"], after=after))
+        print(f"Agent finished: {after['action']}", flush=True)
+    for transport in (human, agent, idle):
+        transport.stop()
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -177,15 +247,14 @@ def main() -> None:
     parser.add_argument("--viewer", action="store_true")
     parser.add_argument("--stay-open", action="store_true")
     parser.add_argument("--recover-on-failure", action="store_true")
+    parser.add_argument("--agent", action="store_true")
+    parser.add_argument("--say", nargs="*", default=[])
     parser.add_argument("--mcp-port", type=int, required=True)
     parser.add_argument("--zenoh-scout-addr", required=True)
     parser.add_argument(
         "--actions",
-        nargs="+",
-        default=[
-            "pick:right:object_2",
-            "place:right:worktable",
-        ],
+        nargs="*",
+        default=["pick:right:object_2", "place:right:worktable"],
     )
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2))

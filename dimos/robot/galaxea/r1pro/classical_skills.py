@@ -23,6 +23,7 @@ import time
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from dimos.agents.annotation import skill
 from dimos.control.tasks.trajectory_task.trajectory_task import TrajectoryExecutionStatus
@@ -49,6 +50,7 @@ from dimos.robot.galaxea.r1pro.apartment_route import (
 )
 from dimos.robot.galaxea.r1pro.classical_selection import color_name, resolve_classical_object
 from dimos.robot.galaxea.r1pro.classical_sim import ClassicalSimSpec
+from dimos.robot.galaxea.r1pro.classical_tray import run_tray_motion
 from dimos.robot.galaxea.r1pro.config import R1PRO_PLANAR_BASE
 from dimos.robot.galaxea.r1pro.home_spec import HomeControlSpec
 from dimos.robot.galaxea.r1pro.learning import R1PRO_PICK_PLACE_JOINTS
@@ -353,15 +355,25 @@ class R1ProClassicalSkills(Module):
             )
 
     def _navigate(
-        self, destination: str, arm: str, report: dict[str, Any], stance: list[float] | None = None
+        self,
+        destination: str,
+        arm: str,
+        report: dict[str, Any],
+        stance: list[float] | None = None,
+        *,
+        carry_tray: bool = False,
     ) -> None:
         self._stop_control()
-        self._phase("prepare_carry", report)
-        carry = self._sim.classical_carry_posture()
-        if carry:
-            self._drive(carry, report)
-        self._phase("navigate", report)
-        plan = self._sim.prepare_object_navigation(destination, arm, stance)
+        if carry_tray:
+            self._phase("navigate", report)
+            plan = self._sim.prepare_tray_navigation(destination)
+        else:
+            self._phase("prepare_carry", report)
+            carry = self._sim.classical_carry_posture()
+            if carry:
+                self._drive(carry, report)
+            self._phase("navigate", report)
+            plan = self._sim.prepare_object_navigation(destination, arm, stance)
         report["navigation"] = plan
         try:
             self._position_base(
@@ -387,6 +399,34 @@ class R1ProClassicalSkills(Module):
         finally:
             self._control.task_invoke(APARTMENT_NAV_TASK, "cancel", {})
             self._sim.stop_primitive_base()
+
+    def _dock(self, dock: dict[str, Any], report: dict[str, Any], *, carry_tray: bool) -> None:
+        """Bring the base to a tray dock pose, navigating first when it is far."""
+        desired = np.asarray(dock["base_pose"], dtype=float)
+
+        def error(desired: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+            current = np.asarray(self._sim.primitive_state()["base_pose"], dtype=float)
+            delta = desired - current
+            delta[2] = np.arctan2(np.sin(delta[2]), np.cos(delta[2]))
+            return current, delta
+
+        current, delta = error(desired)
+        if np.linalg.norm(delta[:2]) > 0.7:
+            self._navigate(dock["region"], "right", report, desired.tolist(), carry_tray=carry_tray)
+            current, delta = error(desired)
+        if not dock["clear"]:
+            raise RuntimeError(f"No clear docking pose beside {dock['region']}")
+        if np.linalg.norm(delta[:2]) <= 0.01 and abs(delta[2]) <= 0.01:
+            return
+        self._phase("dock", report)
+        if carry_tray:
+            self._sim.prepare_tray_navigation(dock["region"])
+        else:
+            self._sim.prepare_tray_approach()
+        self._position_base(
+            {"base_waypoints": [current.tolist(), desired.tolist()]}, report, arrival_tolerance=0.01
+        )
+        self._sim.finish_object_navigation()
 
     def _position_base(
         self, selection: dict[str, Any], report: dict[str, Any], *, arrival_tolerance: float = 0.03
@@ -651,7 +691,14 @@ class R1ProClassicalSkills(Module):
         state = self._sim.primitive_state()
         for row in state["objects"]:
             row["color"] = color_name(row["rgba"])
-        return json.dumps({**state, "action": self._status(), "controller": "classical_graspgenx"})
+        return json.dumps(
+            {
+                **state,
+                "tray": self._sim.tray_state(),
+                "action": self._status(),
+                "controller": "classical_graspgenx",
+            }
+        )
 
     @skill
     def get_surfaces(self) -> str:
@@ -670,6 +717,8 @@ class R1ProClassicalSkills(Module):
         try:
             if arm not in (*ARMS, "auto"):
                 raise ValueError("Choose auto, left or right")
+            if self._sim.tray_state()["held"]:
+                raise ValueError("Both hands hold the tray; put_down_tray first")
             if arm in ARMS and state["held_objects"][arm]:
                 raise ValueError(f"The {arm} hand is occupied")
             index = resolve_classical_object(state["objects"], object)
@@ -740,6 +789,11 @@ class R1ProClassicalSkills(Module):
         if len(choices) != 1:
             return json.dumps(dict(accepted=False, reason="Specify one occupied hand"))
         side = choices[0]
+        tray = self._sim.tray_state()
+        if tray["held"]:
+            return json.dumps(dict(accepted=False, reason="Both hands hold the tray"))
+        if region == "tray" and tray["station"] is None:
+            return json.dumps(dict(accepted=False, reason="The tray is not resting on a platform"))
 
         def operation(report: dict[str, Any]) -> None:
             self._stop_control()
@@ -755,7 +809,10 @@ class R1ProClassicalSkills(Module):
             desired = np.asarray(chosen["base_pose"])
             if np.linalg.norm(current[:2] - desired[:2]) > 0.7:
                 self._phase("navigate", report)
-                destination = "worktable" if region in ("tray", "table") else region
+                if region == "tray":
+                    destination = str(self._sim.tray_state()["station"])
+                else:
+                    destination = "worktable" if region == "table" else region
                 self._navigate(destination, side, report, chosen["base_pose"])
                 # Carrying and turning change the measured grasp transform.
                 # Choose the final support corridor from the arrived state.
@@ -775,7 +832,10 @@ class R1ProClassicalSkills(Module):
             self._line(chosen["index"], side, chosen["tcp"], report)
             self._seek_support(chosen, report)
             self._phase("release", report)
-            self._gripper(side, 0.05, report)
+            # Open just enough to free the item; a full opening inside the tray
+            # can press a pad against the rim and block the retreat plan.
+            closed = self._sim.primitive_state()["joint_positions"][f"r1pro/{side}_gripper"]
+            self._gripper(side, min(0.05, closed + 0.015), report)
             self._phase("retreat", report)
             self._line(chosen["index"], side, chosen["preplace"], report)
             self._pause(0.5)
@@ -787,13 +847,106 @@ class R1ProClassicalSkills(Module):
 
     @skill
     def go_to(self, destination: str) -> str:
-        """Navigate to a named region from get_surfaces while keeping all held objects. Never release."""
+        """Navigate to a named region from get_surfaces while keeping all held objects. Never release.
+
+        A held tray travels with the robot and docks where put_down_tray would set it down.
+        """
+
+        if self._sim.tray_state()["held"]:
+            try:
+                self._sim.tray_dock_pose(destination)
+            except (ValueError, RuntimeError) as exc:
+                return json.dumps(dict(accepted=False, reason=str(exc)))
 
         def operation(report: dict[str, Any]) -> None:
             self._phase("navigate", report)
-            held = self._sim.primitive_state()["held_objects"]
-            arm = next((side for side in ARMS if held[side]), "right")
-            self._navigate(destination, arm, report)
+            if self._sim.tray_state()["held"]:
+                dock = self._sim.tray_dock_pose(destination)
+                report["dock"] = dock
+                self._dock(dock, report, carry_tray=True)
+            else:
+                held = self._sim.primitive_state()["held_objects"]
+                arm = next((side for side in ARMS if held[side]), "right")
+                self._navigate(destination, arm, report)
             self._phase("arrived", report)
 
         return self._start("navigate", operation)
+
+    @skill
+    def pick_up_tray(self) -> str:
+        """Dock beside the resting tray and lift it with both hands, keeping its contents."""
+        if any(self._sim.primitive_state()["held_objects"].values()):
+            return json.dumps(
+                dict(accepted=False, reason="Both hands must be free to lift the tray")
+            )
+        tray = self._sim.tray_state()
+        if tray["held"]:
+            return json.dumps(dict(accepted=False, reason="The tray is already held"))
+        if tray["finger_contacts"] or tray["station"] is None:
+            return json.dumps(
+                dict(accepted=False, reason="The tray must rest untouched on a known platform")
+            )
+
+        def operation(report: dict[str, Any]) -> None:
+            self._stop_control()
+            dock = self._sim.tray_dock_pose(None)
+            report["dock"] = dock
+            self._dock(dock, report, carry_tray=False)
+            self._phase("plan_tray_pickup", report)
+            self._sim.prepare_tray_holding()
+            support = set(self._sim.tray_state()["support_geoms"])
+            waypoints = self._sim.plan_tray_motion("pickup", None)
+            final = run_tray_motion(
+                self._control,
+                self._sim,
+                waypoints,
+                report,
+                self._pause,
+                lambda name: self._phase(name, report),
+                allowed_support=support,
+            )
+            if not final["held"]:
+                raise RuntimeError("The tray did not leave its support in both hands")
+            report["tray"] = final
+            self._phase("holding_tray", report)
+
+        return self._start("pick_up_tray", operation)
+
+    @skill
+    def put_down_tray(self, region: str) -> str:
+        """Carry the held tray to a named platform, set it down, release both hands and retreat.
+
+        Args:
+            region: A platform name from get_surfaces.
+        """
+        if not self._sim.tray_state()["held"]:
+            return json.dumps(dict(accepted=False, reason="Both hands must hold the tray first"))
+        try:
+            self._sim.tray_dock_pose(region)
+        except (ValueError, RuntimeError) as exc:
+            return json.dumps(dict(accepted=False, reason=str(exc)))
+
+        def operation(report: dict[str, Any]) -> None:
+            self._stop_control()
+            dock = self._sim.tray_dock_pose(region)
+            report["dock"] = dock
+            self._dock(dock, report, carry_tray=True)
+            self._phase("plan_tray_placement", report)
+            support = set(dock["support_geoms"])
+            waypoints = self._sim.plan_tray_motion("place", dock["target"])
+            final = run_tray_motion(
+                self._control,
+                self._sim,
+                waypoints,
+                report,
+                self._pause,
+                lambda name: self._phase(name, report),
+                allowed_support=support,
+                destination_support=support,
+            )
+            if not (final["released"] and set(final["support_geoms"]) & support):
+                raise RuntimeError("Tray was not released onto the requested platform")
+            report["tray"] = final
+            self._phase("tray_placed", report)
+
+        return self._start("put_down_tray", operation)

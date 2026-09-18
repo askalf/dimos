@@ -28,10 +28,15 @@ from dimos.msgs.manipulation_msgs.GraspCandidateArray import GraspCandidateArray
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
 from dimos.robot.galaxea.r1pro.apartment_navigation import ApartmentSimSpec
-from dimos.robot.galaxea.r1pro.apartment_route import apartment_approach, apartment_departure
+from dimos.robot.galaxea.r1pro.apartment_route import (
+    apartment_approach,
+    apartment_departure,
+    refine_apartment_route,
+)
 from dimos.robot.galaxea.r1pro.apartment_sim import R1ProApartmentSim
 from dimos.robot.galaxea.r1pro.classical_perception import segmented_object_cloud
 from dimos.robot.galaxea.r1pro.classical_planning import ClassicalGraspPlanner
+from dimos.robot.galaxea.r1pro.classical_tray import TRAY_DOCK_OFFSET, tray_footprint, tray_report
 from dimos.robot.galaxea.r1pro.grasping_sim import VIRTUAL_BASE_JOINTS
 from dimos.robot.galaxea.r1pro.grasping_transport import PlanarTransport
 from dimos.robot.galaxea.r1pro.home_surfaces import station_name
@@ -41,6 +46,8 @@ from dimos.robot.galaxea.r1pro.navigation_sim import carrying_offset
 from dimos.robot.galaxea.r1pro.object_primitive_state import PrimitiveSceneState
 from dimos.robot.galaxea.r1pro.object_primitives import ARMS, Arm
 from dimos.robot.galaxea.r1pro.primitive_scene import placement_options
+from dimos.robot.galaxea.r1pro.tray_motion import TrayMotion
+from dimos.robot.galaxea.r1pro.tray_sim import configure_tray_holding
 from dimos.simulation.engines.mujoco_engine import MujocoEngine
 
 
@@ -61,10 +68,23 @@ class ClassicalSimSpec(ApartmentSimSpec, Protocol):
         self, index: int, arm: str, target: list[list[float]]
     ) -> list[list[float]]: ...
     def classical_place_goals(self, arm: str, region: str) -> list[dict[str, Any]]: ...
+    def tray_state(self) -> dict[str, Any]: ...
+    def tray_dock_pose(self, region: str | None = None) -> dict[str, Any]: ...
+    def prepare_tray_holding(self) -> None: ...
+    def plan_tray_motion(
+        self, phase: str, target: list[float] | None = None
+    ) -> list[dict[str, Any]]: ...
+    def prepare_tray_approach(self) -> None: ...
+    def prepare_tray_navigation(self, destination: str) -> dict[str, Any]: ...
 
 
 class R1ProClassicalSim(R1ProApartmentSim):
     """Keep the physical apartment while replacing ACT with measured Cartesian plans."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._tray_transport: list[str] | None = None
+        self._last_tray_check = float("-inf")
 
     def _reachable_base_path(
         self, planner: PlanarTransport, pose: NDArray[Any]
@@ -104,6 +124,202 @@ class R1ProClassicalSim(R1ProApartmentSim):
                     pose, max_speed=0.3, max_accel=0.2, max_yaw_rate=0.4, max_yaw_accel=0.4
                 )
         super()._publish_shm_and_lcm(engine)
+        now = time.monotonic()
+        if self._tray_transport is not None and now - self._last_tray_check >= 0.05:
+            with engine._lock:
+                self._last_tray_check = now
+                try:
+                    self._check_tray_transport(self._state(engine))
+                except RuntimeError as exc:
+                    self._error = str(exc)
+
+    def _check_tray_transport(self, scene: PrimitiveSceneState) -> dict[str, Any]:
+        tray = tray_report(scene, self._regions)
+        if not tray["bimanual_grasp"] or tray["tilt_radians"] > 0.25:
+            raise RuntimeError("Lost the two-handed tray hold during transport")
+        missing = set(self._tray_transport or ()) - set(tray["cargo"])
+        if missing:
+            raise RuntimeError(f"Cargo left the tray: {sorted(missing)}")
+        return tray
+
+    def _tray_planner(
+        self, scene: PrimitiveSceneState, *, collision_margin: float
+    ) -> PlanarTransport:
+        return PlanarTransport(
+            scene.model,
+            scene.data,
+            cargo_bodies=tuple(row["object"] for row in scene.inventory() if row["inside"]),
+            carry_tray=True,
+            sweep_spacing=0.005,
+            collision_margin=collision_margin,
+        )
+
+    @rpc
+    def tray_state(self) -> dict[str, Any]:
+        """Measure tray contacts, cargo and the platform it rests on."""
+        engine = self._engine
+        if engine is None:
+            raise RuntimeError("Simulation is not ready")
+        with engine._lock:
+            return tray_report(self._state(engine), self._regions)
+
+    @rpc
+    def tray_dock_pose(self, region: str | None = None) -> dict[str, Any]:
+        """Base pose keeping the tray at its worktable offset; None docks at the resting tray."""
+        scene = self._snapshot()
+        tray = tray_report(scene, self._regions)
+        offset = TRAY_DOCK_OFFSET
+        if region is not None and tray["held"]:
+            # A torso lift changes where the held tray sits; dock from the measured offset.
+            base = scene.data.body("base_link")
+            local = base.xmat.reshape(3, 3).T @ (np.asarray(tray["position"]) - base.xpos)
+            offset = local[:2]
+        if region is None:
+            if tray["held"] or tray["finger_contacts"] or tray["station"] is None:
+                raise RuntimeError("The tray must rest on a known platform before pickup")
+            name = str(tray["station"])
+            target = np.asarray(tray["position"], dtype=float)
+            yaw = float(self._navigation_heading(name))
+        else:
+            name = station_name(region)
+            name = "worktable" if name in ("worktop", "table") else name
+            if name not in self._regions:
+                raise ValueError("Use a measured platform name from get_surfaces")
+            yaw = float(self._navigation_heading(name))
+            target = tray_footprint(scene, self._regions[name], yaw)
+            if tray["held"] and float(target[2]) > float(tray["position"][2]) - 0.02:
+                raise ValueError(
+                    f"{name} is {target[2]:.2f} m high; the carried tray bottom is at "
+                    f"{tray['position'][2]:.2f} m. Choose a lower platform."
+                )
+        c, s = np.cos(yaw), np.sin(yaw)
+        base = target[:2] - np.array([[c, -s], [s, c]]) @ offset
+        # Platform legs block the nominal offset; stand off along the heading
+        # until the robot, with its carried tray, is clear. The arms reach the rest.
+        planner = (
+            self._tray_planner(scene, collision_margin=0.02)
+            if tray["held"]
+            else PlanarTransport(
+                scene.model, scene.data, cargo_bodies=(), carry_tray=False, sweep_spacing=0.005
+            )
+        )
+        clear = False
+        pose = np.array([*base, yaw])
+        for back in np.arange(0.0, 0.41, 0.02):
+            pose = np.array([base[0] - c * back, base[1] - s * back, yaw])
+            if planner.clear_pose_segment(pose, pose):
+                clear = True
+                break
+        return dict(
+            region=name,
+            target=target.tolist(),
+            base_pose=[float(value) for value in pose],
+            clear=clear,
+            support_geoms=list(self._regions[name].support_geoms),
+        )
+
+    @rpc
+    def prepare_tray_holding(self) -> None:
+        """Steady the loaded torso before two-handed tray motion."""
+        engine = self._engine
+        if engine is None:
+            raise RuntimeError("Simulation is not ready")
+        with engine._lock:
+            configure_tray_holding(engine.model)
+
+    @rpc
+    def plan_tray_motion(
+        self, phase: str, target: list[float] | None = None
+    ) -> list[dict[str, Any]]:
+        """Compute checked bimanual waypoints in a snapshot; execution belongs to the coordinator."""
+        scene = self._snapshot()
+        cargo = tuple(row["object"] for row in scene.inventory() if row["inside"])
+        motion = TrayMotion(scene.model, scene.data, cargo_bodies=cargo)
+        if phase == "pickup":
+            points = motion.pickup(scene.data)
+        elif phase == "place" and target is not None and len(target) == 3:
+            points = motion.placement(scene.data, target)
+        else:
+            raise ValueError("Expected pickup or place with a three-dimensional target")
+        return [asdict(point) for point in points]
+
+    @rpc
+    def prepare_tray_approach(self) -> None:
+        """Guard every object while the empty-handed base docks beside the tray."""
+        scene = self._snapshot()
+        assert self._engine is not None
+        with self._engine._lock:
+            self._transport_initial = scene.inventory()
+            self._active = None
+            self._initial = None
+
+    @rpc
+    def prepare_tray_navigation(self, destination: str) -> dict[str, Any]:
+        """Plan a clear departure and dock for the carried tray at a platform's free footprint."""
+        dock = self.tray_dock_pose(destination)
+        scene = self._snapshot()
+        tray = tray_report(scene, self._regions)
+        if not tray["held"]:
+            raise RuntimeError("Both hands must hold the lifted tray before carrying it")
+        planner = self._tray_planner(
+            scene, collision_margin=self.config.navigation_clearance_m + 0.02
+        )
+        local = self._tray_planner(scene, collision_margin=0.02)
+        departure = apartment_departure(local, planner)
+        pose = np.asarray(departure[-1])
+        planner.clear_pose_segment(pose, pose)
+        aligned = PlanarTransport(
+            scene.model,
+            planner.probe,
+            cargo_bodies=planner.cargo_bodies,
+            carry_tray=True,
+            sweep_spacing=planner.sweep_spacing,
+            collision_margin=planner.collision_margin,
+        )
+        goal, docking = apartment_approach(aligned, np.asarray(dock["base_pose"], dtype=float))
+        offset = carrying_offset(scene.model, scene.data, planner.robot_bodies)
+        assert self._engine is not None
+        with self._engine._lock:
+            self._tray_transport = list(tray["cargo"])
+            self._transport_initial = None
+            self._active = None
+            self._initial = None
+        return dict(
+            destination=dock["region"],
+            goal=goal.tolist(),
+            departure=departure,
+            arrival=[goal.tolist(), docking.tolist()],
+            footprint_offset=offset.tolist(),
+            cloud=str(Path(self.config.output) / "navigation-cloud.npy"),
+            dock=dock,
+        )
+
+    @rpc
+    def validate_object_navigation(self, path: list[list[float]]) -> list[list[float]]:
+        if self._tray_transport is None:
+            return super().validate_object_navigation(path)
+        poses = np.asarray(path, dtype=float)
+        if poses.ndim != 2 or poses.shape[1] != 3 or len(poses) < 2 or not np.isfinite(poses).all():
+            raise ValueError("Expected at least two finite planar poses")
+        scene = self._snapshot()
+        self._check_tray_transport(scene)
+        planner = self._tray_planner(scene, collision_margin=self.config.navigation_clearance_m)
+        return refine_apartment_route(planner, path)
+
+    @rpc
+    def finish_object_navigation(self) -> None:
+        if self._tray_transport is None:
+            super().finish_object_navigation()
+            return
+        assert self._engine is not None
+        with self._engine._lock:
+            self._check_tray_transport(self._state(self._engine))
+            self._tray_transport = None
+
+    @rpc
+    def reset(self) -> bool:
+        self._tray_transport = None
+        return super().reset()
 
     @rpc
     def primitive_state(self) -> dict[str, Any]:
@@ -197,6 +413,11 @@ class R1ProClassicalSim(R1ProApartmentSim):
 
     @rpc
     def primitive_recovery(self) -> dict[str, Any]:
+        if self._tray_transport is not None and self._active is None:
+            assert self._engine is not None
+            with self._engine._lock:
+                tray = self._check_tray_transport(self._state(self._engine))
+            return dict(mode="tray_hold", cargo=tray["cargo"])
         if self._active is not None or self._transport_initial is None:
             return super().primitive_recovery()
         assert self._engine is not None
@@ -207,6 +428,13 @@ class R1ProClassicalSim(R1ProApartmentSim):
 
     @rpc
     def finish_primitive_recovery(self) -> dict[str, Any]:
+        if self._tray_transport is not None and self._active is None:
+            recovery = self.primitive_recovery()
+            assert self._engine is not None
+            with self._engine._lock:
+                self._tray_transport = None
+                self._error = None
+            return recovery
         if self._active is not None or self._transport_initial is None:
             return super().finish_primitive_recovery()
         recovery = self.primitive_recovery()
@@ -292,14 +520,22 @@ class R1ProClassicalSim(R1ProApartmentSim):
     @rpc
     def validate_primitive_base_plan(self, trajectory: JointTrajectory) -> None:
         """Check SDK local motion with held cargo during manipulation or departure."""
-        if self._active is None and self._transport_initial is None:
+        if (
+            self._active is None
+            and self._transport_initial is None
+            and self._tray_transport is None
+        ):
             raise RuntimeError("No selected primitive or prepared departure")
         if set(trajectory.joint_names) != set(VIRTUAL_BASE_JOINTS) or not trajectory.points:
             raise ValueError("Prepositioning requires a nonempty base-only trajectory")
         scene = self._snapshot()
-        if self._transport_initial is not None:
-            scene.validate(self._transport_initial, arm="right", selected=-1)
-        planner = scene.transport_planner()
+        if self._tray_transport is not None:
+            self._check_tray_transport(scene)
+            planner = self._tray_planner(scene, collision_margin=0.02)
+        else:
+            if self._transport_initial is not None:
+                scene.validate(self._transport_initial, arm="right", selected=-1)
+            planner = scene.transport_planner()
         columns = [trajectory.joint_names.index(name) for name in VIRTUAL_BASE_JOINTS]
         start = planner.start
         for point in trajectory.points:

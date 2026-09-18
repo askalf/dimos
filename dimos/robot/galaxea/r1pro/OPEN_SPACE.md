@@ -44,6 +44,10 @@ Ask what objects are present before selecting one. For example:
 
 A pick ends with the object held. Navigation preserves holds. Placement verifies support before opening the gripper. A requested hand is preserved; the other hand may keep holding an item. Use `get_surfaces` for exact region names. The room names from the apartment do not apply here.
 
+The tray is a physical free body. `place_object` with region `tray` puts a held item into it wherever it currently rests. `pick_up_tray` docks in front of the resting tray and lifts it with both hands, keeping its contents; both hands must be empty. `go_to` carries a held tray and docks where it would be set down. `put_down_tray` carries the tray to a named platform, lowers it onto a clear footprint near the robot's edge, verifies support, releases and retreats. Nothing can be picked or placed while the tray is held. The tray planner measures the handle spacing from the model; the classical tray is wider than the home demo's, and the older fixed constant closed the fingers 4 cm inboard of the handles.
+
+The tray is carried with its bottom about 85 cm above the floor, and the torso is already at its tallest level posture, so platforms at or above that height (tall_table, high_counter) cannot receive the tray. `put_down_tray` and a loaded `go_to` refuse them up front with the measured heights. The dock beside a platform steps back along the approach heading until the robot and its carried tray are clear of the platform legs; the arms cover the remaining distance. The footprint search also avoids fixtures standing on the platform. In the packaged apartment this leaves only the worktable: the laptop, lamp, journal and camera on the dining table leave no clear 32 by 47 cm footprint for this tray, and the kitchen counter is above the carry height.
+
 This scene uses the same privileged simulation perception and contact checks as the [classical apartment](CLASSICAL_APARTMENT.md). It simplifies navigation geometry; it does not establish arbitrary-object or hardware reliability.
 
 ## Verified run
@@ -60,13 +64,11 @@ The object labeled `cup` is a narrow, hollow, handleless cylinder, not a detaile
 
 Restart the blueprint to generate the corrected scene; `reset_scene` reuses the existing model. No new environment exports are needed.
 
-### Current performance investigation
+### Performance status
 
-The September 17 desktop run exposed a 12.4-second viewer synchronization stall while holding the live physics lock. The snapshot viewer removes that coupling. Its 37 focused simulation/IPC tests pass, and full-window startup and process cleanup have been checked. A real 12-second suspension of only the viewer left physics running at approximately real time. A complete delivery acceptance run with this change is still pending.
+The September 17 desktop run exposed a 12.4-second viewer synchronization stall while holding the live physics lock. The snapshot viewer removes that coupling: a real 12-second suspension of only the viewer left physics running at approximately real time, and its 37 focused simulation/IPC tests pass.
 
-The investigation is paused for a host reboot at the user's request. The latest measurement showed a busy worker using approximately one full core while that active core read about 200 MHz; other active cores also read about 200 MHz. This followed reported temperatures near 90°C even at low overall CPU usage. Earlier 400–800 MHz readings on idle cores were inconclusive, but the later active-core sample confirms a severely reduced clock during the slow run. Check host temperature and clocks after reboot before comparing runtime performance. No host power settings or simulation safety thresholds were changed.
-
-The latest full-window run did not complete delivery: one thin-object grasp failed, and a subsequent run crashed inside Python's traceback-reporting code while temporary diagnostic stack dumping was enabled. A repeat without that instrumentation was stopped for the reboot. See the [handoff](../../../../openspec/changes/r1pro-act-house-sim/handoffs-open-space.md) for evidence and remaining checks.
+After the host reboot the same day, active cores idled at 0.8 to 1.6 GHz with package temperatures near 60 to 70 C, and the seed 5000 three-action sequence (right carton pick, low-bench delivery and placement) passed headless on the snapshot-viewer code in 6.5 minutes of wall time. The earlier 200 MHz readings were a thermal or power fault of the host, not a simulation regression; check clocks and temperatures again before interpreting any slow run.
 
 ## Local regression
 
@@ -80,4 +82,8 @@ The non-agent blueprint is `r1pro-classical-open-space-sim`. A reproducible test
   --viewer --stay-open
 ```
 
+Tray actions use `tray_pick::` and `tray_place::<platform>`; the arm field stays empty. A full tray sequence is `pick:right:object_4 place:right:tray tray_pick:: go::tall_table tray_place::tall_table`.
+
 Use a fresh output directory and unused ports for each test. The harness saves physical state and per-action outcomes. Interactive launches do not automatically execute this sequence.
+
+GraspGenX loads its pinned checkpoint from the local HuggingFace cache without contacting the hub. If the module never logs its checkpoint paths at startup, the hub lookup is blocking; set `HF_HUB_OFFLINE=1` in the launching shell. On September 17 a half-open IPv6 route to the hub stalled startup indefinitely.

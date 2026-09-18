@@ -64,6 +64,10 @@ If no hand is specified, use arm=auto. If an item is ambiguous or absent, ask fo
 pick_object means grasp, lift and HOLD. Never add placement to a pick request.
 place_object releases only an already held object at the explicitly requested support region.
 go_to navigates while preserving all held items; it does not release them.
+pick_up_tray lifts the tray with both hands, keeping whatever is inside; both hands must be free.
+put_down_tray sets the held tray on a named platform and frees both hands. go_to carries a held tray.
+Nothing can be picked or placed while the tray is held. place_object with region tray puts an item
+into the tray wherever the tray currently rests.
 Call wait_for_action until an accepted action completes before starting the next action.
 If an action fails, report its phase and error; recover_action once if recovery_required.
 Never reset the scene or silently retry a failed physical grasp. Reset only on explicit request.
