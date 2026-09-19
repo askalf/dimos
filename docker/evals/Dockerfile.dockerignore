@@ -5,6 +5,10 @@
 !dimos
 !misc/DimSim
 !docker/evals
+!Cargo.toml
+!Cargo.lock
+!native
+!examples/native-modules
 !pyproject.toml
 !uv.lock
 !setup.py

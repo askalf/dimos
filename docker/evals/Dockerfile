@@ -50,6 +50,11 @@ RUN deno run --allow-all "npm:playwright@${PLAYWRIGHT_VERSION}" install chromium
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
+# Rust for the native modules dimos builds on first use (the MLS planner is a
+# workspace crate; `cargo build --release` at the repo root puts it in target/release).
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 # The Pi eval agent (dimos/evals/agents/pi.py) shells out to the `pi` coding-agent CLI.
 ARG NODE_MAJOR=22
 RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
@@ -71,6 +76,9 @@ COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --python "${PYTHON_VERSION}" --group tests-self-hosted \
     && uv run python setup.py build_ext --inplace
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    cargo build --release -p dimos-mls-planner && ls -la target/release/mls_planner
 
 # DimSim's frontend, built the way cli.ts would on first run (dist/ is gitignored),
 # and the bridge CLI's own JSR/npm dependencies, cached with the same entrypoint and
