@@ -93,6 +93,25 @@ def find_modules_rejecting_global_config() -> list[tuple[Path, int, str]]:
     return hits
 
 
+def _forwards_kwargs_to_super(init: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether *init* calls the parent constructor with ``**kwargs``."""
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "__init__"
+        and isinstance(node.func.value, ast.Call)
+        and isinstance(node.func.value.func, ast.Name)
+        and node.func.value.func.id == "super"
+        and any(
+            keyword.arg is None
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "kwargs"
+            for keyword in node.keywords
+        )
+        for node in ast.walk(init)
+    )
+
+
 def test_module_init_accepts_global_config_kwarg() -> None:
     """Fail if a deployable module's __init__ cannot accept the injected `g`."""
     dimos_dir = DIMOS_PROJECT_ROOT / "dimos"
@@ -110,3 +129,18 @@ def test_module_init_accepts_global_config_kwarg() -> None:
             "Accept `**kwargs: Any` and forward it to super().__init__(), as the "
             "other modules with explicit constructor parameters do."
         )
+
+
+def test_vlm_stream_tester_forwards_constructor_kwargs() -> None:
+    """Pin that VlmStreamTester stores coordinator kwargs in ModuleConfig."""
+    source = DIMOS_PROJECT_ROOT / "dimos/agents/testing/vlm_stream_tester.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    cls = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "VlmStreamTester"
+    )
+    init = _init_of(cls)
+    assert init is not None
+    assert init.args.kwarg is not None and init.args.kwarg.arg == "kwargs"
+    assert _forwards_kwargs_to_super(init)
