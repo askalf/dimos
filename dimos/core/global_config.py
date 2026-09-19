@@ -57,6 +57,7 @@ class GlobalConfig(BaseSettings):
     unitree_aes_128_key: str | None = None
     xarm7_ip: str | None = None
     xarm6_ip: str | None = None
+    lite6_ip: str | None = None
     can_port: str | None = None
     device_path: str | None = None  # device path for real robot (e.g. /dev/ttyUSB0)
     simulation: str = ""
@@ -96,6 +97,9 @@ class GlobalConfig(BaseSettings):
     viewer: ViewerBackend = "rerun"
     rerun_open: RerunOpenOption = RERUN_OPEN_DEFAULT
     rerun_web: bool = RERUN_ENABLE_WEB
+    # Also write the whole Rerun stream to recordings/<run-id>/rerun.rrd, the
+    # folder the --record memory.db lands in, so a run can be replayed offline.
+    rerun_save: bool = False
     rerun_host: str | None = None
     rerun_websocket_server_port: int = 3030
     n_workers: int = 2
