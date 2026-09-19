@@ -12,135 +12,98 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import ast
-from pathlib import Path
+from __future__ import annotations
 
-from dimos.constants import DIMOS_PROJECT_ROOT
+import inspect
+from typing import Any
+
+import pytest
+
+from dimos.core.coordination.blueprints import Blueprint
+from dimos.core.global_config import global_config
+from dimos.core.module import Module, ModuleBase
+from dimos.robot.all_blueprints import all_blueprints
+from dimos.robot.get_all_blueprints import get_blueprint_by_name
+from dimos.robot.test_all_blueprints import (
+    OPTIONAL_DEPENDENCIES,
+    OPTIONAL_ERROR_SUBSTRINGS,
+    SELF_HOSTED_BLUEPRINTS,
+)
 
 # The worker always injects the host's GlobalConfig under this name; see
 # PythonWorker.deploy_module in dimos/core/coordination/python_worker.py.
 GLOBAL_CONFIG_KWARG = "g"
 
-MODULE_BASES = {"Module", "ModuleBase"}
+
+def _get_blueprint_or_skip(blueprint_name: str) -> Blueprint:
+    try:
+        return get_blueprint_by_name(blueprint_name)
+    except ModuleNotFoundError as e:
+        if e.name in OPTIONAL_DEPENDENCIES:
+            pytest.skip(f"Skipping due to missing optional dependency: {e.name}")
+        raise
+    except Exception as e:
+        message = str(e)
+        if any(substring in message for substring in OPTIONAL_ERROR_SUBSTRINGS):
+            pytest.skip(f"Skipping due to missing optional dependency: {message}")
+        raise
 
 
-def _base_names(node: ast.ClassDef) -> list[str]:
-    """Base class names of *node*, without subscripts or module prefixes."""
-    return [ast.unparse(base).split("[")[0].rsplit(".", maxsplit=1)[-1] for base in node.bases]
-
-
-def _find_class_defs(dimos_dir: Path) -> dict[str, list[ast.ClassDef]]:
-    """Every class defined under dimos/, keyed by class name."""
-    class_defs: dict[str, list[ast.ClassDef]] = {}
-    for path in sorted(dimos_dir.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                class_defs.setdefault(node.name, []).append(node)
-    return class_defs
-
-
-def _is_module_subclass(
-    name: str, class_defs: dict[str, list[ast.ClassDef]], seen: set[str]
-) -> bool:
-    """Whether *name* resolves to Module/ModuleBase through in-repo base classes."""
-    if name in MODULE_BASES:
-        return True
-    if name in seen:
-        return False
-    seen.add(name)
-    return any(
-        _is_module_subclass(base, class_defs, seen)
-        for node in class_defs.get(name, [])
-        for base in _base_names(node)
+def _accepts_global_config(module: type[ModuleBase]) -> bool:
+    """Whether ``module(**kwargs)`` can take the injected ``g``: a parameter of
+    that name, or ``**kwargs``."""
+    parameters = inspect.signature(module.__init__).parameters
+    return GLOBAL_CONFIG_KWARG in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
     )
 
 
-def _init_of(node: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-    for statement in node.body:
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if statement.name == "__init__":
-                return statement
-    return None
+def _blueprint_params() -> list[str | pytest.ParameterSet]:
+    self_hosted = set(SELF_HOSTED_BLUEPRINTS)
+    return [
+        pytest.param(name, marks=pytest.mark.self_hosted) if name in self_hosted else name
+        for name in sorted(all_blueprints)
+    ]
 
 
-def _accepts_global_config(init: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    if init.args.kwarg is not None:
-        return True
-    declared = {arg.arg for arg in (*init.args.args, *init.args.kwonlyargs)}
-    return GLOBAL_CONFIG_KWARG in declared
+@pytest.mark.parametrize("blueprint_name", _blueprint_params())
+def test_blueprint_modules_accept_global_config_kwarg(
+    blueprint_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail when a blueprint deploys a module whose __init__ rejects ``g``."""
+    # The multi-robot blueprints read ROBOT_IPS at import time.
+    monkeypatch.setattr(global_config, "robot_ips", "192.0.2.10,192.0.2.11")
+    blueprint = _get_blueprint_or_skip(blueprint_name)
 
-
-def find_modules_rejecting_global_config() -> list[tuple[Path, int, str]]:
-    """Return (file, line, class name) for modules whose __init__ would reject `g`."""
-    dimos_dir = DIMOS_PROJECT_ROOT / "dimos"
-    class_defs = _find_class_defs(dimos_dir)
-    hits: list[tuple[Path, int, str]] = []
-    for path in sorted(dimos_dir.rglob("*.py")):
-        # Test modules are constructed in-process by their own test, not
-        # deployed through a worker, so the injected `g` never reaches them.
-        if path.name.startswith("test_") or path.name == "conftest.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            if not any(_is_module_subclass(base, class_defs, set()) for base in _base_names(node)):
-                continue
-            init = _init_of(node)
-            if init is not None and not _accepts_global_config(init):
-                hits.append((path, node.lineno, node.name))
-    return hits
-
-
-def _forwards_kwargs_to_super(init: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """Whether *init* calls the parent constructor with ``**kwargs``."""
-    return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "__init__"
-        and isinstance(node.func.value, ast.Call)
-        and isinstance(node.func.value.func, ast.Name)
-        and node.func.value.func.id == "super"
-        and any(
-            keyword.arg is None
-            and isinstance(keyword.value, ast.Name)
-            and keyword.value.id == "kwargs"
-            for keyword in node.keywords
-        )
-        for node in ast.walk(init)
+    rejecting = sorted(
+        {
+            atom.module.__name__
+            for atom in blueprint.blueprints
+            if not _accepts_global_config(atom.module)
+        }
+    )
+    assert not rejecting, (
+        f"Blueprint {blueprint_name!r} deploys module(s) whose __init__ rejects the "
+        f"{GLOBAL_CONFIG_KWARG!r} kwarg: {', '.join(rejecting)}. PythonWorker.deploy_module "
+        f"always passes the host GlobalConfig as {GLOBAL_CONFIG_KWARG!r}, so deploying them "
+        "fails with TypeError. Accept **kwargs: Any and forward it to super().__init__()."
     )
 
 
-def test_module_init_accepts_global_config_kwarg() -> None:
-    """Fail if a deployable module's __init__ cannot accept the injected `g`."""
-    dimos_dir = DIMOS_PROJECT_ROOT / "dimos"
-    hits = find_modules_rejecting_global_config()
-    if hits:
-        listing = "\n".join(
-            f"  - {p.relative_to(dimos_dir)}:{lineno}: {name}" for p, lineno, name in hits
-        )
-        raise AssertionError(
-            f"Found module(s) whose __init__ rejects the {GLOBAL_CONFIG_KWARG!r} kwarg:\n"
-            f"{listing}\n\n"
-            "PythonWorker.deploy_module always passes the host GlobalConfig as "
-            f"{GLOBAL_CONFIG_KWARG!r}, so deploying such a module fails with "
-            f'"__init__() got an unexpected keyword argument {GLOBAL_CONFIG_KWARG!r}". '
-            "Accept `**kwargs: Any` and forward it to super().__init__(), as the "
-            "other modules with explicit constructor parameters do."
-        )
+def test_vlm_stream_tester_forwards_constructor_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """VlmStreamTester passes every kwarg it does not consume on to Module."""
+    from dimos.agents.testing.vlm_stream_tester import VlmStreamTester
 
+    forwarded: dict[str, Any] = {}
 
-def test_vlm_stream_tester_forwards_constructor_kwargs() -> None:
-    """Pin that VlmStreamTester stores coordinator kwargs in ModuleConfig."""
-    source = DIMOS_PROJECT_ROOT / "dimos/agents/testing/vlm_stream_tester.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    cls = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "VlmStreamTester"
-    )
-    init = _init_of(cls)
-    assert init is not None
-    assert init.args.kwarg is not None and init.args.kwarg.arg == "kwargs"
-    assert _forwards_kwargs_to_super(init)
+    def record(self: Module, **kwargs: Any) -> None:
+        forwarded.update(kwargs)
+
+    # Module.__init__ builds streams and starts the RPC transport; the tester's
+    # own constructor needs none of that, so recording what reaches Module is
+    # enough to pin the forwarding.
+    monkeypatch.setattr(Module, "__init__", record)
+    sentinel = object()
+    VlmStreamTester(prompt="unused", g=sentinel, instance_name="vlm-test-1")
+
+    assert forwarded == {GLOBAL_CONFIG_KWARG: sentinel, "instance_name": "vlm-test-1"}
