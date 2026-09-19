@@ -290,6 +290,7 @@ class PiAdapter(Agent):
         files = dict(env.artifacts)
         files.pop("recording", None)  # a dimOS memory store; not readable without dimOS
         if env.raw_endpoint:
+            files.clear()  # the robot is the whole interface: no episode file, no viewer video
             readme = run_dir / "ROBOT.md"
             readme.write_text(robot_readme(env.raw_endpoint, env.raw_topics or RAW_TOPICS))
             files["robot"] = readme
