@@ -68,7 +68,10 @@ def _accepts_global_config(module: type[ModuleBase]) -> bool:
     that name that binds by keyword, or ``**kwargs``."""
     parameters = inspect.signature(module.__init__).parameters
     named = parameters.get(GLOBAL_CONFIG_KWARG)
-    if named is not None and named.kind is not inspect.Parameter.POSITIONAL_ONLY:
+    if named is not None and named.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
@@ -208,6 +211,10 @@ def test_accepts_global_config_reads_the_binding_rules() -> None:
     # A positional-only ``g`` cannot be bound by keyword, so the worker's
     # ``module_class(**kwargs)`` still raises; it must not count as accepting.
     assert not accepts("def __init__(self, g, /) -> None: ...")
+    # Only the parameter's kind decides; a variadic named ``g`` binds nothing
+    # by keyword either.
+    assert not accepts("def __init__(self, *g) -> None: ...")
+    assert accepts("def __init__(self, *g, **kwargs) -> None: ...")
 
 
 def test_module_subclass_without_constructor_accepts_the_kwarg() -> None:
