@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import inspect
-from typing import Any
+import sys
+from typing import Any, cast
 
 import pytest
 
@@ -217,6 +219,43 @@ def test_accepts_global_config_reads_the_binding_rules() -> None:
     assert accepts("def __init__(self, *g, **kwargs) -> None: ...")
 
 
+# Every constructor shape the check can meet, each with defaults throughout so
+# that the only reason a call can fail is the ``g`` keyword itself.
+BINDING_SHAPES = (
+    "def __init__(self, prompt: str = 'p') -> None: ...",
+    "def __init__(self, prompt: str = 'p', **kwargs) -> None: ...",
+    "def __init__(self, g=None) -> None: ...",
+    "def __init__(self, *, g=None) -> None: ...",
+    "def __init__(self, g=None, /) -> None: ...",
+    "def __init__(self, g=None, /, **kwargs) -> None: ...",
+    "def __init__(self, *g) -> None: ...",
+    "def __init__(self, *g, **kwargs) -> None: ...",
+    "def __init__(self, **g) -> None: ...",
+    "def __init__(self, *args) -> None: ...",
+)
+
+
+@pytest.mark.parametrize("source", BINDING_SHAPES)
+def test_accepts_global_config_agrees_with_a_real_keyword_call(source: str) -> None:
+    """Check the verdict against the binding the worker actually performs.
+
+    ``_accepts_global_config`` reads a signature; ``PythonWorker`` calls
+    ``module_class(**kwargs)``. Asserting the two agree keeps the check honest
+    without restating CPython's binding rules a second time.
+    """
+    namespace: dict[str, Any] = {}
+    exec(f"class _M:\n    {source}", namespace)
+    module = namespace["_M"]
+
+    try:
+        module(**{GLOBAL_CONFIG_KWARG: global_config})
+        binds = True
+    except TypeError:
+        binds = False
+
+    assert _accepts_global_config(module) is binds, source
+
+
 def test_module_subclass_without_constructor_accepts_the_kwarg() -> None:
     """A module that declares no __init__ inherits Module's ``**kwargs``."""
 
@@ -224,3 +263,85 @@ def test_module_subclass_without_constructor_accepts_the_kwarg() -> None:
         pass
 
     assert _accepts_global_config(_InheritsInit)
+
+
+def _outcome(lookup: Callable[[str], Blueprint], name: str) -> str:
+    """Classify a lookup as ``skipped`` or as the exception type it raised.
+
+    The skip is caught rather than allowed to propagate: a test that lets it
+    through is reported as skipped, which would hide a triage that skips too
+    much instead of failing.
+    """
+    try:
+        lookup(name)
+    except pytest.skip.Exception:
+        return "skipped"
+    except BaseException as e:
+        return type(e).__name__
+    return "returned"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        # In OPTIONAL_DEPENDENCIES, so the extras are simply absent.
+        (ModuleNotFoundError("No module named 'pyzed'", name="pyzed"), "skipped"),
+        # Message in OPTIONAL_ERROR_SUBSTRINGS.
+        (RuntimeError("ZED SDK not installed"), "skipped"),
+        # A missing module that is not an optional extra is a real failure.
+        (ModuleNotFoundError("No module named 'numba'", name="numba"), "ModuleNotFoundError"),
+        # Anything else must propagate, or a broken blueprint reads as a skip.
+        (RuntimeError("blueprint is broken"), "RuntimeError"),
+    ],
+)
+def test_lookup_skips_only_optional_dependency_failures(
+    error: Exception, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing optional dependencies skip; every other failure still fails.
+
+    The triage is the one ``test_all_blueprints.py`` uses. On a runner with the
+    extras installed nothing reaches the skip branch, so it is pinned here
+    rather than by the parametrized checks above.
+    """
+
+    def raise_error(name: str) -> Blueprint:
+        raise error
+
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "get_blueprint_by_name", raise_error)
+    monkeypatch.setattr(module, "get_module_by_name", raise_error)
+
+    assert _outcome(_get_blueprint_or_skip, "some-blueprint") == expected
+    assert _outcome(_get_module_or_skip, "some-module") == expected
+
+
+def test_rejecting_modules_are_named_once_each_in_a_stable_order() -> None:
+    """The failure message lists every offender, deduplicated and sorted."""
+
+    class _Rejects:
+        def __init__(self, prompt: str = "p") -> None: ...
+
+    class _AlsoRejects:
+        def __init__(self, prompt: str = "p") -> None: ...
+
+    class _Accepts:
+        def __init__(self, **kwargs: Any) -> None: ...
+
+    class _Atom:
+        def __init__(self, module: type) -> None:
+            self.module = module
+
+    class _Blueprint:
+        def __init__(self, modules: list[type]) -> None:
+            self.blueprints = [_Atom(module) for module in modules]
+
+    # A module repeated across atoms must be named once, not twice.
+    blueprint = _Blueprint([_Rejects, _AlsoRejects, _Accepts, _Rejects])
+    rejecting = _rejecting_modules(cast("Blueprint", blueprint))
+
+    assert rejecting == ["_AlsoRejects", "_Rejects"]
+
+    message = _rejection_message("some-blueprint", rejecting)
+    assert "'some-blueprint'" in message
+    assert "_AlsoRejects, _Rejects" in message
+    assert "_Accepts" not in message
