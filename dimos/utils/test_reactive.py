@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Callable
+import os
 import sys
 import time
 from typing import Any, TypeVar
@@ -85,6 +86,11 @@ def dispose_spy(source: rx.Observable[T]) -> rx.Observable[T]:
     return proxy
 
 
+@pytest.mark.skipif(
+    _IS_MACOS and bool(os.environ.get("CI")),
+    reason="rx.interval timing is too starved on the hosted macOS CI VM to hit the "
+    "item-count bounds; the backpressure behaviour is covered on real macs and Linux",
+)
 def test_backpressure_handling() -> None:
     # Create a dedicated scheduler for this test to avoid thread leaks
     test_scheduler = ThreadPoolScheduler(max_workers=8)
